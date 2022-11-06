@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use anyhow::Error;
 use commands::music::VoiceData;
+// use hyper;
+// use hyper_rustls;
 use serenity::async_trait;
 use serenity::builder::CreateApplicationCommand;
 
@@ -46,15 +48,6 @@ where
 #[async_trait]
 impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        // if let Interaction::ApplicationCommand(command) = &interaction {
-        //     let command_name = command.data.name.clone();
-        //     let command = self.commands.iter().find(|c| c.name() == command_name);
-        //     if let Some(command) = command {
-        //         command.run(&ctx, interaction).await;
-        //     } else {
-        //         println!("Command not found: {}", command_name);
-        //     }
-        // }
         match &interaction {
             Interaction::ApplicationCommand(command) => {
                 let command_name = command.data.name.clone();
@@ -65,29 +58,13 @@ impl EventHandler for Handler {
                     println!("Command not found: {}", command_name);
                 }
             }
-            // Interaction::MessageComponent(component) => {
-            //     let component = component.clone();
-            //     let data = ctx.data.read().await;
-            //     let voice_data = data.get::<VoiceData>().unwrap();
-            //     let guild_id = component.guild_id.unwrap();
-            //     let guild = guild_id.to_partial_guild(&ctx).await.unwrap();
-            //     let channel_id = guild.voice_states.get(&component.user.id).unwrap().channel_id.unwrap();
-            //     let manager = songbird::get(ctx).await.unwrap().clone();
-            //     let (handler_lock, success) = manager.join(guild_id, channel_id).await;
-            //     if success {
-            //         let handler = handler_lock.lock().await;
-            //         let source = handler.play_source(songbird::ytdl(&component.data.custom_id.unwrap()).await.unwrap());
-            //         source.set_volume(0.5);
-            //     }
-            // }
+
             Interaction::Autocomplete(autocomplete) => {
                 let commandn = autocomplete.data.name.clone();
                 let command = self.commands.iter().find(|c| c.name() == commandn);
                 if let Some(command) = command {
                     let r = command.autocomplete(&ctx, autocomplete).await;
-                    if r.is_err() {
-                        // println!("Error: {}", e);
-                    }
+                    if r.is_err() {}
                 } else {
                     println!("Command not found: {}", commandn);
                 }
@@ -101,21 +78,8 @@ impl EventHandler for Handler {
 
         let guild_id = GuildId(Config::get().guild_id.parse::<u64>().expect("Invalid guild id"));
 
-        // for command in self.commands.iter() {
-        //     // ensure that the command name is unique
-        //     println!("Registering command: {}", command.name());
-        //     GuildId::set_application_commands(&guild_id, &ctx.http, |commands| {
-        //         commands.create_application_command(|thiscommand| {
-        //             command.register(thiscommand);
-        //             thiscommand
-        //         })
-        //     })
-        //     .await
-        //     .unwrap();
-        // }
         GuildId::set_application_commands(&guild_id, &ctx.http, |commands| {
             for command in self.commands.iter() {
-                // ensure that the command name is unique
                 println!("Registering command: {}", command.name());
                 commands.create_application_command(|thiscommand| {
                     command.register(thiscommand);
@@ -133,16 +97,13 @@ impl EventHandler for Handler {
             let data_lock = ctx.data.read().await;
             let data = data_lock.get::<VoiceData>().expect("Expected VoiceData in TypeMap.").clone();
             let mut data = data.lock().await;
-            // then we store the current voice state in the map
+
             let guild = data.get_mut(&guild_id);
             if let Some(guild) = guild {
-                // find the user in the guild vec
                 let state = guild.iter_mut().find(|user| user.user_id == new.user_id);
                 if let Some(state) = state {
-                    // update the state
                     *state = new;
                 } else {
-                    // add the state
                     guild.push(new);
                 }
             } else {
@@ -156,21 +117,15 @@ impl EventHandler for Handler {
 async fn main() {
     let cfg = Config::get();
 
-    // get the tmp folder
     let mut tmp = cfg.data_path.clone();
-    tmp.push(cfg.app_name);
     tmp.push("tmp");
-    // ensure the tmp folder exists
+
     let r = std::fs::remove_dir_all(&tmp);
-    if r.is_err() {
-        // ignore failure
-    }
+    if r.is_err() {}
     std::fs::create_dir_all(&tmp).expect("Failed to create tmp folder");
 
-    // Configure the client with your Discord bot token in the environment.
     let token = cfg.token;
 
-    // Build our client.
     let handler = Handler::new(vec![
         Box::new(commands::music::loopit::Loop),
         Box::new(commands::music::pause::Pause),
@@ -195,10 +150,7 @@ async fn main() {
         data.insert::<commands::music::AudioCommandHandler>(Arc::new(serenity::prelude::Mutex::new(HashMap::new())));
         data.insert::<commands::music::VoiceData>(Arc::new(serenity::prelude::Mutex::new(HashMap::new())));
     }
-    // Finally, start a single shard, and start listening to events.
-    //
-    // Shards will automatically attempt to reconnect, and will perform
-    // exponential backoff until it reconnects.
+
     if let Err(why) = client.start().await {
         println!("Client error: {:?}", why);
     }
@@ -210,30 +162,63 @@ struct Config {
     app_name: String,
     looptime: u64,
     data_path: PathBuf,
+    gcloud_script: String,
 }
 
 impl Config {
     pub fn get() -> Self {
         let path = dirs::data_dir();
-        let mut path = if let Some(path) = path {
-            path
-        } else {
-            // fallback to current dir
-            PathBuf::from(".")
-        };
+        let mut path = if let Some(path) = path { path } else { PathBuf::from(".") };
         path.push("RmbConfig.json");
         Self::get_from_path(path)
     }
-    fn onboarding(config_path: &PathBuf) {
-        println!("Welcome to my shitty Rust Music Bot!");
-        println!("It appears that this may be the first time you are running the bot.");
-        println!("I will take you through a short onboarding process to get you started.");
-        let config = Config {
-            token: Self::safe_read("\nPlease enter your bot token:"),
-            guild_id: Self::safe_read("\nPlease enter your guild id:"),
-            app_name: Self::safe_read("\nPlease enter your application name:"),
-            looptime: Self::safe_read("\nPlease enter your loop time in ms\nlower time means faster response but higher utilization:"),
-            data_path: config_path.parent().unwrap().to_path_buf(),
+    fn onboarding(config_path: &PathBuf, recovered_config: Option<RecoverConfig>) {
+        let config = if let Some(rec) = recovered_config {
+            println!("Welcome back to my shitty Rust Music Bot!");
+            println!("It appears that you have run the bot before, but the config got biffed up.");
+            println!("I will take you through a short onboarding process to get you back up and running.");
+            let app_name = if let Some(app_name) = rec.app_name {
+                app_name
+            } else {
+                Self::safe_read("\nPlease enter your application name:")
+            };
+            let mut data_path = config_path.parent().unwrap().to_path_buf();
+            data_path.push(app_name.clone());
+            Config {
+                token: if let Some(token) = rec.token { token } else { Self::safe_read("\nPlease enter your bot token:") },
+                guild_id: if let Some(guild_id) = rec.guild_id {
+                    guild_id
+                } else {
+                    Self::safe_read("\nPlease enter your guild id:")
+                },
+                app_name,
+                looptime: if let Some(looptime) = rec.looptime {
+                    looptime
+                } else {
+                    Self::safe_read("\nPlease enter your loop time in ms\nlower time means faster response but higher utilization:")
+                },
+                gcloud_script: if let Some(gcloud_script) = rec.gcloud_script {
+                    gcloud_script
+                } else {
+                    Self::safe_read("\nPlease enter your gcloud script location (teehee):")
+                },
+                data_path,
+            }
+        } else {
+            println!("Welcome to my shitty Rust Music Bot!");
+            println!("It appears that this may be the first time you are running the bot.");
+            println!("I will take you through a short onboarding process to get you started.");
+            let app_name: String = Self::safe_read("\nPlease enter your application name:");
+            let mut data_path = config_path.parent().unwrap().to_path_buf();
+            data_path.push(app_name.clone());
+            Config {
+                token: Self::safe_read("\nPlease enter your bot token:"),
+                guild_id: Self::safe_read("\nPlease enter your guild id:"),
+                app_name,
+                looptime: Self::safe_read("\nPlease enter your loop time in ms\nlower time means faster response but higher utilization:"),
+                gcloud_script: Self::safe_read("\nPlease enter your gcloud script location (teehee):"),
+                data_path,
+            }
         };
         std::fs::write(
             config_path.clone(),
@@ -256,22 +241,37 @@ impl Config {
     }
     fn get_from_path(path: std::path::PathBuf) -> Self {
         if !path.exists() {
-            Self::onboarding(&path);
+            Self::onboarding(&path, None);
         }
         let config = std::fs::read_to_string(&path);
         if let Ok(config) = config {
-            let x = serde_json::from_str(&config);
+            let x: Result<Config, serde_json::Error> = serde_json::from_str(&config);
             if let Ok(x) = x {
                 x
             } else {
-                println!("Failed to parse config.json, Making a new one");
-                Self::onboarding(&path);
+                println!("Failed to parse config.json, Attempting recovery");
+                let recovered = serde_json::from_str(&config);
+                if let Ok(recovered) = recovered {
+                    Self::onboarding(&path, Some(recovered));
+                } else {
+                    Self::onboarding(&path, None);
+                }
                 Self::get()
             }
         } else {
             println!("Failed to read config.json");
-            Self::onboarding(&path);
+            Self::onboarding(&path, None);
             Self::get_from_path(path)
         }
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RecoverConfig {
+    token: Option<String>,
+    guild_id: Option<String>,
+    app_name: Option<String>,
+    looptime: Option<u64>,
+    data_path: Option<PathBuf>,
+    gcloud_script: Option<String>,
 }

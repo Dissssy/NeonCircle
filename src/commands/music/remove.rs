@@ -45,8 +45,6 @@ impl crate::CommandTrait for Remove {
         let mutual = get_mutual_voice_channel(ctx, &interaction).await;
         if let Some((join, _channel_id)) = mutual {
             if !join {
-                // interaction.edit_original_interaction_response(&ctx.http, |response| response.content("Removing song")).await.unwrap();
-
                 let data_read = ctx.data.read().await;
                 let audio_command_handler = data_read.get::<AudioCommandHandler>().expect("Expected AudioCommandHandler in TypeMap").clone();
                 let mut audio_command_handler = audio_command_handler.lock().await;
@@ -54,7 +52,7 @@ impl crate::CommandTrait for Remove {
                 let (rtx, mut rrx) = mpsc::unbounded::<String>();
                 tx.unbounded_send((rtx, AudioPromiseCommand::Remove(interaction.data.options[0].value.as_ref().unwrap().as_i64().unwrap() as usize)))
                     .unwrap();
-                // wait for up to 10 seconds for the rrx to receive a message
+
                 let timeout = tokio::time::timeout(Duration::from_secs(10), rrx.next()).await;
                 if let Ok(Some(msg)) = timeout {
                     interaction.edit_original_interaction_response(&ctx.http, |response| response.content(msg)).await.unwrap();

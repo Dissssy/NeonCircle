@@ -25,6 +25,9 @@ reqwest = "0.11.12"
 rand = "0.8.5"
 # rayon = "1.5.3"
 ffprobe = "0.3.3"
+base64 = "0.13.1"
+powershell_script = "1.0.4"
+
 
 # [profile.release]
 # lto = true
@@ -32,5 +35,5 @@ ffprobe = "0.3.3"
 # panic = "abort"
 
 [features]
-default = []
+default = ["download"]
 download = []

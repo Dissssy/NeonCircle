@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
+use anyhow::Error;
 use ytd_rs::Arg;
+
+use crate::commands::music::VideoType;
 
 #[derive(Debug, Clone)]
 pub struct Video {
@@ -13,8 +16,16 @@ pub struct Video {
 }
 
 impl Video {
-    pub async fn get_video(url: String, audio_only: bool, allow_playlist: bool) -> Result<Vec<Self>, anyhow::Error> {
-        // println!("Getting video");
+    pub async fn get_video(url: String, audio_only: bool, allow_playlist: bool) -> Result<Vec<VideoType>, anyhow::Error> {
+        #[cfg(not(feature = "download"))]
+        if allow_playlist {
+            let vid = get_video_info(url.clone()).await;
+            if let Ok(vid) = vid {
+                return Ok(vec![VideoType::Url(vid)]);
+            } else {
+                return Err(anyhow::anyhow!("Could not get video info"));
+            }
+        }
         let id = nanoid::nanoid!(10);
         let mut path = crate::Config::get().data_path.clone();
         path.push("tmp");
@@ -38,7 +49,7 @@ impl Video {
         let response = tokio::task::spawn_blocking(move || ytd.download()).await??;
 
         let file = response.output_dir();
-        // find every file in the directory that starts with the id
+
         let mut videos = Vec::new();
         for entry in std::fs::read_dir(file)? {
             let entry = entry?;
@@ -46,58 +57,37 @@ impl Video {
             if path.is_file() {
                 let file_name = path.file_name().unwrap().to_str().unwrap();
                 if file_name.starts_with(id.as_str()) {
-                    let tag = audiotags::Tag::new().read_from_path(&path)?;
-                    let title = tag.title().unwrap_or(&id);
-                    let s = ffprobe::ffprobe(&path)?;
-                    let duration = s.streams[0].duration.as_ref().unwrap().parse::<f64>().unwrap();
-                    let video = !audio_only;
-                    // parse the playlist index out of the filename, it is between _ and .
-                    let playlist_index = file_name.split('_').nth(1).unwrap().split('.').next().unwrap().parse::<usize>().unwrap_or(0);
-                    let video = Self {
-                        url: url.clone(),
-                        path: path.clone(),
-                        title: title.to_string(),
-                        duration,
-                        video,
-                        playlist_index,
-                    };
-                    videos.push(video);
+                    videos.push(Self::from_path(path, url.clone(), audio_only, id.clone())?);
                 }
             }
         }
         if videos.is_empty() {
             Err(anyhow::anyhow!("No videos found"))
         } else {
-            // sort the videos by playlist index, lowest first
             videos.sort_by(|a, b| a.playlist_index.cmp(&b.playlist_index));
-            Ok(videos)
+            Ok(videos.iter().map(|v| VideoType::Disk(v.clone())).collect())
         }
-        // let file = file.read_dir().unwrap().find(|f| {
-        //     let f = f.as_ref().unwrap();
-        //     let f = f.file_name();
-        //     let f = f.to_str().unwrap();
-        //     f.starts_with(id.as_str())
-        // });
-        // if let Some(file) = file {
-        //     let file = file?;
-        //     let path = file.path();
-        //     let tag = audiotags::Tag::new().read_from_path(&path)?;
-        //     let title = tag.title().unwrap_or(&id);
-        //     let duration = tag.duration().unwrap_or(Duration::from_secs(0).as_secs_f64());
-        //     let video = !audio_only;
-        //     Ok(Self {
-        //         url: url.to_string(),
-        //         path,
-        //         title: title.to_owned(),
-        //         duration,
-        //         video,
-        //     })
-        // } else {
-        //     Err(anyhow::anyhow!("file not found"))
-        // }
     }
     pub fn delete(&self) -> Result<(), anyhow::Error> {
         std::fs::remove_file(self.path.clone())?;
         Ok(())
+    }
+    pub fn from_path(path: PathBuf, url: String, audio_only: bool, id: String) -> Result<Self, Error> {
+        let file_name = path.file_name().unwrap().to_str().unwrap();
+        let tag = audiotags::Tag::new().read_from_path(&path);
+        let title = if let Ok(tag) = tag.as_ref() { tag.title().unwrap_or(&id) } else { &id };
+        let s = ffprobe::ffprobe(&path)?;
+        let duration = s.streams[0].duration.as_ref().unwrap().parse::<f64>().unwrap();
+        let video = !audio_only;
+
+        let playlist_index = file_name.split('_').nth(1).unwrap().split('.').next().unwrap().parse::<usize>().unwrap_or(0);
+        Ok(Self {
+            url,
+            path: path.clone(),
+            title: title.to_string(),
+            duration,
+            video,
+            playlist_index,
+        })
     }
 }

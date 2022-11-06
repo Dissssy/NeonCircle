@@ -6,6 +6,8 @@ use serenity::model::prelude::command::CommandOptionType;
 use serenity::model::prelude::interaction::autocomplete::AutocompleteInteraction;
 use serenity::prelude::Context;
 
+use super::music::VideoType;
+
 // command to download any video that ytdlp can download
 #[derive(Debug, Clone)]
 pub struct Video;
@@ -23,16 +25,21 @@ impl crate::CommandTrait for Video {
         let video = crate::video::Video::get_video(url.to_owned(), false, false).await;
         if let Ok(video) = video {
             let video = video[0].clone();
-            let file = serenity::model::channel::AttachmentType::Path(&video.path);
-            let _ = interaction.delete_original_interaction_response(&ctx.http);
-            let _ = interaction
-                .create_followup_message(&ctx.http, |m| {
-                    m.add_file(file); //.content(format!("{} - {}", video.title, video.duration));
-                    m
-                })
-                .await;
-            // delete the file
-            video.delete().unwrap();
+            match video {
+                VideoType::Disk(video) => {
+                    let file = serenity::model::channel::AttachmentType::Path(&video.path);
+                    let _ = interaction.delete_original_interaction_response(&ctx.http);
+                    let _ = interaction
+                        .create_followup_message(&ctx.http, |m| {
+                            m.add_file(file);
+                            m
+                        })
+                        .await;
+
+                    video.delete().unwrap();
+                }
+                _ => unreachable!(),
+            }
         } else {
             interaction
                 .edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error: {}", video.unwrap_err())))
@@ -73,16 +80,21 @@ impl crate::CommandTrait for Audio {
         let video = crate::video::Video::get_video(url.to_owned(), true, false).await;
         if let Ok(video) = video {
             let video = video[0].clone();
-            let file = serenity::model::channel::AttachmentType::Path(&video.path);
-            let _ = interaction.delete_original_interaction_response(&ctx.http);
-            let _ = interaction
-                .create_followup_message(&ctx.http, |m| {
-                    m.add_file(file); //.content(format!("{} - {}", video.title, video.duration));
-                    m
-                })
-                .await;
-            // delete the file
-            video.delete().unwrap();
+            match video {
+                VideoType::Disk(video) => {
+                    let file = serenity::model::channel::AttachmentType::Path(&video.path);
+                    let _ = interaction.delete_original_interaction_response(&ctx.http);
+                    let _ = interaction
+                        .create_followup_message(&ctx.http, |m| {
+                            m.add_file(file);
+                            m
+                        })
+                        .await;
+
+                    video.delete().unwrap();
+                }
+                _ => unreachable!(),
+            }
         } else {
             interaction
                 .edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error: {}", video.unwrap_err())))
