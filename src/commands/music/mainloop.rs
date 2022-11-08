@@ -278,7 +278,7 @@ pub async fn the_lüüp(
                         let calllock = call.try_lock();
                         if let Ok(mut clock) = calllock {
                             audio.set_loops(LoopState::Infinite).unwrap();
-                            audio.set_volume(volume);
+                            audio.set_volume(volume / 5.);
                             clock.play(audio);
                             nothing_handle = Some(handle);
                         } else {
@@ -328,13 +328,13 @@ pub async fn the_lüüp(
             if let Some(t) = current_track.as_ref() {
                 message.push_str(&format!("Playing: `{}` ", t.title));
                 if paused {
-                    message.push_str(":pause_button:");
+                    message.push_str("<:pause:1038954686402789518>");
                 }
                 if looped {
-                    message.push_str(":arrows_counterclockwise:");
+                    message.push_str("<:loop:1038954691318526024>");
                 }
                 if shuffled {
-                    message.push_str(":twisted_rightwards_arrows:");
+                    message.push_str("<:shuffle:1038954690114764880>");
                 }
                 if let Some(handle) = trackhandle.as_ref() {
                     let info = tokio::time::timeout(Duration::from_secs(2), handle.get_info()).await;
@@ -343,8 +343,10 @@ pub async fn the_lüüp(
                             match t.video.clone() {
                                 VideoType::Disk(v) => {
                                     let percent_done = info.position.as_secs_f64() / v.duration;
-                                    let bar = (percent_done * 20.0).round() as usize;
-                                    message.push_str(&format!("\n`[{:20}]`", "=".repeat(bar)));
+                                    // println!("{}% done", percent_done);
+                                    // let bar = (percent_done * 20.0).round() as usize;
+                                    // message.push_str(&format!("\n`[{:20}]`", "=".repeat(bar)));
+                                    message.push_str(&format!("\n{}", get_bar(percent_done, 20)));
                                 }
                                 VideoType::Url(_) => {}
                             };
@@ -356,14 +358,16 @@ pub async fn the_lüüp(
                 message.push('\n');
 
                 if !queue.is_empty() {
-                    message.push_str("Queue:\n```\n");
+                    // message.push_str("Queue:\n");
+                    message.push_str("```\n");
                     for (i, track) in queue.iter().enumerate() {
                         message.push_str(&format!("{}. {}\n", i + 1, track.title));
                     }
                     message.push_str("```");
                 }
             } else {
-                message.push_str("Queue:\n```\n");
+                // message.push_str("Queue:\n");
+                message.push_str("```\n");
                 for (i, track) in queue.iter().enumerate() {
                     message.push_str(&format!("{}. {}\n", i + 1, track.title));
                 }
@@ -394,7 +398,7 @@ pub async fn the_lüüp(
             }
         }
         if let Some(handle) = nothing_handle.as_mut() {
-            let r = handle.set_volume(volume);
+            let r = handle.set_volume(volume / 5.);
             if let Err(e) = r {
                 log.push_str(&format!("Error setting volume: {}\r", e));
             }
@@ -459,4 +463,54 @@ pub async fn the_lüüp(
         println!("Error deleting message: {}", e);
     }
     println!("Gracefully exited");
+}
+
+fn get_bar(percent_done: f64, length: usize) -> String {
+    let emojis = vec![
+        vec!["<:LE:1038954704744480898>", "<:LC:1038954708422885386>"],
+        vec!["<:CE:1038954710184497203>", "<:CC:1038954696980824094>"],
+        vec!["<:RE:1038954703033217285>", "<:RC:1038954706841649192>"],
+    ];
+    let mut bar = String::new();
+
+    // subtract 1/length from percent_done to make sure the bar is always full
+    let percent_done = percent_done - (1.0 / length as f64);
+
+    // create a bar of length length
+    // if we are on the first position, we need to use the left emoji set (the first in the vec)
+    // if we are on the last position, we need to use the right emoji set (the last in the vec)
+    // if we just passed percent_done, we need to use the C emoji (the second in the position's vec)
+    // if we are before or after percent_done, we need to use the E emoji (the first in the position's vec)
+    let mut first = true;
+    let mut circled = false;
+    for i in 0..length {
+        let pos = i as f64 / length as f64;
+        if first {
+            // we use the left emoji set
+            if pos >= percent_done && !circled {
+                bar.push_str(emojis[0][1]);
+                circled = true;
+            } else {
+                bar.push_str(emojis[0][0]);
+            }
+            first = false;
+        } else if i == length - 1 {
+            // we use the right emoji set
+            if pos >= percent_done && !circled {
+                bar.push_str(emojis[2][1]);
+                circled = true;
+            } else {
+                bar.push_str(emojis[2][0]);
+            }
+        } else {
+            // we use the center emoji set
+            if pos >= percent_done && !circled {
+                bar.push_str(emojis[1][1]);
+                circled = true;
+            } else {
+                bar.push_str(emojis[1][0]);
+            }
+        }
+    }
+    bar
 }

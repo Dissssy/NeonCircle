@@ -7,3 +7,4 @@ gcloud.json
 .gitignore
 tts.json
 src/comments.rs
+proofofconcept.py

@@ -26,7 +26,7 @@ impl crate::CommandTrait for Volume {
                 .description("Volume")
                 .min_number_value(0.0)
                 .max_number_value(100.0)
-                .kind(CommandOptionType::Integer)
+                .kind(CommandOptionType::Number)
                 .required(true)
         });
     }

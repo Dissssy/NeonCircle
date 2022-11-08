@@ -25,7 +25,10 @@ pub async fn search(query: String) -> Vec<VideoInfo> {
                     let split = s.split('\"').next();
 
                     if let Some(id) = split {
-                        if !id.chars().any(|c| c == '>' || c == ' ' || c == '/' || c == '\\') {
+                        if !id
+                            .chars()
+                            .any(|c| c == '>' || c == ' ' || c == '/' || c == '\\')
+                        {
                             let url = format!("https://www.youtube.com/watch?v={}", id);
                             let vid = get_video_info(url).await;
 
@@ -91,6 +94,7 @@ pub struct VideoInfo {
 }
 
 pub async fn get_tts(title: String, key: String) -> Result<VideoType, Error> {
+    // println!("key: {}", key);
     let body = serde_json::json!(
         {
             "input":{
@@ -112,11 +116,15 @@ pub async fn get_tts(title: String, key: String) -> Result<VideoType, Error> {
         .post("https://texttospeech.googleapis.com/v1/text:synthesize")
         .header("Content-Type", "application/json; charset=utf-8")
         .header("X-Goog-User-Project", "97417849124")
-        .header("Authorization", format!("Bearer {}", key))
+        .header("Authorization", format!("Bearer {}", key.trim()))
         .body(body.to_string())
         .send()
         .await?;
-
+    // println!("res: {:?}", res);
+    // let res = res?;
+    // let text = res.text().await?;
+    // println!("{}", text);
+    // let json: TTSResponse = serde_json::from_str(text.as_str())?;
     let json: TTSResponse = res.json().await?;
 
     let data = base64::decode(json.audio_content)?;
@@ -128,7 +136,12 @@ pub async fn get_tts(title: String, key: String) -> Result<VideoType, Error> {
     let mut file = tokio::fs::File::create(path.clone()).await?;
     file.write_all(data.as_ref()).await?;
 
-    Ok(VideoType::Disk(Video::from_path(path, "GTTS".to_owned(), true, "GTTS".to_owned())?))
+    Ok(VideoType::Disk(Video::from_path(
+        path,
+        "GTTS".to_owned(),
+        true,
+        "GTTS".to_owned(),
+    )?))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +151,7 @@ pub struct TTSResponse {
 }
 
 pub async fn get_access_token() -> Result<String, Error> {
+    #[cfg(target_family = "windows")]
     match powershell_script::PsScriptBuilder::new()
         .non_interactive(true)
         .hidden(true)
@@ -153,5 +167,21 @@ pub async fn get_access_token() -> Result<String, Error> {
             }
         }
         Err(e) => Err(anyhow::anyhow!(e)),
+    }
+    #[cfg(target_family = "unix")]
+    {
+        let output = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(crate::Config::get().gcloud_script.as_str())
+            .output()
+            .await?;
+
+        let t = String::from_utf8(output.stdout)? + &String::from_utf8(output.stderr)?;
+        if t.contains(' ') {
+            println!("{}", t);
+            Err(anyhow::anyhow!(t))
+        } else {
+            Ok(t)
+        }
     }
 }

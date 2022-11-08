@@ -26,6 +26,9 @@ rand = "0.8.5"
 # rayon = "1.5.3"
 ffprobe = "0.3.3"
 base64 = "0.13.1"
+
+# windows only
+[target.'cfg(windows)'.dependencies]
 powershell_script = "1.0.4"
 
 

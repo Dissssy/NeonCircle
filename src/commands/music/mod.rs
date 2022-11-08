@@ -40,7 +40,14 @@ impl TypeMapKey for AudioHandler {
 pub struct AudioCommandHandler;
 
 impl TypeMapKey for AudioCommandHandler {
-    type Value = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<(mpsc::UnboundedSender<String>, AudioPromiseCommand)>>>>;
+    type Value = Arc<
+        Mutex<
+            HashMap<
+                String,
+                mpsc::UnboundedSender<(mpsc::UnboundedSender<String>, AudioPromiseCommand)>,
+            >,
+        >,
+    >;
 }
 
 pub struct VoiceData;
@@ -112,6 +119,16 @@ impl MessageReference {
         }
     }
     async fn update(&mut self, content: &str) -> Result<(), Error> {
+        let addbackticks = content.ends_with("```");
+        let mut content = content.to_string();
+        if content.len() > 4000 {
+            content.truncate(3990);
+            content.push_str("...");
+            if addbackticks {
+                content.push_str("\n```");
+            }
+        }
+
         let Some(message) = self.message.as_mut() else {
             return Err(anyhow::anyhow!("Message is None"));
         };
@@ -119,7 +136,9 @@ impl MessageReference {
         let (orig_content, new_content) = (message.content.as_str().trim(), content.trim());
         let diff = Self::is_different_enough(new_content, orig_content, 3);
 
-        if new_content != orig_content && ((self.last_edit.elapsed().as_millis() > self.edit_delay) || diff) {
+        if new_content != orig_content
+            && ((self.last_edit.elapsed().as_millis() > self.edit_delay) || diff)
+        {
             message.edit(&self.http, |m| m.content(new_content)).await?;
 
             self.last_edit = Instant::now();
@@ -127,8 +146,15 @@ impl MessageReference {
         Ok(())
     }
     async fn send_new(&mut self) -> Result<(), Error> {
-        let content = if let Some(msg) = self.message.as_ref() { msg.content.clone() } else { String::from("Loading...") };
-        let message = self.channel_id.send_message(&self.http, |m| m.content(content)).await?;
+        let content = if let Some(msg) = self.message.as_ref() {
+            msg.content.clone()
+        } else {
+            String::from("Loading...")
+        };
+        let message = self
+            .channel_id
+            .send_message(&self.http, |m| m.content(content))
+            .await?;
         self.message = Some(message);
         Ok(())
     }
@@ -141,6 +167,8 @@ impl MessageReference {
         Ok(())
     }
     fn is_different_enough(new: &str, old: &str, threshold: usize) -> bool {
+        let old = Self::filter_bar_emojis(old);
+        let new = Self::filter_bar_emojis(new);
         if old.len() != new.len() {
             return true;
         }
@@ -152,9 +180,28 @@ impl MessageReference {
         }
         diff >= threshold
     }
+    fn filter_bar_emojis(string: &str) -> String {
+        // bar emojis are
+        let mut str = string.to_owned();
+        let bar_emojis = vec![
+            "<:LE:1038954704744480898>",
+            "<:LC:1038954708422885386>",
+            "<:CE:1038954710184497203>",
+            "<:CC:1038954696980824094>",
+            "<:RE:1038954703033217285>",
+            "<:RC:1038954706841649192>",
+        ];
+        for emoji in bar_emojis {
+            str = str.replace(emoji, "");
+        }
+        str
+    }
 }
 
-async fn get_mutual_voice_channel(ctx: &Context, interaction: &ApplicationCommandInteraction) -> Option<(bool, ChannelId)> {
+async fn get_mutual_voice_channel(
+    ctx: &Context,
+    interaction: &ApplicationCommandInteraction,
+) -> Option<(bool, ChannelId)> {
     let guild_id = interaction.guild_id.unwrap();
     let gvs;
     {
@@ -164,7 +211,9 @@ async fn get_mutual_voice_channel(ctx: &Context, interaction: &ApplicationComman
             gvs = this.clone();
         } else {
             interaction
-                .edit_original_interaction_response(&ctx.http, |response| response.content("You need to be in a voice channel to use this command"))
+                .edit_original_interaction_response(&ctx.http, |response| {
+                    response.content("You need to be in a voice channel to use this command")
+                })
                 .await
                 .unwrap();
             return None;
@@ -172,9 +221,14 @@ async fn get_mutual_voice_channel(ctx: &Context, interaction: &ApplicationComman
     }
     let bot_id = ctx.cache.current_user_id();
 
-    if let Some(uvs) = gvs.iter().find(|vs| vs.user_id == interaction.member.as_ref().unwrap().user.id && vs.channel_id.is_some()) {
+    if let Some(uvs) = gvs.iter().find(|vs| {
+        vs.user_id == interaction.member.as_ref().unwrap().user.id && vs.channel_id.is_some()
+    }) {
         if uvs.channel_id.is_some() {
-            if let Some(bvs) = gvs.iter().find(|vs| vs.user_id == bot_id && vs.channel_id.is_some()) {
+            if let Some(bvs) = gvs
+                .iter()
+                .find(|vs| vs.user_id == bot_id && vs.channel_id.is_some())
+            {
                 if bvs.channel_id != uvs.channel_id {
                     interaction
                         .edit_original_interaction_response(&ctx.http, |response| response.content("You need to be in the same voice channel as the bot to use this command"))
@@ -190,7 +244,9 @@ async fn get_mutual_voice_channel(ctx: &Context, interaction: &ApplicationComman
         } else {
             println!("User is not in a voice CHANNEL");
             interaction
-                .edit_original_interaction_response(&ctx.http, |response| response.content("You need to be in a voice channel to use this command"))
+                .edit_original_interaction_response(&ctx.http, |response| {
+                    response.content("You need to be in a voice channel to use this command")
+                })
                 .await
                 .unwrap();
             None
@@ -198,7 +254,9 @@ async fn get_mutual_voice_channel(ctx: &Context, interaction: &ApplicationComman
     } else {
         println!("User is not in a voice channel");
         interaction
-            .edit_original_interaction_response(&ctx.http, |response| response.content("You need to be in a voice channel to use this command"))
+            .edit_original_interaction_response(&ctx.http, |response| {
+                response.content("You need to be in a voice channel to use this command")
+            })
             .await
             .unwrap();
         None
