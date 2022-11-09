@@ -5,7 +5,7 @@ use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
 use crate::{commands::music::VideoType, video::Video};
-
+#[allow(dead_code)]
 pub async fn search(query: String) -> Vec<VideoInfo> {
     let url = format!("https://www.youtube.com/results?search_query={}", query);
     let client = reqwest::Client::new();
@@ -56,6 +56,7 @@ pub async fn search(query: String) -> Vec<VideoInfo> {
     videos
 }
 
+#[allow(dead_code)]
 pub async fn get_video_info(url: String) -> Result<VideoInfo, Error> {
     let title = get_url_title(url.clone()).await;
     if let Some(title) = title {
@@ -184,4 +185,54 @@ pub async fn get_access_token() -> Result<String, Error> {
             Ok(t)
         }
     }
+}
+
+pub async fn youtube_search(query: String) -> Result<Vec<VideoInfo>, Error> {
+    let client = reqwest::Client::new();
+    let res = client
+        .get("https://www.googleapis.com/youtube/v3/search")
+        .header("Content-Type", "application/json; charset=utf-8")
+        .query(&[
+            ("key", crate::Config::get().youtube_api_key.as_str()),
+            ("part", "snippet"),
+            ("type", "video"),
+            ("q", query.as_str()),
+        ])
+        .send()
+        .await?;
+    // println!("res: {:?}", res.json().await?);
+    // write res.text().await? to youtube.json
+
+    let r: YTSearchResultMeta = res.json().await?;
+    let mut videos = Vec::new();
+    for item in r.items {
+        let video = VideoInfo {
+            title: item.snippet.title,
+            url: format!("https://www.youtube.com/watch?v={}", item.id.video_id),
+        };
+        videos.push(video);
+    }
+    Ok(videos)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YTSearchResultMeta {
+    pub items: Vec<YTSearchResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YTSearchResult {
+    pub id: YTSearchID,
+    pub snippet: YTSearchSnippet,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YTSearchID {
+    #[serde(rename = "videoId")]
+    pub video_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YTSearchSnippet {
+    pub title: String,
 }

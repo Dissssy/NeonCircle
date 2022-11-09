@@ -17,7 +17,9 @@ impl crate::CommandTrait for Video {
     async fn run(&self, ctx: &Context, interaction: Interaction) {
         let interaction = interaction.application_command().unwrap();
         interaction
-            .create_interaction_response(&ctx.http, |response| response.kind(InteractionResponseType::DeferredChannelMessageWithSource))
+            .create_interaction_response(&ctx.http, |response| {
+                response.kind(InteractionResponseType::DeferredChannelMessageWithSource)
+            })
             .await
             .unwrap();
         let options = interaction.data.options.clone();
@@ -42,7 +44,9 @@ impl crate::CommandTrait for Video {
             }
         } else {
             interaction
-                .edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error: {}", video.unwrap_err())))
+                .edit_original_interaction_response(&ctx.http, |response| {
+                    response.content(format!("Error: {}", video.unwrap_err()))
+                })
                 .await
                 .unwrap();
         }
@@ -52,14 +56,24 @@ impl crate::CommandTrait for Video {
         command
             .name(self.name())
             .description("Embed a video using ytdl")
-            .create_option(|option| option.name("url").description("The url of the video to embed").kind(CommandOptionType::String).required(true));
+            .create_option(|option| {
+                option
+                    .name("video_url")
+                    .description("The url of the video to embed")
+                    .kind(CommandOptionType::String)
+                    .required(true)
+            });
     }
 
     fn name(&self) -> &str {
         "embed_video"
     }
 
-    async fn autocomplete(&self, _ctx: &Context, _auto: &AutocompleteInteraction) -> Result<(), Error> {
+    async fn autocomplete(
+        &self,
+        _ctx: &Context,
+        _auto: &AutocompleteInteraction,
+    ) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -72,7 +86,9 @@ impl crate::CommandTrait for Audio {
     async fn run(&self, ctx: &Context, interaction: Interaction) {
         let interaction = interaction.application_command().unwrap();
         interaction
-            .create_interaction_response(&ctx.http, |response| response.kind(InteractionResponseType::DeferredChannelMessageWithSource))
+            .create_interaction_response(&ctx.http, |response| {
+                response.kind(InteractionResponseType::DeferredChannelMessageWithSource)
+            })
             .await
             .unwrap();
         let options = interaction.data.options.clone();
@@ -97,7 +113,9 @@ impl crate::CommandTrait for Audio {
             }
         } else {
             interaction
-                .edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error: {}", video.unwrap_err())))
+                .edit_original_interaction_response(&ctx.http, |response| {
+                    response.content(format!("Error: {}", video.unwrap_err()))
+                })
                 .await
                 .unwrap();
         }
@@ -107,13 +125,23 @@ impl crate::CommandTrait for Audio {
         command
             .name(self.name())
             .description("Embed some audio using ytdl")
-            .create_option(|option| option.name("url").description("The url of the audio to embed").kind(CommandOptionType::String).required(true));
+            .create_option(|option| {
+                option
+                    .name("audio_url")
+                    .description("The url of the audio to embed")
+                    .kind(CommandOptionType::String)
+                    .required(true)
+            });
     }
 
     fn name(&self) -> &str {
         "embed_audio"
     }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &AutocompleteInteraction) -> Result<(), Error> {
+    async fn autocomplete(
+        &self,
+        _ctx: &Context,
+        _auto: &AutocompleteInteraction,
+    ) -> Result<(), Error> {
         Ok(())
     }
 }

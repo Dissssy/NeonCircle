@@ -15,7 +15,10 @@ use serenity::prelude::Context;
 
 use super::mainloop::the_lüüp;
 
-use super::{get_mutual_voice_channel, AudioCommandHandler, AudioHandler, AudioPromiseCommand, MessageReference, VideoType};
+use super::{
+    get_mutual_voice_channel, AudioCommandHandler, AudioHandler, AudioPromiseCommand,
+    MessageReference, VideoType,
+};
 
 #[derive(Debug, Clone)]
 pub struct Play;
@@ -23,14 +26,17 @@ pub struct Play;
 #[serenity::async_trait]
 impl crate::CommandTrait for Play {
     fn register(&self, command: &mut CreateApplicationCommand) {
-        command.name(self.name()).description("Play a song").create_option(|option| {
-            option
-                .set_autocomplete(true)
-                .name("url")
-                .description("The url of the song to play")
-                .kind(CommandOptionType::String)
-                .required(true)
-        });
+        command
+            .name(self.name())
+            .description("Play a song")
+            .create_option(|option| {
+                option
+                    .set_autocomplete(true)
+                    .name("url")
+                    .description("The url of the song to play")
+                    .kind(CommandOptionType::String)
+                    .required(true)
+            });
     }
     async fn run(&self, ctx: &Context, rawinteraction: Interaction) {
         let interaction = rawinteraction.application_command().unwrap();
@@ -48,46 +54,77 @@ impl crate::CommandTrait for Play {
         // get the voice state for the user that issued the command
 
         if let Some((joins, channel_id)) = mutual {
-            let manager = songbird::get(ctx).await.expect("Songbird Voice client placed in at initialisation.").clone();
+            let manager = songbird::get(ctx)
+                .await
+                .expect("Songbird Voice client placed in at initialisation.")
+                .clone();
             {
                 let data_read = ctx.data.read().await;
-                let audio_handler = data_read.get::<AudioHandler>().expect("Expected AudioHandler in TypeMap").clone();
+                let audio_handler = data_read
+                    .get::<AudioHandler>()
+                    .expect("Expected AudioHandler in TypeMap")
+                    .clone();
                 let mut audio_handler = audio_handler.lock().await;
 
                 // if let std::collections::hash_map::Entry::Vacant(e) = audio_handler.entry(guild_id.to_string()) {
                 if joins {
                     let (call, result) = manager.join(guild_id, channel_id).await;
                     if result.is_ok() {
-                        let (tx, mut rx) = mpsc::unbounded::<(mpsc::UnboundedSender<String>, AudioPromiseCommand)>();
+                        let (tx, mut rx) = mpsc::unbounded::<(
+                            mpsc::UnboundedSender<String>,
+                            AudioPromiseCommand,
+                        )>();
                         // create the promise. this will be used for holding on to the audio connection and handling commands
                         // interaction
                         //     .edit_original_interaction_response(&ctx.http, |response| response.content("Joining voice channel"))
                         //     .await
                         //     .unwrap();
                         // send new message in channel
-                        let msg = interaction.channel_id.send_message(&ctx.http, |m| m.content("Joining voice channel")).await.unwrap();
-                        let messageref = MessageReference::new(ctx.http.clone(), guild_id, msg.channel_id, msg);
+                        let msg = interaction
+                            .channel_id
+                            .send_message(&ctx.http, |m| m.content("Joining voice channel"))
+                            .await
+                            .unwrap();
+                        let messageref =
+                            MessageReference::new(ctx.http.clone(), guild_id, msg.channel_id, msg);
                         let cfg = crate::Config::get();
                         let mut nothing_path = cfg.data_path.clone();
                         nothing_path.push("override.mp3");
                         // check if the override file exists
-                        let nothing_path = if nothing_path.exists() { Some(nothing_path) } else { None };
+                        let nothing_path = if nothing_path.exists() {
+                            Some(nothing_path)
+                        } else {
+                            None
+                        };
                         let handle = tokio::task::spawn(async move {
                             the_lüüp(call, &mut rx, messageref, cfg.looptime, nothing_path).await;
                         });
                         // let (handle, producer) = self.begin_playback(ctx, guild_id).await;
                         // e.insert(handle);
                         audio_handler.insert(guild_id.to_string(), handle);
-                        let audio_command_handler = data_read.get::<AudioCommandHandler>().expect("Expected AudioCommandHandler in TypeMap").clone();
+                        let audio_command_handler = data_read
+                            .get::<AudioCommandHandler>()
+                            .expect("Expected AudioCommandHandler in TypeMap")
+                            .clone();
                         let mut audio_command_handler = audio_command_handler.lock().await;
                         audio_command_handler.insert(guild_id.to_string(), tx);
                     }
                 }
                 let options = interaction.data.options.clone();
                 // #[cfg(feature = "download")]
-                let t = tokio::task::spawn(crate::video::Video::get_video(options[0].value.as_ref().unwrap().as_str().unwrap().to_owned(), true, true))
-                    .await
-                    .unwrap();
+                let t = tokio::task::spawn(crate::video::Video::get_video(
+                    options[0]
+                        .value
+                        .as_ref()
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .to_owned(),
+                    true,
+                    true,
+                ))
+                .await
+                .unwrap();
                 // #[cfg(not(feature = "download"))]
                 // let t = tokio::task::spawn(crate::youtube::get_video_info(options[0].value.as_ref().unwrap().as_str().unwrap().to_owned()))
                 //     .await
@@ -102,11 +139,20 @@ impl crate::CommandTrait for Play {
                                 VideoType::Disk(v) => v.title,
                                 VideoType::Url(v) => v.title,
                             };
-                            let t = tokio::task::spawn(crate::youtube::get_tts(title.clone(), key.clone())).await.unwrap();
+                            let t = tokio::task::spawn(crate::youtube::get_tts(
+                                title.clone(),
+                                key.clone(),
+                            ))
+                            .await
+                            .unwrap();
                             if let Ok(tts) = t {
                                 match tts {
                                     VideoType::Disk(tts) => {
-                                        truevideos.push(MetaVideo { video: v, ttsmsg: Some(tts), title });
+                                        truevideos.push(MetaVideo {
+                                            video: v,
+                                            ttsmsg: Some(tts),
+                                            title,
+                                        });
                                     }
                                     VideoType::Url(_) => {
                                         unreachable!("TTS should always be a disk file");
@@ -114,7 +160,11 @@ impl crate::CommandTrait for Play {
                                 }
                             } else {
                                 println!("Error {:?}", t);
-                                truevideos.push(MetaVideo { video: v, ttsmsg: None, title });
+                                truevideos.push(MetaVideo {
+                                    video: v,
+                                    ttsmsg: None,
+                                    title,
+                                });
                             }
                         } else {
                             truevideos.push(MetaVideo {
@@ -127,19 +177,31 @@ impl crate::CommandTrait for Play {
 
                     // interaction.edit_original_interaction_response(&ctx.http, |response| response.content("Playing song")).await.unwrap();
                     let data_read = ctx.data.read().await;
-                    let audio_command_handler = data_read.get::<AudioCommandHandler>().expect("Expected AudioCommandHandler in TypeMap").clone();
+                    let audio_command_handler = data_read
+                        .get::<AudioCommandHandler>()
+                        .expect("Expected AudioCommandHandler in TypeMap")
+                        .clone();
                     let mut audio_command_handler = audio_command_handler.lock().await;
                     let tx = audio_command_handler.get_mut(&guild_id.to_string());
                     if let Some(tx) = tx {
                         let (rtx, mut rrx) = mpsc::unbounded::<String>();
-                        tx.unbounded_send((rtx, AudioPromiseCommand::Play(truevideos))).unwrap();
+                        tx.unbounded_send((rtx, AudioPromiseCommand::Play(truevideos)))
+                            .unwrap();
                         // wait for up to 10 seconds for the rrx to receive a message
-                        let timeout = tokio::time::timeout(Duration::from_secs(10), rrx.next()).await;
+                        let timeout =
+                            tokio::time::timeout(Duration::from_secs(10), rrx.next()).await;
                         if let Ok(Some(msg)) = timeout {
-                            interaction.edit_original_interaction_response(&ctx.http, |response| response.content(msg)).await.unwrap();
+                            interaction
+                                .edit_original_interaction_response(&ctx.http, |response| {
+                                    response.content(msg)
+                                })
+                                .await
+                                .unwrap();
                         } else {
                             interaction
-                                .edit_original_interaction_response(&ctx.http, |response| response.content("Timed out waiting for song to start playing"))
+                                .edit_original_interaction_response(&ctx.http, |response| {
+                                    response.content("Timed out waiting for song to start playing")
+                                })
                                 .await
                                 .unwrap();
                         }
@@ -154,19 +216,30 @@ impl crate::CommandTrait for Play {
     fn name(&self) -> &str {
         "play"
     }
-    async fn autocomplete(&self, ctx: &Context, auto: &AutocompleteInteraction) -> Result<(), Error> {
+    async fn autocomplete(
+        &self,
+        ctx: &Context,
+        auto: &AutocompleteInteraction,
+    ) -> Result<(), Error> {
         for op in auto.data.options.clone() {
             if op.focused {
                 // get the search term
                 if op.name == "url" {
                     let v = op.value.as_ref().unwrap().as_str().unwrap().to_owned();
-                    let title = crate::youtube::get_url_title(v.clone()).await;
-                    if let Some(title) = title {
-                        auto.create_autocomplete_response(&ctx.http, |c| c.add_string_choice(title, v)).await?;
-                    } else {
-                        let query = crate::youtube::search(v).await;
+                    // let title: Option<String> = None; // = crate::youtube::get_url_title(v.clone()).await;
+                    // if let Some(title) = title {
+                    //     // auto.create_autocomplete_response(&ctx.http, |c| {
+                    //     //     c.add_string_choice(title, v)
+                    //     // })
+                    //     // .await?;
+                    // } else {
+                    let query = crate::youtube::youtube_search(v).await;
+                    if let Ok(query) = query {
                         if query.is_empty() {
-                            auto.create_autocomplete_response(&ctx.http, |c| c.add_string_choice("Invalid url", "")).await?;
+                            auto.create_autocomplete_response(&ctx.http, |c| {
+                                c.add_string_choice("Invalid url", "")
+                            })
+                            .await?;
                         } else {
                             auto.create_autocomplete_response(&ctx.http, |c| {
                                 let mut c = c;
@@ -180,7 +253,13 @@ impl crate::CommandTrait for Play {
                             })
                             .await?;
                         }
+                    } else {
+                        auto.create_autocomplete_response(&ctx.http, |c| {
+                            c.add_string_choice("Invalid url", "")
+                        })
+                        .await?;
                     }
+                    // }
                 }
             }
         }

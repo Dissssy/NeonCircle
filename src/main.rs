@@ -19,7 +19,8 @@ use serenity::builder::CreateApplicationCommand;
 use serenity::model::application::interaction::autocomplete::AutocompleteInteraction;
 use serenity::model::application::interaction::Interaction;
 use serenity::model::gateway::Ready;
-use serenity::model::id::GuildId;
+// use serenity::model::id::GuildId;
+use serenity::model::prelude::command::Command;
 use serenity::model::voice::VoiceState;
 use serenity::prelude::*;
 use songbird::SerenityInit;
@@ -42,7 +43,11 @@ where
     fn register(&self, command: &mut CreateApplicationCommand);
     async fn run(&self, ctx: &Context, interaction: Interaction);
     fn name(&self) -> &str;
-    async fn autocomplete(&self, ctx: &Context, interaction: &AutocompleteInteraction) -> Result<(), Error>;
+    async fn autocomplete(
+        &self,
+        ctx: &Context,
+        interaction: &AutocompleteInteraction,
+    ) -> Result<(), Error>;
 }
 
 #[async_trait]
@@ -76,26 +81,45 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
 
-        let guild_id = GuildId(Config::get().guild_id.parse::<u64>().expect("Invalid guild id"));
+        // let guild_id = GuildId(
+        //     Config::get()
+        //         .guild_id
+        //         .parse::<u64>()
+        //         .expect("Invalid guild id"),
+        // );
 
-        GuildId::set_application_commands(&guild_id, &ctx.http, |commands| {
-            for command in self.commands.iter() {
-                println!("Registering command: {}", command.name());
-                commands.create_application_command(|thiscommand| {
-                    command.register(thiscommand);
-                    thiscommand
-                });
-            }
-            commands
-        })
-        .await
-        .expect("Failed to register commands");
+        // GuildId::set_application_commands(&guild_id, &ctx.http, |commands| {
+        //     for command in self.commands.iter() {
+        //         println!("Registering command: {}", command.name());
+        //         commands.create_application_command(|thiscommand| {
+        //             command.register(thiscommand);
+        //             thiscommand
+        //         });
+        //     }
+        //     commands
+        // })
+        // .await
+        // .expect("Failed to register commands");
+        // register all commands globally
+
+        for command in self.commands.iter() {
+            println!("Registering command: {}", command.name());
+            Command::create_global_application_command(&ctx.http, |com| {
+                command.register(com);
+                com
+            })
+            .await
+            .expect("Failed to register command");
+        }
     }
 
     async fn voice_state_update(&self, ctx: Context, _old: Option<VoiceState>, new: VoiceState) {
         if let Some(guild_id) = new.guild_id {
             let data_lock = ctx.data.read().await;
-            let data = data_lock.get::<VoiceData>().expect("Expected VoiceData in TypeMap.").clone();
+            let data = data_lock
+                .get::<VoiceData>()
+                .expect("Expected VoiceData in TypeMap.")
+                .clone();
             let mut data = data.lock().await;
 
             let guild = data.get_mut(&guild_id);
@@ -146,9 +170,15 @@ async fn main() {
         .expect("Error creating client");
     {
         let mut data = client.data.write().await;
-        data.insert::<commands::music::AudioHandler>(Arc::new(serenity::prelude::Mutex::new(HashMap::new())));
-        data.insert::<commands::music::AudioCommandHandler>(Arc::new(serenity::prelude::Mutex::new(HashMap::new())));
-        data.insert::<commands::music::VoiceData>(Arc::new(serenity::prelude::Mutex::new(HashMap::new())));
+        data.insert::<commands::music::AudioHandler>(Arc::new(serenity::prelude::Mutex::new(
+            HashMap::new(),
+        )));
+        data.insert::<commands::music::AudioCommandHandler>(Arc::new(
+            serenity::prelude::Mutex::new(HashMap::new()),
+        ));
+        data.insert::<commands::music::VoiceData>(Arc::new(serenity::prelude::Mutex::new(
+            HashMap::new(),
+        )));
     }
 
     if let Err(why) = client.start().await {
@@ -163,12 +193,17 @@ struct Config {
     looptime: u64,
     data_path: PathBuf,
     gcloud_script: String,
+    youtube_api_key: String,
 }
 
 impl Config {
     pub fn get() -> Self {
         let path = dirs::data_dir();
-        let mut path = if let Some(path) = path { path } else { PathBuf::from(".") };
+        let mut path = if let Some(path) = path {
+            path
+        } else {
+            PathBuf::from(".")
+        };
         path.push("RmbConfig.json");
         Self::get_from_path(path)
     }
@@ -185,7 +220,11 @@ impl Config {
             let mut data_path = config_path.parent().unwrap().to_path_buf();
             data_path.push(app_name.clone());
             Config {
-                token: if let Some(token) = rec.token { token } else { Self::safe_read("\nPlease enter your bot token:") },
+                token: if let Some(token) = rec.token {
+                    token
+                } else {
+                    Self::safe_read("\nPlease enter your bot token:")
+                },
                 guild_id: if let Some(guild_id) = rec.guild_id {
                     guild_id
                 } else {
@@ -201,6 +240,11 @@ impl Config {
                     gcloud_script
                 } else {
                     Self::safe_read("\nPlease enter your gcloud script location (teehee):")
+                },
+                youtube_api_key: if let Some(youtube_api_key) = rec.youtube_api_key {
+                    youtube_api_key
+                } else {
+                    Self::safe_read("\nPlease enter your youtube api key:")
                 },
                 data_path,
             }
@@ -218,11 +262,13 @@ impl Config {
                 looptime: Self::safe_read("\nPlease enter your loop time in ms\nlower time means faster response but higher utilization:"),
                 gcloud_script: Self::safe_read("\nPlease enter your gcloud script location (teehee):"),
                 data_path,
+                youtube_api_key: Self::safe_read("\nPlease enter your youtube api key:"),
             }
         };
         std::fs::write(
             config_path.clone(),
-            serde_json::to_string_pretty(&config).unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path)),
+            serde_json::to_string_pretty(&config)
+                .unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path)),
         )
         .expect("Failed to write config.json");
         println!("Config written to {:?}", config_path);
@@ -231,7 +277,9 @@ impl Config {
         loop {
             println!("{}", prompt);
             let mut input = String::new();
-            std::io::stdin().read_line(&mut input).expect("Failed to read line");
+            std::io::stdin()
+                .read_line(&mut input)
+                .expect("Failed to read line");
             let input = input.trim();
             match input.parse::<T>() {
                 Ok(input) => return input,
@@ -274,4 +322,5 @@ struct RecoverConfig {
     looptime: Option<u64>,
     data_path: Option<PathBuf>,
     gcloud_script: Option<String>,
+    youtube_api_key: Option<String>,
 }
