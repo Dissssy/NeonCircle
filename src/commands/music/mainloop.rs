@@ -155,7 +155,8 @@ pub async fn the_lüüp(
                         let r = v.delete();
                         if let Err(r) = r {
                             log.push_str(&format!("Error removing `{}`: {}\r", v.title, r));
-                            let r = snd.unbounded_send(format!("Error removing `{}`: {}", v.title, r));
+                            let r =
+                                snd.unbounded_send(format!("Error removing `{}`: {}", v.title, r));
                             if let Err(e) = r {
                                 log.push_str(&format!("Error updating message: {}\r", e));
                             }
@@ -166,7 +167,10 @@ pub async fn the_lüüp(
                             }
                         }
                     } else {
-                        let r = snd.unbounded_send(format!("Index out of range, max is `{}`", queue.len()));
+                        let r = snd.unbounded_send(format!(
+                            "Index out of range, max is `{}`",
+                            queue.len()
+                        ));
                         if let Err(e) = r {
                             log.push_str(&format!("Error updating message: {}\r", e));
                         }
@@ -178,7 +182,8 @@ pub async fn the_lüüp(
 
         if let Some(current) = current_track.as_mut() {
             if let Some(thandle) = trackhandle.as_mut() {
-                let playmode = tokio::time::timeout(Duration::from_secs(2), thandle.get_info()).await;
+                let playmode =
+                    tokio::time::timeout(Duration::from_secs(2), thandle.get_info()).await;
                 if let Ok(playmode) = playmode {
                     if let Err(playmode) = playmode {
                         if playmode == songbird::tracks::TrackError::Finished {
@@ -212,8 +217,17 @@ pub async fn the_lüüp(
                             let calllock = call.try_lock();
                             if let Ok(mut clock) = calllock {
                                 let r = match current.video.clone() {
-                                    VideoType::Disk(v) => tokio::time::timeout(Duration::from_secs(2), ffmpeg(&v.path)).await,
-                                    VideoType::Url(v) => tokio::time::timeout(Duration::from_secs(2), ytdl(&v.url)).await,
+                                    VideoType::Disk(v) => {
+                                        tokio::time::timeout(
+                                            Duration::from_secs(2),
+                                            ffmpeg(&v.path),
+                                        )
+                                        .await
+                                    }
+                                    VideoType::Url(v) => {
+                                        tokio::time::timeout(Duration::from_secs(2), ytdl(&v.url))
+                                            .await
+                                    }
                                 };
                                 if let Ok(r) = r {
                                     if let Ok(src) = r {
@@ -222,10 +236,16 @@ pub async fn the_lüüp(
                                         clock.play(audio);
                                         trackhandle = Some(handle);
                                     } else {
-                                        log.push_str(&format!("Error playing track: {}\r", r.unwrap_err()));
+                                        log.push_str(&format!(
+                                            "Error playing track: {}\r",
+                                            r.unwrap_err()
+                                        ));
                                     }
                                 } else {
-                                    log.push_str(&format!("Error playing track: {}\r", r.unwrap_err()));
+                                    log.push_str(&format!(
+                                        "Error playing track: {}\r",
+                                        r.unwrap_err()
+                                    ));
                                 }
                             }
                         } else {
@@ -238,21 +258,43 @@ pub async fn the_lüüp(
             } else {
                 let calllock = call.try_lock();
                 if let Ok(mut clock) = calllock {
+                    #[cfg(feature = "tts")]
                     if let Some(tts) = current.ttsmsg.as_ref() {
-                        let r = tokio::time::timeout(Duration::from_secs(2), ffmpeg(&tts.path)).await.unwrap();
+                        let r = tokio::time::timeout(Duration::from_secs(2), ffmpeg(&tts.path))
+                            .await
+                            .unwrap();
                         if let Ok(r) = r {
                             let (mut audio, handle) = create_player(r);
                             audio.set_volume(volume);
                             clock.play(audio);
                             tts_handle = Some(handle);
                         } else {
-                            let (mut audio, handle) = create_player(ytdl("https://www.youtube.com/watch?v=Vbks4abvLEw").await.unwrap());
+                            let (mut audio, handle) = create_player(
+                                ytdl(crate::Config::get().bumper_url.as_str())
+                                    .await
+                                    .unwrap(),
+                            );
                             audio.set_volume(volume);
                             clock.play(audio);
                             tts_handle = Some(handle);
                         }
                     } else {
-                        let (mut audio, handle) = create_player(ytdl("https://www.youtube.com/watch?v=Vbks4abvLEw").await.unwrap());
+                        let (mut audio, handle) = create_player(
+                            ytdl(crate::Config::get().bumper_url.as_str())
+                                .await
+                                .unwrap(),
+                        );
+                        audio.set_volume(volume);
+                        clock.play(audio);
+                        tts_handle = Some(handle);
+                    }
+                    #[cfg(not(feature = "tts"))]
+                    {
+                        let (mut audio, handle) = create_player(
+                            ytdl(crate::Config::get().bumper_url.as_str())
+                                .await
+                                .unwrap(),
+                        );
                         audio.set_volume(volume);
                         clock.play(audio);
                         tts_handle = Some(handle);
@@ -260,16 +302,26 @@ pub async fn the_lüüp(
                 }
             }
         } else if !queue.is_empty() {
-            let index = if shuffled { rand::thread_rng().gen_range(0..queue.len()) } else { 0 };
+            let index = if shuffled {
+                rand::thread_rng().gen_range(0..queue.len())
+            } else {
+                0
+            };
             current_track = Some(queue.remove(index));
         }
 
         if queue.is_empty() && current_track.is_none() {
             if nothing_handle.is_none() {
                 let r = if let Some(uri) = nothing_uri.clone() {
-                    tokio::time::timeout(Duration::from_secs(2), Restartable::ffmpeg(uri, false)).await
+                    tokio::time::timeout(Duration::from_secs(2), Restartable::ffmpeg(uri, false))
+                        .await
                 } else {
-                    tokio::time::timeout(Duration::from_secs(2), Restartable::ytdl("https://www.youtube.com/watch?v=xy_NKN75Jhw", false)).await
+                    // tokio::time::timeout(Duration::from_secs(2), Restartable::ytdl("https://www.youtube.com/watch?v=xy_NKN75Jhw", false)).await
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        Restartable::ffmpeg(crate::Config::get().idle_url, false),
+                    )
+                    .await
                 };
 
                 if let Ok(r) = r {
@@ -282,19 +334,37 @@ pub async fn the_lüüp(
                             clock.play(audio);
                             nothing_handle = Some(handle);
                         } else {
-                            log.push_str(&format!("Error locking call: {}\r", calllock.unwrap_err()));
+                            log.push_str(&format!(
+                                "Error locking call: {}\r",
+                                calllock.unwrap_err()
+                            ));
                         }
                     } else {
-                        log.push_str(&format!("Error playing nothing: {}\nfile_uri: {:?}", r.unwrap_err(), nothing_uri.clone()));
+                        log.push_str(&format!(
+                            "Error playing nothing: {}\nfile_uri: {:?}",
+                            r.unwrap_err(),
+                            nothing_uri.clone()
+                        ));
                     }
                 } else {
-                    log.push_str(&format!("Error playing nothing: {}\nfile_uri: {:?}", r.unwrap_err(), nothing_uri.clone()));
+                    log.push_str(&format!(
+                        "Error playing nothing: {}\nfile_uri: {:?}",
+                        r.unwrap_err(),
+                        nothing_uri.clone()
+                    ));
                 }
             }
-            let r = tokio::time::timeout(Duration::from_secs(2), msg.update("Queue is empty, use `/play` to play something!")).await;
+            let r = tokio::time::timeout(
+                Duration::from_secs(2),
+                msg.update("Queue is empty, use `/play` to play something!"),
+            )
+            .await;
             if let Ok(r) = r {
                 if let Err(e) = r {
-                    log.push_str(&format!("Error updating message: {:?}. probably got deleted, sending a new one", e));
+                    log.push_str(&format!(
+                        "Error updating message: {:?}. probably got deleted, sending a new one",
+                        e
+                    ));
                     let j = format!("{:?}", e).to_lowercase();
 
                     if j.contains("unknown message") {
@@ -304,7 +374,10 @@ pub async fn the_lüüp(
                                 log.push_str(&format!("Error sending new message: {:?}", e));
                             }
                         } else {
-                            log.push_str(&format!("Error sending new message: {:?}", r.unwrap_err()));
+                            log.push_str(&format!(
+                                "Error sending new message: {:?}",
+                                r.unwrap_err()
+                            ));
                         }
                     }
                 }
@@ -337,7 +410,8 @@ pub async fn the_lüüp(
                     message.push_str("<:shuffle:1038954690114764880>");
                 }
                 if let Some(handle) = trackhandle.as_ref() {
-                    let info = tokio::time::timeout(Duration::from_secs(2), handle.get_info()).await;
+                    let info =
+                        tokio::time::timeout(Duration::from_secs(2), handle.get_info()).await;
                     if let Ok(info) = info {
                         if let Ok(info) = info {
                             match t.video.clone() {
@@ -352,7 +426,10 @@ pub async fn the_lüüp(
                             };
                         }
                     } else {
-                        log.push_str(&format!("Error getting track info: {}\r", info.unwrap_err()));
+                        log.push_str(&format!(
+                            "Error getting track info: {}\r",
+                            info.unwrap_err()
+                        ));
                     }
                 }
                 message.push('\n');
@@ -376,7 +453,10 @@ pub async fn the_lüüp(
             let r = tokio::time::timeout(Duration::from_secs(2), msg.update(&message)).await;
             if let Ok(r) = r {
                 if let Err(e) = r {
-                    log.push_str(&format!("Error updating message: {:?}. probably got deleted, sending a new one", e));
+                    log.push_str(&format!(
+                        "Error updating message: {:?}. probably got deleted, sending a new one",
+                        e
+                    ));
                     let j = format!("{:?}", e).to_lowercase();
 
                     if j.contains("unknown message") {

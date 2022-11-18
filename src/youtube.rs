@@ -1,15 +1,18 @@
+#[cfg(feature = "tts")]
+use crate::{commands::music::VideoType, video::Video};
 use anyhow::Error;
 use serde::{Deserialize, Serialize};
-#[cfg(not(feature = "download"))]
-use tokio::fs::File;
+#[cfg(feature = "tts")]
 use tokio::io::AsyncWriteExt;
 
-use crate::{commands::music::VideoType, video::Video};
 #[allow(dead_code)]
 pub async fn search(query: String) -> Vec<VideoInfo> {
     let url = format!("https://www.youtube.com/results?search_query={}", query);
     let client = reqwest::Client::new();
-    let res = client.get(url.as_str()).send().await;
+    let res = client.get(url.as_str()).header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36",
+        ).send().await;
     let mut videos = Vec::new();
     if let Ok(res) = res {
         let text = res.text().await;
@@ -59,6 +62,7 @@ pub async fn search(query: String) -> Vec<VideoInfo> {
 #[allow(dead_code)]
 pub async fn get_video_info(url: String) -> Result<VideoInfo, Error> {
     let title = get_url_title(url.clone()).await;
+    println!("title: {:?}", title);
     if let Some(title) = title {
         Ok(VideoInfo { title, url })
     } else {
@@ -68,7 +72,10 @@ pub async fn get_video_info(url: String) -> Result<VideoInfo, Error> {
 
 pub async fn get_url_title(url: String) -> Option<String> {
     let client = reqwest::Client::new();
-    let res = client.get(url.as_str()).send().await;
+    let res = client.get(url.as_str()).header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36",
+        ).send().await;
     if let Ok(res) = res {
         let text = res.text().await;
         if let Ok(text) = text {
@@ -87,14 +94,81 @@ pub async fn get_url_title(url: String) -> Option<String> {
     }
 }
 
+#[cfg(feature = "spotify")]
+pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
+    // get the song title from spotify api
+    let token = crate::Config::get().spotify_api_key;
+    let url = format!("https://api.spotify.com/v1/tracks/{}", id);
+    println!("url: {}", url);
+    let client = reqwest::Client::new();
+    let res = client
+        .get(url.as_str())
+        .header("Authorization", format!("Bearer {}", token.clone()))
+        .send()
+        .await?;
+    let spoofydata = res.json::<RawSpotifyTrack>().await;
+    if let Ok(spoofy) = spoofydata {
+        Ok(vec![format!(
+            "{} - {}",
+            spoofy.name, spoofy.artists[0].name
+        )])
+    } else {
+        println!("spoofydata: {:?}", spoofydata);
+        // attempt to get the album
+        let url = format!("https://api.spotify.com/v1/albums/{}", id);
+        let client = reqwest::Client::new();
+        let res = client
+            .get(url.as_str())
+            .header("Authorization", format!("Bearer {}", token.clone()))
+            .send()
+            .await?;
+        // println!("res: {:?}", res.text().await);
+        // return Ok(Vec::new());
+        let spoofydata = res.json::<RawSpotifyAlbum>().await;
+        if let Ok(spoofy) = spoofydata {
+            Ok(spoofy
+                .tracks
+                .items
+                .iter()
+                .map(|t| format!("{} - {}", t.name, t.artists[0].name))
+                .collect())
+        } else {
+            println!("spoofydata: {:?}", spoofydata);
+            Err(anyhow::anyhow!("Could not get spotify song title"))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RawSpotifyAlbum {
+    tracks: RawSpotifyTracks,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RawSpotifyTracks {
+    items: Vec<RawSpotifyTrack>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RawSpotifyTrack {
+    name: String,
+    artists: Vec<RawSpotifyArtist>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RawSpotifyArtist {
+    name: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct VideoInfo {
     pub title: String,
-
     pub url: String,
 }
 
+#[cfg(feature = "tts")]
 pub async fn get_tts(title: String, key: String) -> Result<VideoType, Error> {
+    // return Err(anyhow::anyhow!("TTS is currently disabled"));
     // println!("key: {}", key);
     let body = serde_json::json!(
         {
@@ -151,6 +225,7 @@ pub struct TTSResponse {
     audio_content: String,
 }
 
+#[cfg(feature = "tts")]
 pub async fn get_access_token() -> Result<String, Error> {
     #[cfg(target_family = "windows")]
     match powershell_script::PsScriptBuilder::new()
@@ -187,6 +262,7 @@ pub async fn get_access_token() -> Result<String, Error> {
     }
 }
 
+#[cfg(feature = "youtube-search")]
 pub async fn youtube_search(query: String) -> Result<Vec<VideoInfo>, Error> {
     let client = reqwest::Client::new();
     let res = client
@@ -195,20 +271,30 @@ pub async fn youtube_search(query: String) -> Result<Vec<VideoInfo>, Error> {
         .query(&[
             ("key", crate::Config::get().youtube_api_key.as_str()),
             ("part", "snippet"),
-            ("type", "video"),
+            // ("type", "video"),
             ("q", query.as_str()),
         ])
         .send()
         .await?;
     // println!("res: {:?}", res.json().await?);
     // write res.text().await? to youtube.json
-
+    // tokio::fs::write("youtube.json", res.text().await?).await?;
+    // Ok(vec![])
     let r: YTSearchResultMeta = res.json().await?;
     let mut videos = Vec::new();
     for item in r.items {
-        let video = VideoInfo {
-            title: item.snippet.title,
-            url: format!("https://www.youtube.com/watch?v={}", item.id.video_id),
+        let video = if let Some(id) = item.id.video_id {
+            VideoInfo {
+                title: item.snippet.title,
+                url: format!("https://www.youtube.com/watch?v={}", id),
+            }
+        } else if let Some(id) = item.id.playlist_id {
+            VideoInfo {
+                title: format!("{} (playlist)", item.snippet.title),
+                url: format!("https://www.youtube.com/playlist?list={}", id),
+            }
+        } else {
+            continue;
         };
         videos.push(video);
     }
@@ -229,7 +315,9 @@ pub struct YTSearchResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YTSearchID {
     #[serde(rename = "videoId")]
-    pub video_id: String,
+    pub video_id: Option<String>,
+    #[serde(rename = "playlistId")]
+    pub playlist_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

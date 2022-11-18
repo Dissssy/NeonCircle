@@ -26,6 +26,7 @@ rand = "0.8.5"
 # rayon = "1.5.3"
 ffprobe = "0.3.3"
 base64 = "0.13.1"
+async-recursion = "1.0.0"
 
 # windows only
 [target.'cfg(windows)'.dependencies]
@@ -38,5 +39,9 @@ powershell_script = "1.0.4"
 # panic = "abort"
 
 [features]
-default = ["download"]
+default = ["all"]
+all = ["download", "spotify", "youtube-search", "tts"]
 download = []
+spotify = []
+youtube-search = []
+tts = []

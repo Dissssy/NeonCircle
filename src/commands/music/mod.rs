@@ -80,6 +80,7 @@ pub enum VideoType {
 pub struct MetaVideo {
     pub video: VideoType,
     pub title: String,
+    #[cfg(feature = "tts")]
     pub ttsmsg: Option<Video>,
 }
 
@@ -89,6 +90,7 @@ impl MetaVideo {
             VideoType::Disk(ref mut video) => video.delete(),
             _ => Ok(()),
         }?;
+        #[cfg(feature = "tts")]
         if let Some(ref mut ttsmsg) = self.ttsmsg {
             ttsmsg.delete()?;
         };

@@ -101,7 +101,15 @@ impl EventHandler for Handler {
         // .await
         // .expect("Failed to register commands");
         // register all commands globally
-
+        // let commands = Command::get_global_application_commands(&ctx.http)
+        //     .await
+        //     .expect("Failed to get commands");
+        // // delete all commands
+        // for command in commands {
+        //     Command::delete_global_application_command(&ctx.http, command.id)
+        //         .await
+        //         .expect("Failed to delete command");
+        // }
         for command in self.commands.iter() {
             println!("Registering command: {}", command.name());
             Command::create_global_application_command(&ctx.http, |com| {
@@ -139,6 +147,18 @@ impl EventHandler for Handler {
 
 #[tokio::main]
 async fn main() {
+    // let v = crate::youtube::youtube_search("KIKUOWORLD2".to_owned())
+    //     .await
+    //     .unwrap();
+    // let spoofytitle =
+    //     "https://open.spotify.com/album/3WNehG6cwmM6dy37lXn70Z?si=mQJ-D1YcTxiOANF9DjiOYQ";
+
+    // let v = crate::video::get_spotify_shiz(spoofytitle.to_string())
+    //     .await
+    //     .unwrap();
+    // println!("{:?}", v);
+    // panic!("test");
+
     let cfg = Config::get();
 
     let mut tmp = cfg.data_path.clone();
@@ -192,8 +212,14 @@ struct Config {
     app_name: String,
     looptime: u64,
     data_path: PathBuf,
+    idle_url: String,
+    #[cfg(feature = "tts")]
     gcloud_script: String,
+    #[cfg(feature = "youtube-search")]
     youtube_api_key: String,
+    #[cfg(feature = "spotify")]
+    spotify_api_key: String,
+    bumper_url: String,
 }
 
 impl Config {
@@ -234,17 +260,35 @@ impl Config {
                 looptime: if let Some(looptime) = rec.looptime {
                     looptime
                 } else {
-                    Self::safe_read("\nPlease enter your loop time in ms\nlower time means faster response but higher utilization:")
+                    Self::safe_read("\nPlease enter your loop time in ms\nlower time means faster response but potentially higher cpu utilization (50 is a good compromise):")
                 },
+                #[cfg(feature = "tts")]
                 gcloud_script: if let Some(gcloud_script) = rec.gcloud_script {
                     gcloud_script
                 } else {
                     Self::safe_read("\nPlease enter your gcloud script location (teehee):")
                 },
+                #[cfg(feature = "youtube-search")]
                 youtube_api_key: if let Some(youtube_api_key) = rec.youtube_api_key {
                     youtube_api_key
                 } else {
                     Self::safe_read("\nPlease enter your youtube api key:")
+                },
+                #[cfg(feature = "spotify")]
+                spotify_api_key: if let Some(spotify_api_key) = rec.spotify_api_key {
+                    spotify_api_key
+                } else {
+                    Self::safe_read("\nPlease enter your spotify api key:")
+                },
+                idle_url: if let Some(idle_audio) = rec.idle_url {
+                    idle_audio
+                } else {
+                    Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH)\nif you wish to use a file on disk, set this to something as a fallback, and name the file override.mp3 inside the bot directory)\n(appdata/local/ for windows users and ~/.local/share/ for linux users):")
+                },
+                bumper_url: if let Some(bumper_url) = rec.bumper_url {
+                    bumper_url
+                } else {
+                    Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):")
                 },
                 data_path,
             }
@@ -260,9 +304,15 @@ impl Config {
                 guild_id: Self::safe_read("\nPlease enter your guild id:"),
                 app_name,
                 looptime: Self::safe_read("\nPlease enter your loop time in ms\nlower time means faster response but higher utilization:"),
+                #[cfg(feature = "tts")]
                 gcloud_script: Self::safe_read("\nPlease enter your gcloud script location (teehee):"),
                 data_path,
+                #[cfg(feature = "youtube-search")]
                 youtube_api_key: Self::safe_read("\nPlease enter your youtube api key:"),
+                #[cfg(feature = "spotify")]
+                spotify_api_key: Self::safe_read("\nPlease enter your spotify api key:"),
+                idle_url: Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH):"),
+                bumper_url: Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):"),
             }
         };
         std::fs::write(
@@ -321,6 +371,12 @@ struct RecoverConfig {
     app_name: Option<String>,
     looptime: Option<u64>,
     data_path: Option<PathBuf>,
+    #[cfg(feature = "tts")]
     gcloud_script: Option<String>,
+    #[cfg(feature = "youtube-search")]
     youtube_api_key: Option<String>,
+    #[cfg(feature = "spotify")]
+    spotify_api_key: Option<String>,
+    idle_url: Option<String>,
+    bumper_url: Option<String>,
 }
