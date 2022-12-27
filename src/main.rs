@@ -43,11 +43,7 @@ where
     fn register(&self, command: &mut CreateApplicationCommand);
     async fn run(&self, ctx: &Context, interaction: Interaction);
     fn name(&self) -> &str;
-    async fn autocomplete(
-        &self,
-        ctx: &Context,
-        interaction: &AutocompleteInteraction,
-    ) -> Result<(), Error>;
+    async fn autocomplete(&self, ctx: &Context, interaction: &AutocompleteInteraction) -> Result<(), Error>;
 }
 
 #[async_trait]
@@ -124,10 +120,7 @@ impl EventHandler for Handler {
     async fn voice_state_update(&self, ctx: Context, _old: Option<VoiceState>, new: VoiceState) {
         if let Some(guild_id) = new.guild_id {
             let data_lock = ctx.data.read().await;
-            let data = data_lock
-                .get::<VoiceData>()
-                .expect("Expected VoiceData in TypeMap.")
-                .clone();
+            let data = data_lock.get::<VoiceData>().expect("Expected VoiceData in TypeMap.").clone();
             let mut data = data.lock().await;
 
             let guild = data.get_mut(&guild_id);
@@ -182,6 +175,7 @@ async fn main() {
         Box::new(commands::music::volume::Volume),
         Box::new(commands::embed::Video),
         Box::new(commands::embed::Audio),
+        Box::new(commands::embed::John),
     ]);
     let mut client = Client::builder(token, GatewayIntents::all())
         .register_songbird()
@@ -190,15 +184,9 @@ async fn main() {
         .expect("Error creating client");
     {
         let mut data = client.data.write().await;
-        data.insert::<commands::music::AudioHandler>(Arc::new(serenity::prelude::Mutex::new(
-            HashMap::new(),
-        )));
-        data.insert::<commands::music::AudioCommandHandler>(Arc::new(
-            serenity::prelude::Mutex::new(HashMap::new()),
-        ));
-        data.insert::<commands::music::VoiceData>(Arc::new(serenity::prelude::Mutex::new(
-            HashMap::new(),
-        )));
+        data.insert::<commands::music::AudioHandler>(Arc::new(serenity::prelude::Mutex::new(HashMap::new())));
+        data.insert::<commands::music::AudioCommandHandler>(Arc::new(serenity::prelude::Mutex::new(HashMap::new())));
+        data.insert::<commands::music::VoiceData>(Arc::new(serenity::prelude::Mutex::new(HashMap::new())));
     }
 
     if let Err(why) = client.start().await {
@@ -225,11 +213,7 @@ struct Config {
 impl Config {
     pub fn get() -> Self {
         let path = dirs::data_dir();
-        let mut path = if let Some(path) = path {
-            path
-        } else {
-            PathBuf::from(".")
-        };
+        let mut path = if let Some(path) = path { path } else { PathBuf::from(".") };
         path.push("RmbConfig.json");
         Self::get_from_path(path)
     }
@@ -246,11 +230,7 @@ impl Config {
             let mut data_path = config_path.parent().unwrap().to_path_buf();
             data_path.push(app_name.clone());
             Config {
-                token: if let Some(token) = rec.token {
-                    token
-                } else {
-                    Self::safe_read("\nPlease enter your bot token:")
-                },
+                token: if let Some(token) = rec.token { token } else { Self::safe_read("\nPlease enter your bot token:") },
                 guild_id: if let Some(guild_id) = rec.guild_id {
                     guild_id
                 } else {
@@ -317,8 +297,7 @@ impl Config {
         };
         std::fs::write(
             config_path.clone(),
-            serde_json::to_string_pretty(&config)
-                .unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path)),
+            serde_json::to_string_pretty(&config).unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path)),
         )
         .expect("Failed to write config.json");
         println!("Config written to {:?}", config_path);
@@ -327,9 +306,7 @@ impl Config {
         loop {
             println!("{}", prompt);
             let mut input = String::new();
-            std::io::stdin()
-                .read_line(&mut input)
-                .expect("Failed to read line");
+            std::io::stdin().read_line(&mut input).expect("Failed to read line");
             let input = input.trim();
             match input.parse::<T>() {
                 Ok(input) => return input,
