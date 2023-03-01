@@ -1,4 +1,4 @@
-use std::io::{BufReader, BufWriter, Cursor, Write};
+use std::io::{BufReader, BufWriter, Cursor};
 
 use anyhow::Error;
 use image::ImageOutputFormat;
@@ -8,7 +8,7 @@ use serenity::model::prelude::command::CommandOptionType;
 
 use image::{
     codecs::gif::{GifDecoder, GifEncoder, Repeat::Infinite},
-    AnimationDecoder, DynamicImage, Frame, GenericImage, GenericImageView, Pixel, RgbaImage,
+    AnimationDecoder, DynamicImage, Frame, GenericImage, GenericImageView, Pixel,
 };
 
 use serenity::model::prelude::interaction::autocomplete::AutocompleteInteraction;
@@ -25,51 +25,31 @@ pub struct Video;
 #[serenity::async_trait]
 impl crate::CommandTrait for Video {
     async fn run(&self, ctx: &Context, interaction: Interaction) {
-        let interaction = interaction.application_command().unwrap();
-        interaction
-            .create_interaction_response(&ctx.http, |response| response.kind(InteractionResponseType::DeferredChannelMessageWithSource))
-            .await
-            .unwrap();
-        let options = interaction.data.options.clone();
-        let url = options[0].value.as_ref().unwrap().as_str().unwrap();
-        let video = crate::video::Video::get_video(url.to_owned(), false, false).await;
-        if let Ok(video) = video {
-            let video = video[0].clone();
-            match video {
-                VideoType::Disk(video) => {
-                    let file = serenity::model::channel::AttachmentType::Path(&video.path);
-                    let _ = interaction.delete_original_interaction_response(&ctx.http);
-                    let _ = interaction
-                        .create_followup_message(&ctx.http, |m| {
-                            m.add_file(file);
-                            m
-                        })
-                        .await;
-
-                    video.delete().unwrap();
-                }
-                _ => unreachable!(),
-            }
-        } else {
-            interaction
-                .edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error: {}", video.unwrap_err())))
-                .await
-                .unwrap();
-        }
+        dotheroar(&ctx, interaction, false).await;
     }
 
     fn register(&self, command: &mut CreateApplicationCommand) {
         command
             .name(self.name())
             .description("Embed a video using ytdl")
-            .create_option(|option| option.name("video_url").description("The url of the video to embed").kind(CommandOptionType::String).required(true));
+            .create_option(|option| {
+                option
+                    .name("video_url")
+                    .description("The url of the video to embed")
+                    .kind(CommandOptionType::String)
+                    .required(true)
+            });
     }
 
     fn name(&self) -> &str {
         "embed_video"
     }
 
-    async fn autocomplete(&self, _ctx: &Context, _auto: &AutocompleteInteraction) -> Result<(), Error> {
+    async fn autocomplete(
+        &self,
+        _ctx: &Context,
+        _auto: &AutocompleteInteraction,
+    ) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -80,50 +60,30 @@ pub struct Audio;
 #[serenity::async_trait]
 impl crate::CommandTrait for Audio {
     async fn run(&self, ctx: &Context, interaction: Interaction) {
-        let interaction = interaction.application_command().unwrap();
-        interaction
-            .create_interaction_response(&ctx.http, |response| response.kind(InteractionResponseType::DeferredChannelMessageWithSource))
-            .await
-            .unwrap();
-        let options = interaction.data.options.clone();
-        let url = options[0].value.as_ref().unwrap().as_str().unwrap();
-        let video = crate::video::Video::get_video(url.to_owned(), true, false).await;
-        if let Ok(video) = video {
-            let video = video[0].clone();
-            match video {
-                VideoType::Disk(video) => {
-                    let file = serenity::model::channel::AttachmentType::Path(&video.path);
-                    let _ = interaction.delete_original_interaction_response(&ctx.http);
-                    let _ = interaction
-                        .create_followup_message(&ctx.http, |m| {
-                            m.add_file(file);
-                            m
-                        })
-                        .await;
-
-                    video.delete().unwrap();
-                }
-                _ => unreachable!(),
-            }
-        } else {
-            interaction
-                .edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error: {}", video.unwrap_err())))
-                .await
-                .unwrap();
-        }
+        dotheroar(&ctx, interaction, true).await;
     }
 
     fn register(&self, command: &mut CreateApplicationCommand) {
         command
             .name(self.name())
             .description("Embed some audio using ytdl")
-            .create_option(|option| option.name("audio_url").description("The url of the audio to embed").kind(CommandOptionType::String).required(true));
+            .create_option(|option| {
+                option
+                    .name("audio_url")
+                    .description("The url of the audio to embed")
+                    .kind(CommandOptionType::String)
+                    .required(true)
+            });
     }
 
     fn name(&self) -> &str {
         "embed_audio"
     }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &AutocompleteInteraction) -> Result<(), Error> {
+    async fn autocomplete(
+        &self,
+        _ctx: &Context,
+        _auto: &AutocompleteInteraction,
+    ) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -137,7 +97,13 @@ impl CommandTrait for John {
         command
             .name(self.name())
             .description("John")
-            .create_option(|option| option.name("image").description("Image").kind(CommandOptionType::Attachment).required(true));
+            .create_option(|option| {
+                option
+                    .name("image")
+                    .description("Image")
+                    .kind(CommandOptionType::Attachment)
+                    .required(true)
+            });
     }
     fn name(&self) -> &str {
         "john"
@@ -145,7 +111,9 @@ impl CommandTrait for John {
     async fn run(&self, ctx: &Context, interaction: Interaction) {
         let interaction = interaction.application_command().unwrap();
         interaction
-            .create_interaction_response(&ctx.http, |response| response.kind(InteractionResponseType::DeferredChannelMessageWithSource))
+            .create_interaction_response(&ctx.http, |response| {
+                response.kind(InteractionResponseType::DeferredChannelMessageWithSource)
+            })
             .await
             .unwrap();
         let options = interaction.data.options.clone();
@@ -157,7 +125,9 @@ impl CommandTrait for John {
         let f = match attachment.download().await {
             Err(e) => {
                 interaction
-                    .edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error: {}", e)))
+                    .edit_original_interaction_response(&ctx.http, |response| {
+                        response.content(format!("Error: {}", e))
+                    })
                     .await
                     .unwrap();
                 return;
@@ -183,13 +153,19 @@ impl CommandTrait for John {
             }
             Err(e) => {
                 interaction
-                    .edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error: {}", e)))
+                    .edit_original_interaction_response(&ctx.http, |response| {
+                        response.content(format!("Error: {}", e))
+                    })
                     .await
                     .unwrap();
             }
         }
     }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &AutocompleteInteraction) -> Result<(), Error> {
+    async fn autocomplete(
+        &self,
+        _ctx: &Context,
+        _auto: &AutocompleteInteraction,
+    ) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -243,7 +219,12 @@ fn john(image: Vec<u8>, filename: &str) -> Result<Vec<u8>, Error> {
             let dynamic_image = DynamicImage::ImageRgba8(buffer.clone());
 
             let johned_image = john_the_image(dynamic_image)?;
-            let johned_frame = Frame::from_parts(johned_image.to_rgba8(), frame.left(), frame.top(), frame.delay());
+            let johned_frame = Frame::from_parts(
+                johned_image.to_rgba8(),
+                frame.left(),
+                frame.top(),
+                frame.delay(),
+            );
 
             frames_output.push(johned_frame);
         }
@@ -261,5 +242,98 @@ fn john(image: Vec<u8>, filename: &str) -> Result<Vec<u8>, Error> {
         let mut output = Cursor::new(Vec::new());
         no.write_to(&mut output, ImageOutputFormat::Png)?;
         Ok(output.into_inner())
+    }
+}
+
+fn get_command_data_option_name(
+    option: &serenity::model::application::interaction::application_command::CommandDataOptionValue,
+) -> String {
+    match option {
+        serenity::model::application::interaction::application_command::CommandDataOptionValue::Attachment(_) => "attachment",
+        serenity::model::application::interaction::application_command::CommandDataOptionValue::Boolean(_) => "boolean",
+        serenity::model::application::interaction::application_command::CommandDataOptionValue::Channel(_) => "channel",
+        serenity::model::application::interaction::application_command::CommandDataOptionValue::Integer(_) => "integer",
+        serenity::model::application::interaction::application_command::CommandDataOptionValue::Number(_) => "number",
+        serenity::model::application::interaction::application_command::CommandDataOptionValue::Role(_) => "role",
+        serenity::model::application::interaction::application_command::CommandDataOptionValue::String(_) => "string",
+        serenity::model::application::interaction::application_command::CommandDataOptionValue::User(..) => "user",
+        _ => "unknown",
+    }.to_owned()
+}
+
+async fn dotheroar(ctx: &Context, interaction: Interaction, audio_only: bool) {
+    let interaction = interaction.application_command().expect("Not a command");
+    interaction
+        .create_interaction_response(&ctx.http, |response| {
+            response.kind(InteractionResponseType::DeferredChannelMessageWithSource)
+        })
+        .await
+        .unwrap();
+    let options = interaction.data.options.clone();
+    let v = match options.get(0) {
+            Some(option) => match option.resolved {
+                Some(ref value) => match value {
+                    serenity::model::application::interaction::application_command::CommandDataOptionValue::String(ref string) => crate::video::Video::get_video(string.to_owned(), audio_only, false).await,
+                    v => Err(anyhow::anyhow!("How dawg, how did you put a {} in a string option", get_command_data_option_name(v))),
+                },
+                None => Err(anyhow::anyhow!("No value provided")),
+            },
+            None => Err(anyhow::anyhow!("No url provided")),
+        };
+    match v {
+        Err(e) => {
+            interaction
+                .edit_original_interaction_response(&ctx.http, |response| {
+                    response.content(format!("Error: {}", e))
+                })
+                .await
+                .unwrap();
+        }
+        Ok(videos) => {
+            match videos.get(0) {
+                Some(video) => match video {
+                    VideoType::Disk(video) => {
+                        let file = serenity::model::channel::AttachmentType::Path(&video.path);
+                        match interaction
+                            .delete_original_interaction_response(&ctx.http)
+                            .await
+                        {
+                            Ok(_) => {}
+                            Err(e) => {
+                                println!("Error deleting original interaction response: {}", e)
+                            }
+                        };
+                        match interaction
+                            .create_followup_message(&ctx.http, |m| {
+                                m.add_file(file);
+                                m
+                            })
+                            .await
+                        {
+                            Ok(_) => {}
+                            Err(e) => {
+                                println!("Error creating followup message: {}", e)
+                            }
+                        };
+                        match video.delete() {
+                            Ok(_) => {}
+                            Err(e) => {
+                                println!("Error deleting video: {}", e)
+                            }
+                        };
+                    }
+                    _ => unreachable!(),
+                },
+                None => {
+                    interaction
+                        .edit_original_interaction_response(&ctx.http, |response| {
+                            response.content("No videos found")
+                        })
+                        .await
+                        .unwrap();
+                    return;
+                }
+            };
+        }
     }
 }

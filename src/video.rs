@@ -80,7 +80,11 @@ impl Video {
             let entry = entry?;
             let path = entry.path();
             if path.is_file() {
-                let file_name = path.file_name().unwrap().to_str().unwrap();
+                let file_name = path
+                    .file_name()
+                    .ok_or(anyhow::anyhow!("No Path"))?
+                    .to_str()
+                    .ok_or(anyhow::anyhow!("No Path"))?;
                 if file_name.starts_with(id.as_str()) {
                     videos.push(Self::from_path(path, url.clone(), audio_only, id.clone())?);
                 }
