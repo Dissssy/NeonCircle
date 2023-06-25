@@ -15,7 +15,7 @@ nanoid = "0.4.0"
 poll-promise = { version = "0.2.0", features = ["tokio"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
-dirs = "4.0.0"
+dirs = "5.0.0"
 anyhow = "1.0.68"
 audiotags = "0.4.1"
 songbird = {version = "0.3.0", features = ["yt-dlp", ]}
@@ -25,9 +25,11 @@ reqwest = "0.11.13"
 rand = "0.8.5"
 # rayon = "1.5.3"
 ffprobe = "0.3.3"
-base64 = "0.20.0"
+base64 = "0.21.0"
 async-recursion = "1.0.0"
 image = "0.24.5"
+lazy_static = "1.4.0"
+human_format = "1.0.3"
 
 # windows only
 [target.'cfg(windows)'.dependencies]
@@ -41,7 +43,7 @@ powershell_script = "1.0.4"
 
 [features]
 default = ["all"]
-all = ["download", "spotify", "youtube-search", "tts"]
+all = ["spotify", "youtube-search", "tts"]
 download = []
 spotify = []
 youtube-search = []

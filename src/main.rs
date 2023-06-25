@@ -9,8 +9,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod bigwetsloppybowser;
+
 use anyhow::Error;
 use commands::music::VoiceData;
+use serde::{Deserialize, Serialize};
 // use hyper;
 // use hyper_rustls;
 use serenity::async_trait;
@@ -19,7 +22,12 @@ use serenity::builder::CreateApplicationCommand;
 use serenity::model::application::interaction::autocomplete::AutocompleteInteraction;
 use serenity::model::application::interaction::Interaction;
 use serenity::model::gateway::Ready;
+use serenity::model::prelude::{GuildId, Member, Message, ResumedEvent};
+use serenity::model::user::User;
+use serenity::model::webhook::Webhook;
+use tokio::io::AsyncWriteExt;
 // use serenity::model::id::GuildId;
+use crate::bigwetsloppybowser::ShitGPT;
 use serenity::model::prelude::command::Command;
 use serenity::model::voice::VoiceState;
 use serenity::prelude::*;
@@ -35,6 +43,17 @@ impl Handler {
     }
 }
 
+lazy_static::lazy_static! {
+    static ref SHITGPT: Arc<Mutex<HashMap<String, ShitGPT>>> = Arc::new(Mutex::new(serde_json::from_reader(std::fs::File::open(Config::get().shitgpt_path).unwrap()).unwrap()));
+}
+
+lazy_static::lazy_static! {
+    static ref WHITELIST: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(serde_json::from_reader(std::fs::File::open(Config::get().whitelist_path).unwrap()).unwrap()));
+}
+// lazy_static::lazy_static! {
+//     static ref WEBHOOKS: Arc<Mutex<HashMap<u64, Webhook>>> = Arc::new(Mutex::new(HashMap::new()));
+// }
+
 #[async_trait]
 pub trait CommandTrait
 where
@@ -43,7 +62,16 @@ where
     fn register(&self, command: &mut CreateApplicationCommand);
     async fn run(&self, ctx: &Context, interaction: Interaction);
     fn name(&self) -> &str;
-    async fn autocomplete(&self, ctx: &Context, interaction: &AutocompleteInteraction) -> Result<(), Error>;
+    async fn autocomplete(
+        &self,
+        ctx: &Context,
+        interaction: &AutocompleteInteraction,
+    ) -> Result<(), Error>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSafe {
+    pub id: String,
 }
 
 #[async_trait]
@@ -56,7 +84,7 @@ impl EventHandler for Handler {
                 if let Some(command) = command {
                     command.run(&ctx, interaction).await;
                 } else {
-                    println!("Command not found: {}", command_name);
+                    println!("Command not found: {command_name}");
                 }
             }
 
@@ -67,7 +95,7 @@ impl EventHandler for Handler {
                     let r = command.autocomplete(&ctx, autocomplete).await;
                     if r.is_err() {}
                 } else {
-                    println!("Command not found: {}", commandn);
+                    println!("Command not found: {commandn}");
                 }
             }
             _ => {}
@@ -76,6 +104,58 @@ impl EventHandler for Handler {
 
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
+        let mut users = Vec::new();
+        for guild in ready.guilds {
+            match ctx.http.get_guild(guild.id.0).await {
+                Ok(guild) => {
+                    for member in match guild.members(&ctx.http, None, None).await {
+                        Ok(members) => members,
+                        Err(e) => {
+                            println!("Error getting members: {e}");
+                            Vec::new()
+                        }
+                    } {
+                        // check if user is not in users yet
+                        let id = member.user.id.0.to_string();
+                        if !users.contains(&id) {
+                            users.push(id);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Error getting guild: {e}");
+                }
+            }
+        }
+        let mut finalusers = Vec::new();
+        for id in users {
+            // let hashed_id = format!("{:x}", {
+            //     let mut hasher = sha2::Sha512::new();
+            //     hasher.update(id);
+            //     hasher.finalize()
+            // });
+            finalusers.push(UserSafe { id });
+        }
+
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16834/api/set/user")
+            .json(&finalusers);
+        if let Some(token) = Config::get().string_api_token {
+            req = req.bearer_auth(token);
+        }
+        if let Err(e) = req.send().await {
+            println!("Failed to send users to api {e}. Users might be out of date");
+        }
+
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16835/api/set/user")
+            .json(&finalusers);
+        if let Some(token) = Config::get().string_api_token {
+            req = req.bearer_auth(token);
+        }
+        if let Err(e) = req.send().await {
+            println!("Failed to send users to api {e}. Users might be out of date");
+        }
 
         // let guild_id = GuildId(
         //     Config::get()
@@ -106,21 +186,37 @@ impl EventHandler for Handler {
         //         .await
         //         .expect("Failed to delete command");
         // }
-        for command in self.commands.iter() {
-            println!("Registering command: {}", command.name());
-            Command::create_global_application_command(&ctx.http, |com| {
-                command.register(com);
-                com
-            })
-            .await
-            .expect("Failed to register command");
+
+        // enable when need to update commands
+        println!("Register commands? (y/n)");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap();
+        if input.trim() == "y" {
+            for command in self.commands.iter() {
+                println!("Register command: {}? (y/n)", command.name());
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                if input.trim() != "y" {
+                    continue;
+                }
+                println!("Registering command: {}", command.name());
+                Command::create_global_application_command(&ctx.http, |com| {
+                    command.register(com);
+                    com
+                })
+                .await
+                .expect("Failed to register command");
+            }
         }
     }
 
     async fn voice_state_update(&self, ctx: Context, _old: Option<VoiceState>, new: VoiceState) {
         if let Some(guild_id) = new.guild_id {
             let data_lock = ctx.data.read().await;
-            let data = data_lock.get::<VoiceData>().expect("Expected VoiceData in TypeMap.").clone();
+            let data = data_lock
+                .get::<VoiceData>()
+                .expect("Expected VoiceData in TypeMap.")
+                .clone();
             let mut data = data.lock().await;
 
             let guild = data.get_mut(&guild_id);
@@ -136,6 +232,200 @@ impl EventHandler for Handler {
             }
         }
     }
+
+    async fn message(&self, ctx: Context, new_message: Message) {
+        // let mut g = SHITGPT.lock().await;
+        // let s = g
+        //     .entry(new_message.author.id.as_u64().to_string())
+        //     .or_insert(ShitGPT::new(7));
+        // s.train(new_message.content_safe(&ctx));
+        // // save shitgpt with serde_json
+        // tokio::fs::write(
+        //     Config::get().shitgpt_path,
+        //     serde_json::to_string(&*g).unwrap(),
+        // )
+        // .await
+        // .unwrap();
+
+        // get current unix timestamp
+        //
+        // -------------------------------
+        //
+        // let validchars = "abcdefghijklmnopqrstuvwxyz";
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let string = new_message.content_safe(&ctx);
+        //     .split_ascii_whitespace()
+        //     .map(|s| TimedString {
+        //         string: s
+        //             .to_lowercase()
+        //             .chars()
+        //             .filter(|c| c.is_ascii())
+        //             .collect::<String>(),
+        //         time: t,
+        //     })
+        //     .filter(|s| !s.string.is_empty())
+        //     .map(|mut s| {
+        //         s.string = s
+        //             .string
+        //             .chars()
+        //             .filter(|c| validchars.contains(*c))
+        //             .collect::<String>();
+        //         s
+        //     })
+        //     .collect::<Vec<TimedString>>();
+        // make a request to localhost:16834
+        if !string.is_empty() {
+            let mut req = reqwest::Client::new()
+                .post("http://localhost:16834/api/add/string")
+                .json(&Timed {
+                    thing: string,
+                    time: t,
+                });
+            if let Some(token) = Config::get().string_api_token {
+                req = req.bearer_auth(token);
+            }
+            if let Err(e) = req.send().await {
+                println!("Failed to send strings to api {e}");
+            }
+        }
+    }
+
+    async fn resume(&self, ctx: Context, _: ResumedEvent) {
+        // resync all users
+        let mut users = Vec::new();
+        for guild in match ctx.http.get_guilds(None, None).await {
+            Ok(guilds) => guilds,
+            Err(e) => {
+                println!("Error getting guilds: {e}");
+                return;
+            }
+        } {
+            match ctx.http.get_guild(guild.id.0).await {
+                Ok(guild) => {
+                    for member in match guild.members(&ctx.http, None, None).await {
+                        Ok(members) => members,
+                        Err(e) => {
+                            println!("Error getting members: {e}");
+                            continue;
+                        }
+                    } {
+                        // check if user is not in users yet
+                        let id = member.user.id.0.to_string();
+                        if !users.contains(&id) {
+                            users.push(id);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Error getting guild: {e}");
+                }
+            }
+        }
+        let mut finalusers = Vec::new();
+        for id in users {
+            // let hashed_id = format!("{:x}", {
+            //     let mut hasher = sha2::Sha512::new();
+            //     hasher.update(id);
+            //     hasher.finalize()
+            // });
+            finalusers.push(UserSafe { id });
+        }
+
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16834/api/set/user")
+            .json(&finalusers);
+        if let Some(token) = Config::get().string_api_token {
+            req = req.bearer_auth(token);
+        }
+        if let Err(e) = req.send().await {
+            println!("Failed to send users to api {e}. Users might be out of date");
+        }
+
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16835/api/set/user")
+            .json(&finalusers);
+        if let Some(token) = Config::get().string_api_token {
+            req = req.bearer_auth(token);
+        }
+        if let Err(e) = req.send().await {
+            println!("Failed to send users to api {e}. Users might be out of date");
+        }
+    }
+
+    async fn guild_member_addition(&self, _ctx: Context, new_member: Member) {
+        // get hashed id
+        // let id = format!("{:x}", {
+        //     let mut hasher = sha2::Sha512::new();
+        //     hasher.update(new_member.user.id.0.to_string());
+        //     hasher.finalize()
+        // });
+        let id = new_member.user.id.0.to_string();
+
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16834/api/add/user")
+            .json(&UserSafe { id: id.clone() });
+        if let Some(token) = Config::get().string_api_token {
+            req = req.bearer_auth(token);
+        }
+        if let Err(e) = req.send().await {
+            println!("Failed to add user to api {e}. Users might be out of date");
+        }
+
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16835/api/add/user")
+            .json(&UserSafe { id });
+        if let Some(token) = Config::get().string_api_token {
+            req = req.bearer_auth(token);
+        }
+        if let Err(e) = req.send().await {
+            println!("Failed to add user to api {e}. Users might be out of date");
+        }
+    }
+
+    async fn guild_member_removal(
+        &self,
+        _ctx: Context,
+        _guild_id: GuildId,
+        user: User,
+        _member_data_if_available: Option<Member>,
+    ) {
+        // get hashed id
+        // let id = format!("{:x}", {
+        //     let mut hasher = sha2::Sha512::new();
+        //     hasher.update(user.id.0.to_string());
+        //     hasher.finalize()
+        // });
+        let id = user.id.0.to_string();
+
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16834/api/remove/user")
+            .json(&UserSafe { id: id.clone() });
+        if let Some(token) = Config::get().string_api_token {
+            req = req.bearer_auth(token);
+        }
+        if let Err(e) = req.send().await {
+            println!("Failed to remove user from api {e}. Users might be out of date");
+        }
+
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16835/api/remove/user")
+            .json(&UserSafe { id });
+        if let Some(token) = Config::get().string_api_token {
+            req = req.bearer_auth(token);
+        }
+        if let Err(e) = req.send().await {
+            println!("Failed to remove user from api {e}. Users might be out of date");
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Timed<T> {
+    thing: T,
+    time: u64,
 }
 
 #[tokio::main]
@@ -176,6 +466,7 @@ async fn main() {
         Box::new(commands::embed::Video),
         Box::new(commands::embed::Audio),
         Box::new(commands::embed::John),
+        Box::new(commands::emulate::EmulateCommand),
     ]);
     let mut client = Client::builder(token, GatewayIntents::all())
         .register_songbird()
@@ -184,9 +475,15 @@ async fn main() {
         .expect("Error creating client");
     {
         let mut data = client.data.write().await;
-        data.insert::<commands::music::AudioHandler>(Arc::new(serenity::prelude::Mutex::new(HashMap::new())));
-        data.insert::<commands::music::AudioCommandHandler>(Arc::new(serenity::prelude::Mutex::new(HashMap::new())));
-        data.insert::<commands::music::VoiceData>(Arc::new(serenity::prelude::Mutex::new(HashMap::new())));
+        data.insert::<commands::music::AudioHandler>(Arc::new(serenity::prelude::Mutex::new(
+            HashMap::new(),
+        )));
+        data.insert::<commands::music::AudioCommandHandler>(Arc::new(
+            serenity::prelude::Mutex::new(HashMap::new()),
+        ));
+        data.insert::<commands::music::VoiceData>(Arc::new(serenity::prelude::Mutex::new(
+            HashMap::new(),
+        )));
     }
 
     if let Err(why) = client.start().await {
@@ -200,6 +497,9 @@ struct Config {
     app_name: String,
     looptime: u64,
     data_path: PathBuf,
+    shitgpt_path: PathBuf,
+    whitelist_path: PathBuf,
+    string_api_token: Option<String>,
     idle_url: String,
     #[cfg(feature = "tts")]
     gcloud_script: String,
@@ -213,7 +513,11 @@ struct Config {
 impl Config {
     pub fn get() -> Self {
         let path = dirs::data_dir();
-        let mut path = if let Some(path) = path { path } else { PathBuf::from(".") };
+        let mut path = if let Some(path) = path {
+            path
+        } else {
+            PathBuf::from(".")
+        };
         path.push("RmbConfig.json");
         Self::get_from_path(path)
     }
@@ -230,7 +534,11 @@ impl Config {
             let mut data_path = config_path.parent().unwrap().to_path_buf();
             data_path.push(app_name.clone());
             Config {
-                token: if let Some(token) = rec.token { token } else { Self::safe_read("\nPlease enter your bot token:") },
+                token: if let Some(token) = rec.token {
+                    token
+                } else {
+                    Self::safe_read("\nPlease enter your bot token:")
+                },
                 guild_id: if let Some(guild_id) = rec.guild_id {
                     guild_id
                 } else {
@@ -271,6 +579,11 @@ impl Config {
                     Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):")
                 },
                 data_path,
+                shitgpt_path: Self::safe_read("\nPlease enter your shitgpt path (teehee):"),
+                whitelist_path: Self::safe_read("\nPlease enter your whitelist path (teehee):"),
+                string_api_token: Some(Self::safe_read(
+                    "\nPlease enter your string api token (teehee):",
+                )),
             }
         } else {
             println!("Welcome to my shitty Rust Music Bot!");
@@ -293,11 +606,15 @@ impl Config {
                 spotify_api_key: Self::safe_read("\nPlease enter your spotify api key:"),
                 idle_url: Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH):"),
                 bumper_url: Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):"),
+                shitgpt_path: Self::safe_read("\nPlease enter your shitgpt path (teehee):"),
+                whitelist_path: Self::safe_read("\nPlease enter your whitelist path (teehee):"),
+                string_api_token: Some(Self::safe_read("\nPlease enter your string api token (teehee):")),
             }
         };
         std::fs::write(
             config_path.clone(),
-            serde_json::to_string_pretty(&config).unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path)),
+            serde_json::to_string_pretty(&config)
+                .unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path)),
         )
         .expect("Failed to write config.json");
         println!("Config written to {:?}", config_path);
@@ -306,7 +623,9 @@ impl Config {
         loop {
             println!("{}", prompt);
             let mut input = String::new();
-            std::io::stdin().read_line(&mut input).expect("Failed to read line");
+            std::io::stdin()
+                .read_line(&mut input)
+                .expect("Failed to read line");
             let input = input.trim();
             match input.parse::<T>() {
                 Ok(input) => return input,

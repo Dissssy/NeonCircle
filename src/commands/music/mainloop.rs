@@ -219,13 +219,13 @@ pub async fn the_lüüp(
                                 let r = match current.video.clone() {
                                     VideoType::Disk(v) => {
                                         tokio::time::timeout(
-                                            Duration::from_secs(2),
+                                            Duration::from_secs(30),
                                             ffmpeg(&v.path),
                                         )
                                         .await
                                     }
                                     VideoType::Url(v) => {
-                                        tokio::time::timeout(Duration::from_secs(2), ytdl(&v.url))
+                                        tokio::time::timeout(Duration::from_secs(30), ytdl(&v.url))
                                             .await
                                     }
                                 };
@@ -242,10 +242,7 @@ pub async fn the_lüüp(
                                         ));
                                     }
                                 } else {
-                                    log.push_str(&format!(
-                                        "Error playing track: {}\r",
-                                        r.unwrap_err()
-                                    ));
+                                    log.push_str(&format!("Timeout procced: {}\r", r.unwrap_err()));
                                 }
                             }
                         } else {

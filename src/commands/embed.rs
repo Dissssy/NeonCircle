@@ -25,7 +25,7 @@ pub struct Video;
 #[serenity::async_trait]
 impl crate::CommandTrait for Video {
     async fn run(&self, ctx: &Context, interaction: Interaction) {
-        dotheroar(&ctx, interaction, false).await;
+        dotheroar(ctx, interaction, false).await;
     }
 
     fn register(&self, command: &mut CreateApplicationCommand) {
@@ -38,6 +38,13 @@ impl crate::CommandTrait for Video {
                     .description("The url of the video to embed")
                     .kind(CommandOptionType::String)
                     .required(true)
+            })
+            .create_option(|option| {
+                option
+                    .name("spoiler")
+                    .description("Whether to spoiler the video")
+                    .kind(CommandOptionType::Boolean)
+                    .required(false)
             });
     }
 
@@ -60,7 +67,7 @@ pub struct Audio;
 #[serenity::async_trait]
 impl crate::CommandTrait for Audio {
     async fn run(&self, ctx: &Context, interaction: Interaction) {
-        dotheroar(&ctx, interaction, true).await;
+        dotheroar(ctx, interaction, true).await;
     }
 
     fn register(&self, command: &mut CreateApplicationCommand) {
@@ -269,18 +276,58 @@ async fn dotheroar(ctx: &Context, interaction: Interaction, audio_only: bool) {
         })
         .await
         .unwrap();
-    let options = interaction.data.options.clone();
-    let v = match options.get(0) {
-            Some(option) => match option.resolved {
-                Some(ref value) => match value {
-                    serenity::model::application::interaction::application_command::CommandDataOptionValue::String(ref string) => crate::video::Video::get_video(string.to_owned(), audio_only, false).await,
-                    v => Err(anyhow::anyhow!("How dawg, how did you put a {} in a string option", get_command_data_option_name(v))),
-                },
-                None => Err(anyhow::anyhow!("No value provided")),
-            },
-            None => Err(anyhow::anyhow!("No url provided")),
-        };
-    match v {
+
+    let mut spoiler = false;
+    let mut v = Err(anyhow::anyhow!("No url provided"));
+
+    for option in interaction.data.options.clone() {
+        // println!("{}: {:?}", option.name, option.resolved);
+        match option.name.as_str() {
+            "spoiler" => {
+                spoiler = match option.resolved {
+                    Some(serenity::model::application::interaction::application_command::CommandDataOptionValue::Boolean(b)) => b,
+                    _ => false,
+                }
+            }
+            "video_url" | "audio_url" => {
+                v = match option.resolved {
+                    Some(serenity::model::application::interaction::application_command::CommandDataOptionValue::String(s)) => {
+                        Ok(s)
+                    }
+                    _ => Err(anyhow::anyhow!("No value provided")),
+                }
+            }
+            s => {
+                println!("Unknown option: {}", s);
+            }
+        }
+    }
+
+    // let spoiler = match options.get(1).and_then(|m| m.resolved) {
+    //         Some(ref value) => match value {
+    //             serenity::model::application::interaction::application_command::CommandDataOptionValue::Boolean(ref bool) => *bool,
+    //             _ => false,
+    //         },
+    //         None => false,
+    //     };
+
+    // let v = match options.get(0) {
+    //         Some(option) => match option.resolved {
+    //             Some(ref value) => match value {
+    //                 serenity::model::application::interaction::application_command::CommandDataOptionValue::String(ref string) => crate::video::Video::download_video(string.to_owned(), audio_only, spoiler).await,
+    //                 v => Err(anyhow::anyhow!("How dawg, how did you put a {} in a string option", get_command_data_option_name(v))),
+    //             },
+    //             None => Err(anyhow::anyhow!("No value provided")),
+    //         },
+    //         None => Err(anyhow::anyhow!("No url provided")),
+    //     };
+
+    let fuckyouclosures = match v {
+        Ok(v) => crate::video::Video::download_video(v, audio_only, spoiler).await,
+        Err(e) => Err(e),
+    };
+
+    match fuckyouclosures {
         Err(e) => {
             interaction
                 .edit_original_interaction_response(&ctx.http, |response| {
@@ -289,51 +336,52 @@ async fn dotheroar(ctx: &Context, interaction: Interaction, audio_only: bool) {
                 .await
                 .unwrap();
         }
-        Ok(videos) => {
-            match videos.get(0) {
-                Some(video) => match video {
-                    VideoType::Disk(video) => {
-                        let file = serenity::model::channel::AttachmentType::Path(&video.path);
-                        match interaction
-                            .delete_original_interaction_response(&ctx.http)
-                            .await
-                        {
-                            Ok(_) => {}
-                            Err(e) => {
-                                println!("Error deleting original interaction response: {}", e)
-                            }
-                        };
-                        match interaction
-                            .create_followup_message(&ctx.http, |m| {
-                                m.add_file(file);
-                                m
-                            })
-                            .await
-                        {
-                            Ok(_) => {}
-                            Err(e) => {
-                                println!("Error creating followup message: {}", e)
-                            }
-                        };
-                        match video.delete() {
-                            Ok(_) => {}
-                            Err(e) => {
-                                println!("Error deleting video: {}", e)
-                            }
-                        };
-                    }
-                    _ => unreachable!(),
-                },
-                None => {
-                    interaction
-                        .edit_original_interaction_response(&ctx.http, |response| {
-                            response.content("No videos found")
+        Ok(video) => {
+            // match video {
+            // Some(video) =>
+            match video {
+                VideoType::Disk(video) => {
+                    let file = serenity::model::channel::AttachmentType::Path(&video.path);
+                    match interaction
+                        .delete_original_interaction_response(&ctx.http)
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!("Error deleting original interaction response: {}", e)
+                        }
+                    };
+                    match interaction
+                        .create_followup_message(&ctx.http, |m| {
+                            m.add_file(file);
+                            m
                         })
                         .await
-                        .unwrap();
-                    return;
+                    {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!("Error creating followup message: {}", e)
+                        }
+                    };
+                    match video.delete() {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!("Error deleting video: {}", e)
+                        }
+                    };
                 }
+                _ => unreachable!(),
             };
+            //     None => {
+            //         interaction
+            //             .edit_original_interaction_response(&ctx.http, |response| {
+            //                 response.content("No videos found")
+            //             })
+            //             .await
+            //             .unwrap();
+            //         return;
+            //     }
+            // };
         }
     }
 }

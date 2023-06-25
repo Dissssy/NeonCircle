@@ -133,9 +133,17 @@ impl crate::CommandTrait for Play {
                     .await
                     .unwrap();
                     // #[cfg(not(feature = "download"))]
-                    // let t = tokio::task::spawn(crate::youtube::get_video_info(options[0].value.as_ref().unwrap().as_str().unwrap().to_owned()))
-                    //     .await
-                    //     .unwrap();
+                    // let t = tokio::task::spawn(crate::youtube::get_video_info(
+                    //     options[0]
+                    //         .value
+                    //         .as_ref()
+                    //         .unwrap()
+                    //         .as_str()
+                    //         .unwrap()
+                    //         .to_owned(),
+                    // ))
+                    // .await
+                    // .unwrap();
                     let videos: Result<Vec<VideoType>, Error> = if let Ok(videos) = t {
                         Ok(videos)
                     } else {

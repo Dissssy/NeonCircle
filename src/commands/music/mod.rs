@@ -123,8 +123,8 @@ impl MessageReference {
     async fn update(&mut self, content: &str) -> Result<(), Error> {
         let addbackticks = content.ends_with("```");
         let mut content = content.to_string();
-        if content.len() > 4000 {
-            content.truncate(3990);
+        if content.len() > 2000 {
+            content.truncate(1990);
             content.push_str("...");
             if addbackticks {
                 content.push_str("\n```");
