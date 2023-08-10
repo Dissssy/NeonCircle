@@ -84,7 +84,7 @@ impl crate::CommandTrait for EmulateCommand {
                 .len();
             // make the size readable (i.e. 1.2 GB)
             let size = format_bytes(size);
-            let potential_messages = vec![
+            let potential_messages = [
                 "I'm schizophrenic have some numbers",
                 "This is how many men i've killed",
                 "This is how many men i've sucked off",

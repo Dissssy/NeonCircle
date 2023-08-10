@@ -5,6 +5,7 @@ use image::ImageOutputFormat;
 use serenity::builder::CreateApplicationCommand;
 use serenity::model::application::interaction::{Interaction, InteractionResponseType};
 use serenity::model::prelude::command::CommandOptionType;
+use serenity::model::prelude::PremiumTier;
 
 use image::{
     codecs::gif::{GifDecoder, GifEncoder, Repeat::Infinite},
@@ -150,7 +151,9 @@ impl CommandTrait for John {
                     data: john.into(),
                     filename: format!("john_{}", filename),
                 };
-                let _ = interaction.delete_original_interaction_response(&ctx.http);
+                let _ = interaction
+                    .delete_original_interaction_response(&ctx.http)
+                    .await;
                 let _ = interaction
                     .create_followup_message(&ctx.http, |m| {
                         m.add_file(file);
@@ -270,12 +273,17 @@ fn get_command_data_option_name(
 
 async fn dotheroar(ctx: &Context, interaction: Interaction, audio_only: bool) {
     let interaction = interaction.application_command().expect("Not a command");
-    interaction
-        .create_interaction_response(&ctx.http, |response| {
-            response.kind(InteractionResponseType::DeferredChannelMessageWithSource)
-        })
-        .await
-        .unwrap();
+    match interaction.defer_ephemeral(&ctx.http).await {
+        Ok(_) => {}
+        Err(e) => {
+            println!("Error deferring: {}", e);
+        }
+    }
+    // .create_interaction_response(&ctx.http, |response| {
+    //     response.kind(InteractionResponseType::DeferredChannelMessageWithSource)
+    // })
+    // .await
+    // .unwrap();
 
     let mut spoiler = false;
     let mut v = Err(anyhow::anyhow!("No url provided"));
@@ -303,6 +311,32 @@ async fn dotheroar(ctx: &Context, interaction: Interaction, audio_only: bool) {
         }
     }
 
+    let mut max_size = "8M";
+
+    if let Some(guild_id) = interaction.guild_id {
+        let guild = guild_id.to_guild_cached(&ctx.cache);
+        if let Some(guild) = guild {
+            match guild.premium_tier {
+                PremiumTier::Tier3 => max_size = "100M",
+                PremiumTier::Tier2 => max_size = "50M",
+                _ => {}
+            }
+        } else {
+            println!("No guild in cache");
+        }
+    } else {
+        println!("No guild id");
+    }
+
+    // .and_then(|f| {
+    //     f.to_guild_cached(ctx.cache)
+    //         .and_then(|f| match f.premium_tier {
+    //             PremiumTier::Tier3 => "100MB",
+    //             PremiumTier::Tier2 => "50MB",
+    //             _ => "8MB",
+    //         })
+    // });
+
     // let spoiler = match options.get(1).and_then(|m| m.resolved) {
     //         Some(ref value) => match value {
     //             serenity::model::application::interaction::application_command::CommandDataOptionValue::Boolean(ref bool) => *bool,
@@ -323,18 +357,29 @@ async fn dotheroar(ctx: &Context, interaction: Interaction, audio_only: bool) {
     //     };
 
     let fuckyouclosures = match v {
-        Ok(v) => crate::video::Video::download_video(v, audio_only, spoiler).await,
+        Ok(v) => crate::video::Video::download_video(v, audio_only, spoiler, max_size).await,
         Err(e) => Err(e),
     };
 
     match fuckyouclosures {
         Err(e) => {
-            interaction
+            match interaction
                 .edit_original_interaction_response(&ctx.http, |response| {
-                    response.content(format!("Error: {}", e))
+                    response.add_embed(
+                        serenity::builder::CreateEmbed::default()
+                            .title("Error")
+                            .description(format!("{}", e))
+                            .color(serenity::utils::Colour::RED)
+                            .to_owned(),
+                    )
                 })
                 .await
-                .unwrap();
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    println!("Fatal error creating followup message: {}", e)
+                }
+            }
         }
         Ok(video) => {
             // match video {
@@ -354,15 +399,42 @@ async fn dotheroar(ctx: &Context, interaction: Interaction, audio_only: bool) {
                     match interaction
                         .create_followup_message(&ctx.http, |m| {
                             m.add_file(file);
+                            m.flags(
+                                serenity::model::prelude::InteractionApplicationCommandCallbackDataFlags::empty(),
+                            );
                             m
                         })
                         .await
                     {
-                        Ok(_) => {}
+                        Ok(_) => {
+                        }
                         Err(e) => {
-                            println!("Error creating followup message: {}", e)
+                            match interaction
+                                .create_followup_message(&ctx.http, |m| {
+                                    m.add_embed(
+                                        serenity::builder::CreateEmbed::default()
+                                            .title("Error")
+                                            .description(format!("{}", e))
+                                            .color(serenity::utils::Colour::RED)
+                                            .to_owned(),
+                                    ).flags(
+                                        serenity::model::prelude::InteractionApplicationCommandCallbackDataFlags::EPHEMERAL
+                                    )
+                                })
+                                .await
+                            {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    println!("Fatal error creating followup message: {}", e)
+                                }
+                            }
                         }
                     };
+                    println!(
+                        "video size was {}",
+                        std::fs::metadata(&video.path).unwrap().len()
+                    );
+                    // println!("Deleting video {}", video.path.display());
                     match video.delete() {
                         Ok(_) => {}
                         Err(e) => {

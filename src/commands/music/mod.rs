@@ -1,3 +1,4 @@
+pub mod autoplay;
 pub mod loopit;
 pub mod mainloop;
 pub mod pause;
@@ -67,6 +68,7 @@ pub enum AudioPromiseCommand {
     Remove(usize),
     Loop(bool),
     Shuffle(bool),
+    Autoplay(bool),
 }
 
 #[allow(dead_code)]

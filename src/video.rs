@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::Error;
-use async_recursion::async_recursion;
+// use async_recursion::async_recursion;
 use serde::Deserialize;
 use ytd_rs::Arg;
 
@@ -56,7 +56,7 @@ async fn get_videos(url: &str) -> Result<Vec<RawVideo>, anyhow::Error> {
 impl Video {
     pub async fn get_video(
         url: String,
-        audio_only: bool,
+        // audio_only: bool,
         allow_playlist: bool,
     ) -> Result<Vec<VideoType>, anyhow::Error> {
         let mut v = get_videos(url.clone().as_str()).await?;
@@ -79,13 +79,14 @@ impl Video {
         url: String,
         audio_only: bool,
         spoiler: bool,
+        max_filesize: &str,
     ) -> Result<VideoType, anyhow::Error> {
-        let v = Self::get_video(url.clone(), audio_only, false).await?;
+        let v = Self::get_video(url.clone(), false).await?;
         let v = v.get(0).ok_or(anyhow::anyhow!("No videos found"))?;
         // convert to downloaded video type
         match v {
-            VideoType::Disk(_) => return Err(anyhow::anyhow!("Video already downloaded")),
-            VideoType::Url(v) => {
+            VideoType::Disk(_) => Err(anyhow::anyhow!("Video already downloaded")),
+            VideoType::Url(_) => {
                 let id = format!(
                     "{}{}",
                     if spoiler { "SPOILER_" } else { "" },
@@ -97,21 +98,39 @@ impl Video {
                 let mut args = vec![
                     Arg::new("--no-playlist"),
                     Arg::new("--quiet"),
+                    // Arg::new_with_arg("--max-filesize", max_filesize),
                     Arg::new_with_arg(
                         "--output",
                         format!("{}_%(playlist_index)s.%(ext)s", id).as_str(),
                     ),
                     Arg::new("--embed-metadata"),
                 ];
+
                 if audio_only {
                     args.push(Arg::new("-x"));
                     args.push(Arg::new_with_arg("--audio-format", "mp3"));
                 } else {
+                    args.push(Arg::new_with_arg(
+                        "-f",
+                        format!("best[filesize<={}]", max_filesize).as_str(),
+                    ));
                     args.push(Arg::new_with_arg("-S", "res,ext:mp4:m4a"));
                     args.push(Arg::new_with_arg("--recode", "mp4"));
                 }
-                let ytd = ytd_rs::YoutubeDL::new(&path, args, url.as_str())?;
-                let response = tokio::task::spawn_blocking(move || ytd.download()).await??;
+
+                let ytd = ytd_rs::YoutubeDL::new(&path, args.clone(), url.as_str())?;
+                let response = match tokio::task::spawn_blocking(move || ytd.download()).await? {
+                    Ok(r) => r,
+                    Err(_) => {
+                        if !audio_only {
+                            args.remove(4);
+                            let ytd = ytd_rs::YoutubeDL::new(&path, args, url.as_str())?;
+                            tokio::task::spawn_blocking(move || ytd.download()).await??
+                        } else {
+                            return Err(anyhow::anyhow!("Failed to download audio"));
+                        }
+                    }
+                };
 
                 let file = response.output_dir();
 
@@ -126,6 +145,8 @@ impl Video {
                             .to_str()
                             .ok_or(anyhow::anyhow!("No Path"))?;
                         if file_name.starts_with(id.as_str()) {
+                            run_preprocessor(&path).await?;
+
                             videos.push(Self::from_path(
                                 path,
                                 url.clone(),
@@ -135,7 +156,7 @@ impl Video {
                         }
                     }
                 }
-                return if videos.is_empty() {
+                if videos.is_empty() {
                     Err(anyhow::anyhow!("No videos found"))
                 } else {
                     videos.sort_by(|a, b| a.playlist_index.cmp(&b.playlist_index));
@@ -146,7 +167,7 @@ impl Video {
                         .get(0)
                         .cloned()
                         .ok_or(anyhow::anyhow!("No videos found"))?)
-                };
+                }
             }
         }
     }
@@ -295,7 +316,7 @@ pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>, Error> {
                 continue;
             } else {
                 vids.push(
-                    Video::get_video(vid[0].clone().url, true, false)
+                    Video::get_video(vid[0].clone().url, false)
                         .await?
                         .first()
                         .ok_or_else(|| anyhow::anyhow!("No videos found"))?
@@ -305,4 +326,16 @@ pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>, Error> {
         }
         Ok(vids)
     }
+}
+
+async fn run_preprocessor(filepath: &PathBuf) -> Result<(), Error> {
+    // run the preprocessor script located in the data folder if it exists and is executable
+    let mut path = crate::Config::get().data_path.clone();
+    path.push("preprocessor.sh");
+    if path.exists() {
+        let mut cmd = tokio::process::Command::new(path);
+        cmd.arg(filepath);
+        cmd.spawn()?.wait().await?;
+    }
+    Ok(())
 }

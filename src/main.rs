@@ -3,6 +3,7 @@
 
 mod commands;
 
+mod radio;
 mod video;
 mod youtube;
 use std::collections::HashMap;
@@ -22,12 +23,12 @@ use serenity::builder::CreateApplicationCommand;
 use serenity::model::application::interaction::autocomplete::AutocompleteInteraction;
 use serenity::model::application::interaction::Interaction;
 use serenity::model::gateway::Ready;
-use serenity::model::prelude::{GuildId, Member, Message, ResumedEvent};
+use serenity::model::prelude::{GuildId, Member, ResumedEvent};
 use serenity::model::user::User;
-use serenity::model::webhook::Webhook;
-use tokio::io::AsyncWriteExt;
+// use serenity::model::webhook::Webhook;
+// use tokio::io::AsyncWriteExt;
 // use serenity::model::id::GuildId;
-use crate::bigwetsloppybowser::ShitGPT;
+// use crate::bigwetsloppybowser::ShitGPT;
 use serenity::model::prelude::command::Command;
 use serenity::model::voice::VoiceState;
 use serenity::prelude::*;
@@ -43,9 +44,9 @@ impl Handler {
     }
 }
 
-lazy_static::lazy_static! {
-    static ref SHITGPT: Arc<Mutex<HashMap<String, ShitGPT>>> = Arc::new(Mutex::new(serde_json::from_reader(std::fs::File::open(Config::get().shitgpt_path).unwrap()).unwrap()));
-}
+// lazy_static::lazy_static! {
+//     static ref SHITGPT: Arc<Mutex<HashMap<String, ShitGPT>>> = Arc::new(Mutex::new(serde_json::from_reader(std::fs::File::open(Config::get().shitgpt_path).unwrap()).unwrap()));
+// }
 
 lazy_static::lazy_static! {
     static ref WHITELIST: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(serde_json::from_reader(std::fs::File::open(Config::get().whitelist_path).unwrap()).unwrap()));
@@ -233,65 +234,65 @@ impl EventHandler for Handler {
         }
     }
 
-    async fn message(&self, ctx: Context, new_message: Message) {
-        // let mut g = SHITGPT.lock().await;
-        // let s = g
-        //     .entry(new_message.author.id.as_u64().to_string())
-        //     .or_insert(ShitGPT::new(7));
-        // s.train(new_message.content_safe(&ctx));
-        // // save shitgpt with serde_json
-        // tokio::fs::write(
-        //     Config::get().shitgpt_path,
-        //     serde_json::to_string(&*g).unwrap(),
-        // )
-        // .await
-        // .unwrap();
+    // async fn message(&self, ctx: Context, new_message: Message) {
+    //     // let mut g = SHITGPT.lock().await;
+    //     // let s = g
+    //     //     .entry(new_message.author.id.as_u64().to_string())
+    //     //     .or_insert(ShitGPT::new(7));
+    //     // s.train(new_message.content_safe(&ctx));
+    //     // // save shitgpt with serde_json
+    //     // tokio::fs::write(
+    //     //     Config::get().shitgpt_path,
+    //     //     serde_json::to_string(&*g).unwrap(),
+    //     // )
+    //     // .await
+    //     // .unwrap();
 
-        // get current unix timestamp
-        //
-        // -------------------------------
-        //
-        // let validchars = "abcdefghijklmnopqrstuvwxyz";
-        let t = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let string = new_message.content_safe(&ctx);
-        //     .split_ascii_whitespace()
-        //     .map(|s| TimedString {
-        //         string: s
-        //             .to_lowercase()
-        //             .chars()
-        //             .filter(|c| c.is_ascii())
-        //             .collect::<String>(),
-        //         time: t,
-        //     })
-        //     .filter(|s| !s.string.is_empty())
-        //     .map(|mut s| {
-        //         s.string = s
-        //             .string
-        //             .chars()
-        //             .filter(|c| validchars.contains(*c))
-        //             .collect::<String>();
-        //         s
-        //     })
-        //     .collect::<Vec<TimedString>>();
-        // make a request to localhost:16834
-        if !string.is_empty() {
-            let mut req = reqwest::Client::new()
-                .post("http://localhost:16834/api/add/string")
-                .json(&Timed {
-                    thing: string,
-                    time: t,
-                });
-            if let Some(token) = Config::get().string_api_token {
-                req = req.bearer_auth(token);
-            }
-            if let Err(e) = req.send().await {
-                println!("Failed to send strings to api {e}");
-            }
-        }
-    }
+    //     // get current unix timestamp
+    //     //
+    //     // -------------------------------
+    //     //
+    //     // let validchars = "abcdefghijklmnopqrstuvwxyz";
+    //     let t = std::time::SystemTime::now()
+    //         .duration_since(std::time::UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_secs();
+    //     let string = new_message.content_safe(&ctx);
+    //     //     .split_ascii_whitespace()
+    //     //     .map(|s| TimedString {
+    //     //         string: s
+    //     //             .to_lowercase()
+    //     //             .chars()
+    //     //             .filter(|c| c.is_ascii())
+    //     //             .collect::<String>(),
+    //     //         time: t,
+    //     //     })
+    //     //     .filter(|s| !s.string.is_empty())
+    //     //     .map(|mut s| {
+    //     //         s.string = s
+    //     //             .string
+    //     //             .chars()
+    //     //             .filter(|c| validchars.contains(*c))
+    //     //             .collect::<String>();
+    //     //         s
+    //     //     })
+    //     //     .collect::<Vec<TimedString>>();
+    //     // make a request to localhost:16834
+    //     if !string.is_empty() {
+    //         let mut req = reqwest::Client::new()
+    //             .post("http://localhost:16834/api/add/string")
+    //             .json(&Timed {
+    //                 thing: string,
+    //                 time: t,
+    //             });
+    //         if let Some(token) = Config::get().string_api_token {
+    //             req = req.bearer_auth(token);
+    //         }
+    //         if let Err(e) = req.send().await {
+    //             println!("Failed to send strings to api {e}");
+    //         }
+    //     }
+    // }
 
     async fn resume(&self, ctx: Context, _: ResumedEvent) {
         // resync all users
@@ -448,7 +449,9 @@ async fn main() {
     tmp.push("tmp");
 
     let r = std::fs::remove_dir_all(&tmp);
-    if r.is_err() {}
+    if r.is_err() {
+        println!("Failed to remove tmp folder");
+    }
     std::fs::create_dir_all(&tmp).expect("Failed to create tmp folder");
 
     let token = cfg.token;
@@ -463,6 +466,7 @@ async fn main() {
         Box::new(commands::music::skip::Skip),
         Box::new(commands::music::stop::Stop),
         Box::new(commands::music::volume::Volume),
+        Box::new(commands::music::autoplay::Autoplay),
         Box::new(commands::embed::Video),
         Box::new(commands::embed::Audio),
         Box::new(commands::embed::John),
@@ -501,6 +505,7 @@ struct Config {
     whitelist_path: PathBuf,
     string_api_token: Option<String>,
     idle_url: String,
+    api_url: Option<String>,
     #[cfg(feature = "tts")]
     gcloud_script: String,
     #[cfg(feature = "youtube-search")]
@@ -573,6 +578,7 @@ impl Config {
                 } else {
                     Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH)\nif you wish to use a file on disk, set this to something as a fallback, and name the file override.mp3 inside the bot directory)\n(appdata/local/ for windows users and ~/.local/share/ for linux users):")
                 },
+                api_url: rec.api_url,
                 bumper_url: if let Some(bumper_url) = rec.bumper_url {
                     bumper_url
                 } else {
@@ -605,6 +611,7 @@ impl Config {
                 #[cfg(feature = "spotify")]
                 spotify_api_key: Self::safe_read("\nPlease enter your spotify api key:"),
                 idle_url: Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH):"),
+                api_url: None,
                 bumper_url: Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):"),
                 shitgpt_path: Self::safe_read("\nPlease enter your shitgpt path (teehee):"),
                 whitelist_path: Self::safe_read("\nPlease enter your whitelist path (teehee):"),
@@ -674,5 +681,6 @@ struct RecoverConfig {
     #[cfg(feature = "spotify")]
     spotify_api_key: Option<String>,
     idle_url: Option<String>,
+    api_url: Option<String>,
     bumper_url: Option<String>,
 }

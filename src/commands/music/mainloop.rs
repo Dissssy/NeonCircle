@@ -16,6 +16,7 @@ use std::time::Duration;
 use serenity::futures::channel::mpsc;
 
 use crate::commands::music::{AudioPromiseCommand, MetaVideo, VideoType};
+use crate::radio::AzuraCast;
 
 use super::MessageReference;
 
@@ -36,6 +37,12 @@ pub async fn the_lüüp(
     let mut nothing_handle: Option<TrackHandle> = None;
     let mut tts_handle: Option<TrackHandle> = None;
     let mut volume = 1.0;
+    let mut autoplay = false;
+    let mut autoplay_thread: Option<tokio::task::JoinHandle<Option<MetaVideo>>> = None;
+    let mut azuracast = match crate::Config::get().api_url {
+        Some(ref url) => AzuraCast::new(url).await.ok(),
+        None => None,
+    };
 
     let mut current_track: Option<MetaVideo> = None;
     loop {
@@ -103,6 +110,20 @@ pub async fn the_lüüp(
                         }
                     } else {
                         let r = snd.unbounded_send(format!("Shuffle is already `{}`", shuffled));
+                        if let Err(e) = r {
+                            log.push_str(&format!("Error updating message: {}\r", e));
+                        }
+                    }
+                }
+                AudioPromiseCommand::Autoplay(autoplayi) => {
+                    if autoplay != autoplayi {
+                        autoplay = autoplayi;
+                        let r = snd.unbounded_send(format!("Autoplay set to `{}`", autoplay));
+                        if let Err(e) = r {
+                            log.push_str(&format!("Error updating message: {}\r", e));
+                        }
+                    } else {
+                        let r = snd.unbounded_send(format!("Autoplay is already `{}`", autoplay));
                         if let Err(e) = r {
                             log.push_str(&format!("Error updating message: {}\r", e));
                         }
@@ -177,7 +198,6 @@ pub async fn the_lüüp(
                     }
                 }
             }
-        } else {
         }
 
         if let Some(current) = current_track.as_mut() {
@@ -187,6 +207,39 @@ pub async fn the_lüüp(
                 if let Ok(playmode) = playmode {
                     if let Err(playmode) = playmode {
                         if playmode == songbird::tracks::TrackError::Finished {
+                            let url = current_track.as_ref().and_then(|t| match t.video {
+                                VideoType::Disk(_) => None,
+                                VideoType::Url(ref y) => Some(y.url.clone()),
+                            });
+
+                            if autoplay && queue.is_empty() {
+                                // get a new song to play next as well
+                                if let Some(url) = url {
+                                    autoplay_thread = Some(tokio::spawn(async move {
+                                        let r = match tokio::time::timeout(
+                                            Duration::from_secs(2),
+                                            crate::youtube::get_recommendations(url, 1),
+                                        )
+                                        .await
+                                        {
+                                            Ok(r) => r,
+                                            Err(_) => {
+                                                return None;
+                                            }
+                                        };
+
+                                        let vid = match r.get(0) {
+                                            Some(v) => v,
+                                            None => {
+                                                return None;
+                                            }
+                                        };
+
+                                        vid.to_metavideo().await.ok()
+                                    }));
+                                }
+                            };
+
                             let mut t = None;
                             mem::swap(&mut current_track, &mut t);
                             if let Some(t) = t.as_mut() {
@@ -304,7 +357,39 @@ pub async fn the_lüüp(
             } else {
                 0
             };
-            current_track = Some(queue.remove(index));
+            let vid = queue.remove(index);
+            current_track = Some(vid);
+        }
+
+        if queue.is_empty() && autoplay && autoplay_thread.is_none() {
+            let url = current_track.as_ref().and_then(|t| match t.video {
+                VideoType::Disk(_) => None,
+                VideoType::Url(ref y) => Some(y.url.clone()),
+            });
+            if let Some(url) = url {
+                autoplay_thread = Some(tokio::spawn(async move {
+                    let r = match tokio::time::timeout(
+                        Duration::from_secs(2),
+                        crate::youtube::get_recommendations(url, 1),
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(_) => {
+                            return None;
+                        }
+                    };
+
+                    let vid = match r.get(0) {
+                        Some(v) => v,
+                        None => {
+                            return None;
+                        }
+                    };
+
+                    vid.to_metavideo().await.ok()
+                }));
+            }
         }
 
         if queue.is_empty() && current_track.is_none() {
@@ -351,11 +436,20 @@ pub async fn the_lüüp(
                     ));
                 }
             }
-            let r = tokio::time::timeout(
-                Duration::from_secs(2),
-                msg.update("Queue is empty, use `/play` to play something!"),
-            )
-            .await;
+            let mut msgtext = "Queue is empty, use `/play` to play something!".to_owned();
+            if let Some(ref mut azuracast) = azuracast {
+                let data = azuracast.fast_data().await;
+                msgtext = format!(
+                    "{}\n\nIn the meantime, enjoy `{}` by `{}` on `{}`\nUp next: `{}` by `{}`",
+                    msgtext,
+                    data.now_playing.song.title,
+                    data.now_playing.song.artist,
+                    data.station.name,
+                    data.playing_next.song.title,
+                    data.playing_next.song.artist
+                );
+            };
+            let r = tokio::time::timeout(Duration::from_secs(2), msg.update(&msgtext)).await;
             if let Ok(r) = r {
                 if let Err(e) = r {
                     log.push_str(&format!(
@@ -484,6 +578,32 @@ pub async fn the_lüüp(
             println!("{}", log);
             log.clear();
         }
+
+        let mut finished = false;
+        if let Some(h) = &autoplay_thread {
+            if h.is_finished() {
+                finished = true;
+            }
+        }
+
+        if finished {
+            let thread = autoplay_thread.take();
+            if let Some(thread) = thread {
+                let res = thread.await;
+                match res {
+                    Err(e) => {
+                        log.push_str(&format!("Error in autoplay thread: {}\n", e));
+                    }
+                    Ok(v) => {
+                        if let Some(v) = v {
+                            queue.push(v);
+                        }
+                    }
+                };
+                autoplay_thread = None;
+            }
+        }
+
         tokio::time::sleep(std::time::Duration::from_millis(looptime)).await;
         let mut brk = false;
         {
@@ -590,4 +710,43 @@ fn get_bar(percent_done: f64, length: usize) -> String {
         }
     }
     bar
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct EmbedData {
+    author: Option<String>,
+    author_url: Option<String>,
+    author_icon_url: Option<String>,
+    body: Option<String>,
+    fields: Vec25<(String, String, bool)>,
+    thumbnail: Option<String>,
+    footer: Option<String>,
+}
+
+impl Default for EmbedData {
+    fn default() -> Self {
+        Self {
+            author: Some("Neon Circle".to_owned()),
+            author_url: Some("https://neoncircle.deadlyneurotox.in/".to_owned()),
+            author_icon_url: None,
+            body: None,
+            fields: Vec25::new(),
+            thumbnail: None,
+            footer: Some("Type /help for help".to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Vec25<T>(Vec<T>);
+
+impl<T> Vec25<T> {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+    pub fn push(&mut self, item: T) {
+        if self.0.len() < 25 {
+            self.0.push(item);
+        }
+    }
 }

@@ -1,3 +1,4 @@
+use crate::commands::music::MetaVideo;
 #[cfg(feature = "tts")]
 use crate::{commands::music::VideoType, video::Video};
 use anyhow::Error;
@@ -5,64 +6,106 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "tts")]
 use tokio::io::AsyncWriteExt;
 
-#[allow(dead_code)]
-pub async fn search(query: String) -> Vec<VideoInfo> {
+pub async fn search(query: String, lim: usize) -> Vec<VideoInfo> {
     let url = format!("https://www.youtube.com/results?search_query={}", query);
+    videos_from_raw_youtube_url(url, lim).await
+}
+
+async fn videos_from_raw_youtube_url(url: String, lim: usize) -> Vec<VideoInfo> {
     let client = reqwest::Client::new();
-    let res = client.get(url.as_str()).header(
+    let res = client
+        .get(url.as_str())
+        .header(
             "User-Agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36",
-        ).send().await;
+        )
+        .send()
+        .await;
     let mut videos = Vec::new();
     if let Ok(res) = res {
         let text = res.text().await;
 
         if let Ok(text) = text {
-            let split = text.split("{\"url\":\"/watch?v=");
-            let mut h = Vec::new();
-            for (i, s) in split.map(|s| s.to_owned()).enumerate() {
-                if i > 1 {
-                    break;
-                }
-                h.push(tokio::task::spawn(async move {
-                    let split = s.split('\"').next();
-
-                    if let Some(id) = split {
-                        if !id
-                            .chars()
-                            .any(|c| c == '>' || c == ' ' || c == '/' || c == '\\')
-                        {
-                            let url = format!("https://www.youtube.com/watch?v={}", id);
-                            let vid = get_video_info(url).await;
-
-                            if let Ok(vid) = vid {
-                                Some(vid)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                }));
-            }
-            for t in h {
-                if let Ok(Some(vid)) = t.await {
-                    videos.push(vid);
-                }
-            }
+            let original_id = if url.contains("watch?v=") {
+                url.split("watch?v=").nth(1).map(|s| s.to_string())
+            } else {
+                None
+            };
+            videos = get_ids_from_html(text, lim, original_id).await;
         }
     }
-
     videos
+}
+
+async fn get_ids_from_html(
+    text: String,
+    lim: usize,
+    original_id: Option<String>,
+) -> Vec<VideoInfo> {
+    let mut ids = text
+        .split("/watch?v=")
+        .skip(1)
+        .map(|s| {
+            // we want to get the video id, so split on the next invalid character
+            let mut id = String::new();
+            for c in s.chars() {
+                if c == '>' || c == ' ' || c == '/' || c == '\\' || c == '"' || c == '&' {
+                    break;
+                }
+                id.push(c);
+            }
+            id
+        })
+        .collect::<Vec<_>>();
+    ids.dedup();
+    if let Some(original_id) = original_id {
+        ids.retain(|s| s != &original_id);
+    }
+    let mut h = Vec::new();
+    for (i, s) in ids.iter().cloned().enumerate() {
+        if i >= lim {
+            break;
+        }
+        h.push(tokio::task::spawn(async move {
+            let split = s.split('\\').next();
+
+            if let Some(id) = split {
+                let url = format!("https://www.youtube.com/watch?v={}", id);
+                let vid = get_video_info(url).await;
+
+                if let Ok(vid) = vid {
+                    Some(vid)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }));
+    }
+    let mut videos = Vec::new();
+    for t in h {
+        if let Ok(Some(vid)) = t.await {
+            videos.push(vid);
+        }
+    }
+    videos
+}
+
+pub async fn get_recommendations(url: String, lim: usize) -> Vec<VideoInfo> {
+    if url
+        .split("https://www.youtube.com/watch?v=")
+        .nth(1)
+        .is_none()
+    {
+        return Vec::new();
+    }
+    videos_from_raw_youtube_url(url, lim).await
 }
 
 #[allow(dead_code)]
 pub async fn get_video_info(url: String) -> Result<VideoInfo, Error> {
     let title = get_url_title(url.clone()).await;
-    println!("title: {:?}", title);
     if let Some(title) = title {
         Ok(VideoInfo { title, url })
     } else {
@@ -99,7 +142,6 @@ pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
     // get the song title from spotify api
     let token = crate::Config::get().spotify_api_key;
     let url = format!("https://api.spotify.com/v1/tracks/{}", id);
-    println!("url: {}", url);
     let client = reqwest::Client::new();
     let res = client
         .get(url.as_str())
@@ -113,7 +155,6 @@ pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
             spoofy.name, spoofy.artists[0].name
         )])
     } else {
-        println!("spoofydata: {:?}", spoofydata);
         // attempt to get the album
         let url = format!("https://api.spotify.com/v1/albums/{}", id);
         let client = reqwest::Client::new();
@@ -166,6 +207,57 @@ pub struct VideoInfo {
     pub url: String,
 }
 
+impl VideoInfo {
+    pub async fn to_metavideo(&self) -> anyhow::Result<MetaVideo> {
+        let v = crate::video::Video::get_video(self.url.clone(), true)
+            .await?
+            .get(0)
+            .ok_or(anyhow::anyhow!("Could not get video"))?
+            .clone();
+
+        #[cfg(feature = "tts")]
+        let key = crate::youtube::get_access_token().await;
+
+        let title = match v.clone() {
+            VideoType::Disk(v) => v.title,
+            VideoType::Url(v) => v.title,
+        };
+        #[cfg(feature = "tts")]
+        if let Ok(key) = key.as_ref() {
+            let t = tokio::task::spawn(crate::youtube::get_tts(title.clone(), key.clone()))
+                .await
+                .unwrap();
+            if let Ok(tts) = t {
+                match tts {
+                    VideoType::Disk(tts) => Ok(MetaVideo {
+                        video: v,
+                        ttsmsg: Some(tts),
+                        title,
+                    }),
+                    VideoType::Url(_) => {
+                        unreachable!("TTS should always be a disk file");
+                    }
+                }
+            } else {
+                println!("Error {:?}", t);
+                Ok(MetaVideo {
+                    video: v,
+                    ttsmsg: None,
+                    title,
+                })
+            }
+        } else {
+            Ok(MetaVideo {
+                video: v,
+                ttsmsg: None,
+                title,
+            })
+        }
+        #[cfg(not(feature = "tts"))]
+        return Ok(MetaVideo { video: v, title });
+    }
+}
+
 #[cfg(feature = "tts")]
 pub async fn get_tts(title: String, key: String) -> Result<VideoType, Error> {
     // return Err(anyhow::anyhow!("TTS is currently disabled"));
@@ -202,7 +294,10 @@ pub async fn get_tts(title: String, key: String) -> Result<VideoType, Error> {
     // let json: TTSResponse = serde_json::from_str(text.as_str())?;
     let json: TTSResponse = res.json().await?;
 
-    let data = base64::decode(json.audio_content)?;
+    let data = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD_NO_PAD,
+        json.audio_content,
+    )?;
 
     let id = nanoid::nanoid!(10);
     let mut path = crate::Config::get().data_path;

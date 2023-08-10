@@ -125,13 +125,10 @@ impl crate::CommandTrait for Play {
                         .unwrap()
                         .to_owned();
                     // #[cfg(feature = "download")]
-                    let t = tokio::task::spawn(crate::video::Video::get_video(
-                        urloption.clone(),
-                        true,
-                        true,
-                    ))
-                    .await
-                    .unwrap();
+                    let t =
+                        tokio::task::spawn(crate::video::Video::get_video(urloption.clone(), true))
+                            .await
+                            .unwrap();
                     // #[cfg(not(feature = "download"))]
                     // let t = tokio::task::spawn(crate::youtube::get_video_info(
                     //     options[0]
@@ -148,7 +145,7 @@ impl crate::CommandTrait for Play {
                         Ok(videos)
                     } else {
                         // search youtube for a video
-                        let t = tokio::task::spawn(crate::youtube::search(urloption))
+                        let t = tokio::task::spawn(crate::youtube::search(urloption, 1))
                             .await
                             .unwrap();
                         // get the first video
@@ -156,7 +153,6 @@ impl crate::CommandTrait for Play {
                             let vid = t[0].clone();
                             let th = tokio::task::spawn(crate::video::Video::get_video(
                                 vid.url.clone(),
-                                true,
                                 true,
                             ))
                             .await
