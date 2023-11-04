@@ -548,7 +548,12 @@ impl RawMessage {
             tts_audio_handle: Some(Self::audio_handle(text, voice.clone())),
         }
     }
-    pub fn message(ctx: &Context, msg: &Message, voice: &TTSVoice) -> Result<Self, Error> {
+    pub async fn message(
+        ctx: &Context,
+        msg: &Message,
+        voice: &TTSVoice,
+        saychannel: bool,
+    ) -> Result<Self, Error> {
         let safecontent = msg.content_safe(&ctx.cache);
         let finder = linkify::LinkFinder::new();
         let links: Vec<_> = finder.links(&safecontent).map(|l| l.as_str()).collect();
@@ -564,13 +569,25 @@ impl RawMessage {
             return Err(anyhow::anyhow!("Message is empty"));
         }
 
+        let newfilteredcontent = if saychannel {
+            let channelname = match msg.channel(&ctx).await.unwrap() {
+                serenity::model::prelude::Channel::Guild(channel) => channel.name,
+                serenity::model::prelude::Channel::Private(_) => String::from("Private"),
+                serenity::model::prelude::Channel::Category(_) => String::from("Category"),
+                _ => String::from("Unknown"),
+            };
+            format!("in #{}. {}", channelname, filteredcontent,)
+        } else {
+            filteredcontent
+        };
+
         Ok(Self {
             author: msg.author.name.clone(),
             author_id: msg.author.id.to_string(),
             channel_id: msg.channel_id,
             timestamp: msg.timestamp,
-            content: filteredcontent.clone(),
-            tts_audio_handle: Some(Self::audio_handle(filteredcontent, voice.clone())),
+            content: newfilteredcontent.clone(),
+            tts_audio_handle: Some(Self::audio_handle(newfilteredcontent, voice.clone())),
         })
     }
 

@@ -529,6 +529,14 @@ impl TranscribeChannelHandler {
     pub async fn get_tts(&mut self, ctx: &Context, msg: &Message) -> Vec<RawMessage> {
         let mut messages = Vec::new();
 
+        let saychannel = match self.channels.lock().await.len() {
+            0 => {
+                return messages;
+            }
+            1 => false,
+            _ => true,
+        };
+
         // attempt to get voice
         let voice = {
             let mut assigned_voice = self.assigned_voice.lock().await;
@@ -548,7 +556,7 @@ impl TranscribeChannelHandler {
             }
         };
 
-        match RawMessage::message(ctx, msg, &voice) {
+        match RawMessage::message(ctx, msg, &voice, saychannel).await {
             Ok(b) => {
                 messages.push(b);
             }

@@ -101,6 +101,8 @@ pub async fn the_lüüp(
         Some(ref url) => AzuraCast::new(url).await.ok(),
         None => None,
     };
+    let mut brk = false;
+
     // let mut transcribe_handler = super::transcribe::Holder::new(Arc::clone(&call));
     // let mut transcribe_handler =
     //     super::transcribe::MetaTranscribeHandler::new(Arc::clone(&_t_arcmutex));
@@ -155,714 +157,712 @@ pub async fn the_lüüp(
         }
     });
 
+    let mut run_dur = tokio::time::interval(tokio::time::Duration::from_millis(looptime));
+
     loop {
-        // testing
-        // if let Ok(Some(uhghgh)) = testrx.try_next() {
-        //     println!("got something: {:?}", uhghgh);
-        // }
+        tokio::select! {
+            Some((snd, command)) = rx.next() => {
+                match command {
+                    AudioPromiseCommand::Play(videos) => {
+                        for v in videos {
+                            queue.push(v);
+                        }
 
-        let command = rx.try_next();
-        if let Ok(Some((snd, command))) = command {
-            match command {
-                AudioPromiseCommand::Play(videos) => {
-                    for v in videos {
-                        queue.push(v);
+                        snd.unbounded_send(String::from("Added to queue")).unwrap();
                     }
-
-                    snd.unbounded_send(String::from("Added to queue")).unwrap();
-                }
-                AudioPromiseCommand::Stop => {
-                    let r = snd.unbounded_send(String::from("Stopped"));
-                    if let Err(e) = r {
-                        log.push_str(&format!("Error sending stop: {}\r", e));
+                    AudioPromiseCommand::Stop => {
+                        let r = snd.unbounded_send(String::from("Stopped"));
+                        if let Err(e) = r {
+                            log.push_str(&format!("Error sending stop: {}\r", e));
+                        }
+                        brk = true;
                     }
-                    break;
-                }
-                AudioPromiseCommand::Pause => {
-                    if let Some(trackhandle) = trackhandle.as_mut() {
-                        paused = true;
-                        let r = trackhandle.pause();
-                        if r.is_ok() {
-                            let r2 = snd.unbounded_send(String::from("Paused"));
-                            if let Err(e) = r2 {
-                                log.push_str(&format!("Error sending pause: {}\r", e));
+                    AudioPromiseCommand::Pause => {
+                        if let Some(trackhandle) = trackhandle.as_mut() {
+                            paused = true;
+                            let r = trackhandle.pause();
+                            if r.is_ok() {
+                                let r2 = snd.unbounded_send(String::from("Paused"));
+                                if let Err(e) = r2 {
+                                    log.push_str(&format!("Error sending pause: {}\r", e));
+                                }
+                            } else {
+                                log.push_str(&format!("Error pausing track: {}\r", r.unwrap_err()));
                             }
                         } else {
-                            log.push_str(&format!("Error pausing track: {}\r", r.unwrap_err()));
-                        }
-                    } else {
-                        let r = snd.unbounded_send(String::from("Nothing is playing"));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
+                            let r = snd.unbounded_send(String::from("Nothing is playing"));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
                         }
                     }
-                }
-                AudioPromiseCommand::Resume => {
-                    if let Some(trackhandle) = trackhandle.as_mut() {
-                        paused = false;
-                        let r = trackhandle.play();
-                        if r.is_ok() {
-                            let r2 = snd.unbounded_send(String::from("Resumed"));
-                            if let Err(e) = r2 {
-                                log.push_str(&format!("Error sending resume: {}\r", e));
+                    AudioPromiseCommand::Resume => {
+                        if let Some(trackhandle) = trackhandle.as_mut() {
+                            paused = false;
+                            let r = trackhandle.play();
+                            if r.is_ok() {
+                                let r2 = snd.unbounded_send(String::from("Resumed"));
+                                if let Err(e) = r2 {
+                                    log.push_str(&format!("Error sending resume: {}\r", e));
+                                }
+                            } else {
+                                log.push_str(&format!("Error resuming track: {}\r", r.unwrap_err()));
                             }
                         } else {
-                            log.push_str(&format!("Error resuming track: {}\r", r.unwrap_err()));
+                            let r = snd.unbounded_send(String::from("Nothing is playing"));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
                         }
-                    } else {
-                        let r = snd.unbounded_send(String::from("Nothing is playing"));
+                    }
+                    AudioPromiseCommand::Shuffle(shuffle) => {
+                        if shuffled != shuffle {
+                            shuffled = shuffle;
+                            let r = snd.unbounded_send(format!("Shuffle set to `{}`", shuffled));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
+                        } else {
+                            let r = snd.unbounded_send(format!("Shuffle is already `{}`", shuffled));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
+                        }
+                    }
+                    // AudioPromiseCommand::Transcribe(transcribe, id) => {
+                    //     if transcribed != transcribe {
+                    //         transcribed = transcribe;
+                    //         let r = snd.unbounded_send(format!("Transcribe set to `{}`", transcribed));
+                    //         if let Err(e) = r {
+                    //             log.push_str(&format!("Error updating message: {}\r", e));
+                    //         }
+                    //         // if transcribed {
+                    //         //     msg.last_processed = Some(id);
+                    //         // }
+                    //     } else {
+                    //         let r =
+                    //             snd.unbounded_send(format!("Transcribe is already `{}`", transcribed));
+                    //         if let Err(e) = r {
+                    //             log.push_str(&format!("Error updating message: {}\r", e));
+                    //         }
+                    //     }
+                    // }
+                    AudioPromiseCommand::Autoplay(autoplayi) => {
+                        if autoplay != autoplayi {
+                            autoplay = autoplayi;
+                            let r = snd.unbounded_send(format!("Autoplay set to `{}`", autoplay));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
+                        } else {
+                            let r = snd.unbounded_send(format!("Autoplay is already `{}`", autoplay));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
+                        }
+                    }
+                    AudioPromiseCommand::Loop(loopi) => {
+                        if looped != loopi {
+                            looped = loopi;
+                            let r = snd.unbounded_send(format!("Loop set to `{}`", looped));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
+                        } else {
+                            let r = snd.unbounded_send(format!("Loop is already `{}`", looped));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
+                        }
+                    }
+                    AudioPromiseCommand::Repeat(repeati) => {
+                        if repeated != repeati {
+                            repeated = repeati;
+                            let r = snd.unbounded_send(format!("Repeat set to `{}`", repeated));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
+                        } else {
+                            let r = snd.unbounded_send(format!("Repeat is already `{}`", repeated));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
+                        }
+                    }
+                    AudioPromiseCommand::Skip => {
+                        if let Some(trackhandle) = trackhandle.as_mut() {
+                            let r = trackhandle.stop();
+                            if r.is_ok() {
+                                let r2 = snd.unbounded_send(String::from("Skipped"));
+                                if let Err(e) = r2 {
+                                    log.push_str(&format!("Error sending skip: {}\r", e));
+                                }
+                            } else {
+                                log.push_str(&format!("Error skipping track: {}\r", r.unwrap_err()));
+                            }
+                        } else {
+                            let r = snd.unbounded_send(String::from("Nothing is playing"));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
+                        }
+                    }
+                    AudioPromiseCommand::Volume(v) => {
+                        let msg = if nothing_handle.is_some() {
+                            radiovolume = v;
+                            format!("Radio volume set to `{}%`", radiovolume * 100.0)
+                        } else {
+                            volume = v;
+                            format!("Song volume set to `{}%`", volume * 100.0)
+                        };
+
+                        let r = snd.unbounded_send(msg);
+                        if let Err(e) = r {
+                            log.push_str(&format!("Error updating message: {}\r", e));
+                        }
+                    }
+                    AudioPromiseCommand::Remove(index) => {
+                        let index = index - 1;
+                        if index < queue.len() {
+                            let mut v = queue.remove(index);
+                            let r = v.delete();
+                            if let Err(r) = r {
+                                log.push_str(&format!("Error removing `{}`: {}\r", v.title, r));
+                                let r =
+                                    snd.unbounded_send(format!("Error removing `{}`: {}", v.title, r));
+                                if let Err(e) = r {
+                                    log.push_str(&format!("Error updating message: {}\r", e));
+                                }
+                            } else {
+                                let r = snd.unbounded_send(format!("Removed `{}`", v.title));
+                                if let Err(e) = r {
+                                    log.push_str(&format!("Error updating message: {}\r", e));
+                                }
+                            }
+                        } else {
+                            let r = snd.unbounded_send(format!(
+                                "Index out of range, max is `{}`",
+                                queue.len()
+                            ));
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error updating message: {}\r", e));
+                            }
+                        }
+                    }
+                    AudioPromiseCommand::SetBitrate(bitrate) => {
+                        let mut cl = call.lock().await;
+                        cl.set_bitrate(songbird::driver::Bitrate::BitsPerSecond(bitrate as i32));
+                        let r = snd.unbounded_send(format!("Bitrate set to `{}`", bitrate));
                         if let Err(e) = r {
                             log.push_str(&format!("Error updating message: {}\r", e));
                         }
                     }
                 }
-                AudioPromiseCommand::Shuffle(shuffle) => {
-                    if shuffled != shuffle {
-                        shuffled = shuffle;
-                        let r = snd.unbounded_send(format!("Shuffle set to `{}`", shuffled));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
+            }
+            _ = run_dur.tick() => {
+                if let Some(current) = current_track.as_mut() {
+                    if let Some(thandle) = trackhandle.as_mut() {
+                        let playmode = tokio::time::timeout(g_timeout_time, thandle.get_info()).await;
+                        if let Ok(playmode) = playmode {
+                            if let Err(playmode) = playmode {
+                                if playmode == songbird::tracks::TrackError::Finished {
+                                    let url = current_track.as_ref().and_then(|t| match t.video {
+                                        VideoType::Disk(_) => None,
+                                        VideoType::Url(ref y) => Some(y.url.clone()),
+                                    });
+
+                                    if autoplay && queue.is_empty() {
+                                        // get a new song to play next as well
+                                        if let Some(url) = url {
+                                            autoplay_thread = Some(tokio::spawn(async move {
+                                                let r = match tokio::time::timeout(
+                                                    Duration::from_secs(2),
+                                                    crate::youtube::get_recommendations(url, 1),
+                                                )
+                                                .await
+                                                {
+                                                    Ok(r) => r,
+                                                    Err(_) => {
+                                                        return None;
+                                                    }
+                                                };
+
+                                                let vid = match r.get(0) {
+                                                    Some(v) => v,
+                                                    None => {
+                                                        return None;
+                                                    }
+                                                };
+
+                                                vid.to_metavideo().await.ok()
+                                            }));
+                                        }
+                                    };
+
+                                    let mut t = None;
+                                    mem::swap(&mut current_track, &mut t);
+                                    if let Some(t) = t.as_mut() {
+                                        if repeated {
+                                            queue.insert(0, t.clone());
+                                        } else if looped {
+                                            queue.push(t.clone());
+                                        } else {
+                                            let r = t.delete();
+                                            if let Err(e) = r {
+                                                log.push_str(&format!("Error deleting video: {}\n", e));
+                                            }
+                                        }
+                                    }
+                                    current_track = None;
+                                    trackhandle = None;
+                                    tts_handle = None;
+                                } else {
+                                    log.push_str(format!("playmode error: {:?}", playmode).as_str());
+                                }
+                            }
+                        } else {
+                            log.push_str(&format!("playmode timeout: {}\r", playmode.unwrap_err()));
+                        }
+                    } else if let Some(tts) = tts_handle.as_mut() {
+                        let r = tokio::time::timeout(g_timeout_time, tts.get_info()).await;
+                        if let Ok(r) = r {
+                            if let Err(r) = r {
+                                if r == songbird::tracks::TrackError::Finished {
+                                    let calllock = call.try_lock();
+                                    if let Ok(mut clock) = calllock {
+                                        let r = match current.video.clone() {
+                                            VideoType::Disk(v) => {
+                                                tokio::time::timeout(
+                                                    Duration::from_secs(30),
+                                                    ffmpeg(&v.path),
+                                                )
+                                                .await
+                                            }
+                                            VideoType::Url(v) => {
+                                                tokio::time::timeout(Duration::from_secs(30), ytdl(&v.url))
+                                                    .await
+                                            }
+                                        };
+                                        if let Ok(r) = r {
+                                            if let Ok(src) = r {
+                                                let (mut audio, handle) = create_player(src);
+                                                audio.set_volume(volume);
+                                                clock.play(audio);
+                                                trackhandle = Some(handle);
+                                            } else {
+                                                log.push_str(&format!(
+                                                    "Error playing track: {}\r",
+                                                    r.unwrap_err()
+                                                ));
+                                            }
+                                        } else {
+                                            log.push_str(&format!("Timeout procced: {}\r", r.unwrap_err()));
+                                        }
+                                    }
+                                } else {
+                                    log.push_str(&format!("Error getting tts info: {:?}\r", r));
+                                }
+                            }
+                        } else {
+                            log.push_str(&format!("Error getting tts info: {}\r", r.unwrap_err()));
                         }
                     } else {
-                        let r = snd.unbounded_send(format!("Shuffle is already `{}`", shuffled));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
+                        let calllock = call.try_lock();
+                        if let Ok(mut clock) = calllock {
+                            #[cfg(feature = "tts")]
+                            if let Some(tts) = current.ttsmsg.as_ref() {
+                                let r = tokio::time::timeout(g_timeout_time, ffmpeg(&tts.path))
+                                    .await
+                                    .unwrap();
+                                if let Ok(r) = r {
+                                    let (mut audio, handle) = create_player(r);
+                                    audio.set_volume(volume);
+                                    clock.play(audio);
+                                    tts_handle = Some(handle);
+                                } else {
+                                    let (mut audio, handle) = create_player(
+                                        ytdl(crate::Config::get().bumper_url.as_str())
+                                            .await
+                                            .unwrap(),
+                                    );
+                                    audio.set_volume(volume);
+                                    clock.play(audio);
+                                    tts_handle = Some(handle);
+                                }
+                            } else {
+                                let (mut audio, handle) = create_player(
+                                    ytdl(crate::Config::get().bumper_url.as_str())
+                                        .await
+                                        .unwrap(),
+                                );
+                                audio.set_volume(volume);
+                                clock.play(audio);
+                                tts_handle = Some(handle);
+                            }
+                            #[cfg(not(feature = "tts"))]
+                            {
+                                let (mut audio, handle) = create_player(
+                                    ytdl(crate::Config::get().bumper_url.as_str())
+                                        .await
+                                        .unwrap(),
+                                );
+                                audio.set_volume(volume);
+                                clock.play(audio);
+                                tts_handle = Some(handle);
+                            }
                         }
                     }
+                } else if !queue.is_empty() {
+                    let index = if shuffled {
+                        rand::thread_rng().gen_range(0..queue.len())
+                    } else {
+                        0
+                    };
+                    let vid = queue.remove(index);
+                    current_track = Some(vid);
                 }
-                // AudioPromiseCommand::Transcribe(transcribe, id) => {
-                //     if transcribed != transcribe {
-                //         transcribed = transcribe;
-                //         let r = snd.unbounded_send(format!("Transcribe set to `{}`", transcribed));
-                //         if let Err(e) = r {
-                //             log.push_str(&format!("Error updating message: {}\r", e));
+
+                if queue.is_empty() && autoplay && autoplay_thread.is_none() {
+                    let url = current_track.as_ref().and_then(|t| match t.video {
+                        VideoType::Disk(_) => None,
+                        VideoType::Url(ref y) => Some(y.url.clone()),
+                    });
+                    if let Some(url) = url {
+                        autoplay_thread = Some(tokio::spawn(async move {
+                            let r = match tokio::time::timeout(
+                                Duration::from_secs(2),
+                                crate::youtube::get_recommendations(url, 1),
+                            )
+                            .await
+                            {
+                                Ok(r) => r,
+                                Err(_) => {
+                                    return None;
+                                }
+                            };
+
+                            let vid = match r.get(0) {
+                                Some(v) => v,
+                                None => {
+                                    return None;
+                                }
+                            };
+
+                            vid.to_metavideo().await.ok()
+                        }));
+                    }
+                }
+
+                let mut embed = EmbedData::default();
+
+                if let Some(ref mut azuracast) = azuracast {
+                    if let Ok(d) = tokio::time::timeout(g_timeout_time, azuracast.slow_data()).await {
+                        data = Some(d);
+                    }
+                }
+
+                if queue.is_empty() && current_track.is_none() {
+                    if nothing_handle.is_none() {
+                        let r = if let Some(uri) = nothing_uri.clone() {
+                            tokio::time::timeout(g_timeout_time, Restartable::ffmpeg(uri, false)).await
+                        } else {
+                            // tokio::time::timeout(g_timeout_time, Restartable::ytdl("https://www.youtube.com/watch?v=xy_NKN75Jhw", false)).await
+                            tokio::time::timeout(
+                                Duration::from_secs(2),
+                                Restartable::ffmpeg(crate::Config::get().idle_url, false),
+                            )
+                            .await
+                        };
+
+                        if let Ok(r) = r {
+                            if let Ok(src) = r {
+                                let (mut audio, handle) = create_player(src.into());
+                                let calllock = call.try_lock();
+                                if let Ok(mut clock) = calllock {
+                                    audio.set_loops(LoopState::Infinite).unwrap();
+                                    // audio.set_volume(volume / 5.);
+                                    audio.set_volume(radiovolume);
+                                    clock.play(audio);
+                                    nothing_handle = Some(handle);
+                                } else {
+                                    log.push_str(&format!(
+                                        "Error locking call: {}\r",
+                                        calllock.unwrap_err()
+                                    ));
+                                }
+                            } else {
+                                log.push_str(&format!(
+                                    "Error playing nothing: {}\nfile_uri: {:?}",
+                                    r.unwrap_err(),
+                                    nothing_uri.clone()
+                                ));
+                            }
+                        } else {
+                            log.push_str(&format!(
+                                "Error playing nothing: {}\nfile_uri: {:?}",
+                                r.unwrap_err(),
+                                nothing_uri.clone()
+                            ));
+                        }
+                    }
+                    let mut possible_body = "Queue is empty, use `/play` to play something!".to_owned();
+                    if let Some(ref data) = data {
+                        possible_body = format!(
+                            "{}\nIn the meantime, enjoy these fine tunes from `{}`",
+                            possible_body, data.station.name,
+                        );
+                        embed.fields.push((
+                            "Now Playing".to_owned(),
+                            format!(
+                                "{} - {}",
+                                data.now_playing.song.title, data.now_playing.song.artist
+                            ),
+                            false,
+                        ));
+                        embed.thumbnail = Some(data.now_playing.song.art.clone());
+
+                        embed.fields.push((
+                            "Next Up:".to_string(),
+                            format!(
+                                "{} - {}",
+                                data.playing_next.song.title, data.playing_next.song.artist
+                            ),
+                            true,
+                        ));
+                    };
+                    if !possible_body.is_empty() {
+                        embed.body = Some(possible_body);
+                    }
+                    // let r = tokio::time::timeout(g_timeout_time, msg.update(&msgtext)).await;
+                    // if let Ok(r) = r {
+                    //     if let Err(e) = r {
+                    //         log.push_str(&format!(
+                    //             "Error updating message: {:?}. probably got deleted, sending a new one",
+                    //             e
+                    //         ));
+                    //         let j = format!("{:?}", e).to_lowercase();
+
+                    //         if j.contains("unknown message") {
+                    //             let r = tokio::time::timeout(g_timeout_time, msg.send_new()).await;
+                    //             if let Ok(r) = r {
+                    //                 if let Err(e) = r {
+                    //                     log.push_str(&format!("Error sending new message: {:?}", e));
+                    //                 }
+                    //             } else {
+                    //                 log.push_str(&format!(
+                    //                     "Error sending new message: {:?}",
+                    //                     r.unwrap_err()
+                    //                 ));
+                    //             }
+                    //         }
+                    //     }
+                    // } else {
+                    //     log.push_str(&format!("Error updating message: {}\r", r.unwrap_err()));
+                    // }
+                    embed.color = Some(Colour::from_rgb(184, 29, 19));
+                } else {
+                    if let Some(ref data) = data {
+                        embed.author = Some(format!(
+                            "{} - {} playing on {}",
+                            data.now_playing.song.title, data.now_playing.song.artist, data.station.name
+                        ));
+                        embed.author_icon_url = Some(data.now_playing.song.art.clone());
+                    }
+                    if nothing_handle.is_some() {
+                        if let Some(handle) = nothing_handle.as_mut() {
+                            let r = handle.stop();
+                            if let Err(e) = r {
+                                log.push_str(&format!("Error stopping nothing: {}\n", e));
+                            }
+                        }
+                        nothing_handle = None;
+
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+
+                    // let mut message = String::new();
+                    let mut possible_body = String::new();
+                    if paused {
+                        possible_body.push_str("<:pause:1038954686402789518>");
+                    }
+                    if repeated {
+                        possible_body.push_str("<:Sliderfix09:1038954711585390654>");
+                    }
+                    if looped {
+                        possible_body.push_str("<:loop:1038954691318526024>");
+                    }
+                    if shuffled {
+                        possible_body.push_str("<:shuffle:1038954690114764880>");
+                    }
+                    if autoplay {
+                        possible_body.push_str("<a:speEEEeeeEEEeeen:1108745209451397171>");
+                    }
+                    if let Some(t) = current_track.as_ref() {
+                        // message.push_str(&format!("Playing: `{}` ", t.title));
+                        embed
+                            .fields
+                            .push(("Now Playing".to_owned(), t.title.clone(), false));
+                        if let Some(handle) = trackhandle.as_ref() {
+                            let info = tokio::time::timeout(g_timeout_time, handle.get_info()).await;
+                            if let Ok(info) = info {
+                                if let Ok(info) = info {
+                                    match t.video.clone() {
+                                        VideoType::Disk(v) => {
+                                            let percent_done = info.position.as_secs_f64() / v.duration;
+                                            // println!("{}% done", percent_done);
+                                            // let bar = (percent_done * 20.0).round() as usize;
+                                            // message.push_str(&format!("\n`[{:20}]`", "=".repeat(bar)));
+                                            possible_body
+                                                .push_str(&format!("\n{}", get_bar(percent_done, 20)));
+                                        }
+                                        VideoType::Url(_) => {}
+                                    };
+                                }
+                            } else {
+                                log.push_str(&format!(
+                                    "Error getting track info: {}\r",
+                                    info.unwrap_err()
+                                ));
+                            }
+                        }
+
+                        // message.push('\n');
+
+                        if !queue.is_empty() {
+                            // message.push_str("Queue:\n");
+                            // message.push_str("```\n");
+                            for (i, track) in queue.iter().enumerate() {
+                                // message.push_str(&format!("{}. {}\n", i + 1, track.title));
+                                embed
+                                    .fields
+                                    .push((format!("{}:", i + 1), track.title.clone(), true));
+                            }
+                            // message.push_str("```");
+                        }
+                        embed.color = Some(Colour::from_rgb(0, 132, 80));
+                    } else {
+                        // message.push_str("Queue:\n");
+                        // message.push_str("```\n");
+                        for (i, track) in queue.iter().enumerate() {
+                            // message.push_str(&format!("{}. {}\n", i + 1, track.title));
+                            embed
+                                .fields
+                                .push((format!("{}:", i + 1), track.title.clone(), true));
+                        }
+                        // message.push_str("```");
+                        embed.color = Some(Colour::from_rgb(253, 218, 22));
+                    }
+                    if !possible_body.is_empty() {
+                        embed.body = Some(possible_body);
+                    }
+                }
+                // if transcribed {
+                //     match msg.get_messages().await {
+                //         Ok(msgs) => {
+                //             if let Err(e) = transcribe_handler.update(msgs).await {
+                //                 log.push_str(&format!("Error updating transcribe: {}\r", e));
+                //             }
                 //         }
-                //         // if transcribed {
-                //         //     msg.last_processed = Some(id);
-                //         // }
-                //     } else {
-                //         let r =
-                //             snd.unbounded_send(format!("Transcribe is already `{}`", transcribed));
-                //         if let Err(e) = r {
-                //             log.push_str(&format!("Error updating message: {}\r", e));
+                //         Err(e) => {
+                //             log.push_str(&format!("Error getting messages: {}\r", e));
                 //         }
                 //     }
                 // }
-                AudioPromiseCommand::Autoplay(autoplayi) => {
-                    if autoplay != autoplayi {
-                        autoplay = autoplayi;
-                        let r = snd.unbounded_send(format!("Autoplay set to `{}`", autoplay));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
-                        }
-                    } else {
-                        let r = snd.unbounded_send(format!("Autoplay is already `{}`", autoplay));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
-                        }
-                    }
-                }
-                AudioPromiseCommand::Loop(loopi) => {
-                    if looped != loopi {
-                        looped = loopi;
-                        let r = snd.unbounded_send(format!("Loop set to `{}`", looped));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
-                        }
-                    } else {
-                        let r = snd.unbounded_send(format!("Loop is already `{}`", looped));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
-                        }
-                    }
-                }
-                AudioPromiseCommand::Repeat(repeati) => {
-                    if repeated != repeati {
-                        repeated = repeati;
-                        let r = snd.unbounded_send(format!("Repeat set to `{}`", repeated));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
-                        }
-                    } else {
-                        let r = snd.unbounded_send(format!("Repeat is already `{}`", repeated));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
-                        }
-                    }
-                }
-                AudioPromiseCommand::Skip => {
-                    if let Some(trackhandle) = trackhandle.as_mut() {
-                        let r = trackhandle.stop();
-                        if r.is_ok() {
-                            let r2 = snd.unbounded_send(String::from("Skipped"));
-                            if let Err(e) = r2 {
-                                log.push_str(&format!("Error sending skip: {}\r", e));
-                            }
-                        } else {
-                            log.push_str(&format!("Error skipping track: {}\r", r.unwrap_err()));
-                        }
-                    } else {
-                        let r = snd.unbounded_send(String::from("Nothing is playing"));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
-                        }
-                    }
-                }
-                AudioPromiseCommand::Volume(v) => {
-                    let msg = if nothing_handle.is_some() {
-                        radiovolume = v;
-                        format!("Radio volume set to `{}%`", radiovolume * 100.0)
-                    } else {
-                        volume = v;
-                        format!("Song volume set to `{}%`", volume * 100.0)
-                    };
 
-                    let r = snd.unbounded_send(msg);
-                    if let Err(e) = r {
-                        log.push_str(&format!("Error updating message: {}\r", e));
-                    }
-                }
-                AudioPromiseCommand::Remove(index) => {
-                    let index = index - 1;
-                    if index < queue.len() {
-                        let mut v = queue.remove(index);
-                        let r = v.delete();
-                        if let Err(r) = r {
-                            log.push_str(&format!("Error removing `{}`: {}\r", v.title, r));
-                            let r =
-                                snd.unbounded_send(format!("Error removing `{}`: {}", v.title, r));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        } else {
-                            let r = snd.unbounded_send(format!("Removed `{}`", v.title));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        }
-                    } else {
-                        let r = snd.unbounded_send(format!(
-                            "Index out of range, max is `{}`",
-                            queue.len()
-                        ));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
-                        }
-                    }
-                }
-                AudioPromiseCommand::SetBitrate(bitrate) => {
-                    let mut cl = call.lock().await;
-                    cl.set_bitrate(songbird::driver::Bitrate::BitsPerSecond(bitrate as i32));
-                    let r = snd.unbounded_send(format!("Bitrate set to `{}`", bitrate));
-                    if let Err(e) = r {
-                        log.push_str(&format!("Error updating message: {}\r", e));
-                    }
-                }
-            }
-        }
+                // let r = tokio::time::timeout(g_timeout_time, msg.update(embed)).await;
 
-        if let Some(current) = current_track.as_mut() {
-            if let Some(thandle) = trackhandle.as_mut() {
-                let playmode = tokio::time::timeout(g_timeout_time, thandle.get_info()).await;
-                if let Ok(playmode) = playmode {
-                    if let Err(playmode) = playmode {
-                        if playmode == songbird::tracks::TrackError::Finished {
-                            let url = current_track.as_ref().and_then(|t| match t.video {
-                                VideoType::Disk(_) => None,
-                                VideoType::Url(ref y) => Some(y.url.clone()),
-                            });
-
-                            if autoplay && queue.is_empty() {
-                                // get a new song to play next as well
-                                if let Some(url) = url {
-                                    autoplay_thread = Some(tokio::spawn(async move {
-                                        let r = match tokio::time::timeout(
-                                            Duration::from_secs(2),
-                                            crate::youtube::get_recommendations(url, 1),
-                                        )
-                                        .await
-                                        {
-                                            Ok(r) => r,
-                                            Err(_) => {
-                                                return None;
-                                            }
-                                        };
-
-                                        let vid = match r.get(0) {
-                                            Some(v) => v,
-                                            None => {
-                                                return None;
-                                            }
-                                        };
-
-                                        vid.to_metavideo().await.ok()
-                                    }));
-                                }
-                            };
-
-                            let mut t = None;
-                            mem::swap(&mut current_track, &mut t);
-                            if let Some(t) = t.as_mut() {
-                                if repeated {
-                                    queue.insert(0, t.clone());
-                                } else if looped {
-                                    queue.push(t.clone());
-                                } else {
-                                    let r = t.delete();
-                                    if let Err(e) = r {
-                                        log.push_str(&format!("Error deleting video: {}\n", e));
-                                    }
-                                }
-                            }
-                            current_track = None;
-                            trackhandle = None;
-                            tts_handle = None;
-                        } else {
-                            log.push_str(format!("playmode error: {:?}", playmode).as_str());
-                        }
-                    }
-                } else {
-                    log.push_str(&format!("playmode timeout: {}\r", playmode.unwrap_err()));
-                }
-            } else if let Some(tts) = tts_handle.as_mut() {
-                let r = tokio::time::timeout(g_timeout_time, tts.get_info()).await;
-                if let Ok(r) = r {
-                    if let Err(r) = r {
-                        if r == songbird::tracks::TrackError::Finished {
-                            let calllock = call.try_lock();
-                            if let Ok(mut clock) = calllock {
-                                let r = match current.video.clone() {
-                                    VideoType::Disk(v) => {
-                                        tokio::time::timeout(
-                                            Duration::from_secs(30),
-                                            ffmpeg(&v.path),
-                                        )
-                                        .await
-                                    }
-                                    VideoType::Url(v) => {
-                                        tokio::time::timeout(Duration::from_secs(30), ytdl(&v.url))
-                                            .await
-                                    }
-                                };
-                                if let Ok(r) = r {
-                                    if let Ok(src) = r {
-                                        let (mut audio, handle) = create_player(src);
-                                        audio.set_volume(volume);
-                                        clock.play(audio);
-                                        trackhandle = Some(handle);
-                                    } else {
-                                        log.push_str(&format!(
-                                            "Error playing track: {}\r",
-                                            r.unwrap_err()
-                                        ));
-                                    }
-                                } else {
-                                    log.push_str(&format!("Timeout procced: {}\r", r.unwrap_err()));
-                                }
-                            }
-                        } else {
-                            log.push_str(&format!("Error getting tts info: {:?}\r", r));
-                        }
-                    }
-                } else {
-                    log.push_str(&format!("Error getting tts info: {}\r", r.unwrap_err()));
-                }
-            } else {
-                let calllock = call.try_lock();
-                if let Ok(mut clock) = calllock {
-                    #[cfg(feature = "tts")]
-                    if let Some(tts) = current.ttsmsg.as_ref() {
-                        let r = tokio::time::timeout(g_timeout_time, ffmpeg(&tts.path))
-                            .await
-                            .unwrap();
-                        if let Ok(r) = r {
-                            let (mut audio, handle) = create_player(r);
-                            audio.set_volume(volume);
-                            clock.play(audio);
-                            tts_handle = Some(handle);
-                        } else {
-                            let (mut audio, handle) = create_player(
-                                ytdl(crate::Config::get().bumper_url.as_str())
-                                    .await
-                                    .unwrap(),
-                            );
-                            audio.set_volume(volume);
-                            clock.play(audio);
-                            tts_handle = Some(handle);
-                        }
-                    } else {
-                        let (mut audio, handle) = create_player(
-                            ytdl(crate::Config::get().bumper_url.as_str())
-                                .await
-                                .unwrap(),
-                        );
-                        audio.set_volume(volume);
-                        clock.play(audio);
-                        tts_handle = Some(handle);
-                    }
-                    #[cfg(not(feature = "tts"))]
-                    {
-                        let (mut audio, handle) = create_player(
-                            ytdl(crate::Config::get().bumper_url.as_str())
-                                .await
-                                .unwrap(),
-                        );
-                        audio.set_volume(volume);
-                        clock.play(audio);
-                        tts_handle = Some(handle);
-                    }
-                }
-            }
-        } else if !queue.is_empty() {
-            let index = if shuffled {
-                rand::thread_rng().gen_range(0..queue.len())
-            } else {
-                0
-            };
-            let vid = queue.remove(index);
-            current_track = Some(vid);
-        }
-
-        if queue.is_empty() && autoplay && autoplay_thread.is_none() {
-            let url = current_track.as_ref().and_then(|t| match t.video {
-                VideoType::Disk(_) => None,
-                VideoType::Url(ref y) => Some(y.url.clone()),
-            });
-            if let Some(url) = url {
-                autoplay_thread = Some(tokio::spawn(async move {
-                    let r = match tokio::time::timeout(
-                        Duration::from_secs(2),
-                        crate::youtube::get_recommendations(url, 1),
-                    )
-                    .await
-                    {
-                        Ok(r) => r,
-                        Err(_) => {
-                            return None;
-                        }
-                    };
-
-                    let vid = match r.get(0) {
-                        Some(v) => v,
-                        None => {
-                            return None;
-                        }
-                    };
-
-                    vid.to_metavideo().await.ok()
-                }));
-            }
-        }
-
-        let mut embed = EmbedData::default();
-
-        if let Some(ref mut azuracast) = azuracast {
-            if let Ok(d) = tokio::time::timeout(g_timeout_time, azuracast.slow_data()).await {
-                data = Some(d);
-            }
-        }
-
-        if queue.is_empty() && current_track.is_none() {
-            if nothing_handle.is_none() {
-                let r = if let Some(uri) = nothing_uri.clone() {
-                    tokio::time::timeout(g_timeout_time, Restartable::ffmpeg(uri, false)).await
-                } else {
-                    // tokio::time::timeout(g_timeout_time, Restartable::ytdl("https://www.youtube.com/watch?v=xy_NKN75Jhw", false)).await
-                    tokio::time::timeout(
-                        Duration::from_secs(2),
-                        Restartable::ffmpeg(crate::Config::get().idle_url, false),
-                    )
-                    .await
+                let send_now = match last_embed {
+                    Some(ref last_embed) => last_embed != &embed,
+                    None => true,
                 };
 
-                if let Ok(r) = r {
-                    if let Ok(src) = r {
-                        let (mut audio, handle) = create_player(src.into());
-                        let calllock = call.try_lock();
-                        if let Ok(mut clock) = calllock {
-                            audio.set_loops(LoopState::Infinite).unwrap();
-                            // audio.set_volume(volume / 5.);
-                            audio.set_volume(radiovolume);
-                            clock.play(audio);
-                            nothing_handle = Some(handle);
-                        } else {
-                            log.push_str(&format!(
-                                "Error locking call: {}\r",
-                                calllock.unwrap_err()
-                            ));
-                        }
-                    } else {
-                        log.push_str(&format!(
-                            "Error playing nothing: {}\nfile_uri: {:?}",
-                            r.unwrap_err(),
-                            nothing_uri.clone()
-                        ));
+                if send_now {
+                    // println!("Sending update");
+                    last_embed = Some(embed.clone());
+                    if let Err(e) = msg_updater.send(embed).await {
+                        log.push_str(&format!("Error sending update: {}\r", e));
                     }
-                } else {
-                    log.push_str(&format!(
-                        "Error playing nothing: {}\nfile_uri: {:?}",
-                        r.unwrap_err(),
-                        nothing_uri.clone()
-                    ));
                 }
-            }
-            let mut possible_body = "Queue is empty, use `/play` to play something!".to_owned();
-            if let Some(ref data) = data {
-                possible_body = format!(
-                    "{}\nIn the meantime, enjoy these fine tunes from `{}`",
-                    possible_body, data.station.name,
-                );
-                embed.fields.push((
-                    "Now Playing".to_owned(),
-                    format!(
-                        "{} - {}",
-                        data.now_playing.song.title, data.now_playing.song.artist
-                    ),
-                    false,
-                ));
-                embed.thumbnail = Some(data.now_playing.song.art.clone());
 
-                embed.fields.push((
-                    "Next Up:".to_string(),
-                    format!(
-                        "{} - {}",
-                        data.playing_next.song.title, data.playing_next.song.artist
-                    ),
-                    true,
-                ));
-            };
-            if !possible_body.is_empty() {
-                embed.body = Some(possible_body);
-            }
-            // let r = tokio::time::timeout(g_timeout_time, msg.update(&msgtext)).await;
-            // if let Ok(r) = r {
-            //     if let Err(e) = r {
-            //         log.push_str(&format!(
-            //             "Error updating message: {:?}. probably got deleted, sending a new one",
-            //             e
-            //         ));
-            //         let j = format!("{:?}", e).to_lowercase();
+                // match r {
+                //     Ok(Ok(_)) => {}
+                //     Ok(Err(e)) => {
+                //         log.push_str(&format!("Error updating message: {}\r", e));
+                //     }
+                //     Err(e) => {
+                //         log.push_str(&format!("Error updating message, Timeout: {}\r", e));
+                //     }
+                // }
 
-            //         if j.contains("unknown message") {
-            //             let r = tokio::time::timeout(g_timeout_time, msg.send_new()).await;
-            //             if let Ok(r) = r {
-            //                 if let Err(e) = r {
-            //                     log.push_str(&format!("Error sending new message: {:?}", e));
-            //                 }
-            //             } else {
-            //                 log.push_str(&format!(
-            //                     "Error sending new message: {:?}",
-            //                     r.unwrap_err()
-            //                 ));
-            //             }
-            //         }
-            //     }
-            // } else {
-            //     log.push_str(&format!("Error updating message: {}\r", r.unwrap_err()));
-            // }
-            embed.color = Some(Colour::from_rgb(184, 29, 19));
-        } else {
-            if let Some(ref data) = data {
-                embed.author = Some(format!(
-                    "{} - {} playing on {}",
-                    data.now_playing.song.title, data.now_playing.song.artist, data.station.name
-                ));
-                embed.author_icon_url = Some(data.now_playing.song.art.clone());
-            }
-            if nothing_handle.is_some() {
+                if let Some(handle) = trackhandle.as_mut() {
+                    let r = handle.set_volume(volume);
+                    if let Err(e) = r {
+                        let s = format!("Error setting volume: {}\r", e);
+                        if !s.contains("track ended") {
+                            log.push_str(&s);
+                        }
+                    }
+                }
                 if let Some(handle) = nothing_handle.as_mut() {
-                    let r = handle.stop();
+                    // let r = handle.set_volume(volume / 5.);
+                    let r = handle.set_volume(radiovolume);
                     if let Err(e) = r {
-                        log.push_str(&format!("Error stopping nothing: {}\n", e));
+                        log.push_str(&format!("Error setting volume: {}\r", e));
                     }
                 }
-                nothing_handle = None;
 
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+                // get messages from channel? something something uh oh
 
-            // let mut message = String::new();
-            let mut possible_body = String::new();
-            if paused {
-                possible_body.push_str("<:pause:1038954686402789518>");
-            }
-            if repeated {
-                possible_body.push_str("<:Sliderfix09:1038954711585390654>");
-            }
-            if looped {
-                possible_body.push_str("<:loop:1038954691318526024>");
-            }
-            if shuffled {
-                possible_body.push_str("<:shuffle:1038954690114764880>");
-            }
-            if autoplay {
-                possible_body.push_str("<a:speEEEeeeEEEeeen:1108745209451397171>");
-            }
-            if let Some(t) = current_track.as_ref() {
-                // message.push_str(&format!("Playing: `{}` ", t.title));
-                embed
-                    .fields
-                    .push(("Now Playing".to_owned(), t.title.clone(), false));
-                if let Some(handle) = trackhandle.as_ref() {
-                    let info = tokio::time::timeout(g_timeout_time, handle.get_info()).await;
-                    if let Ok(info) = info {
-                        if let Ok(info) = info {
-                            match t.video.clone() {
-                                VideoType::Disk(v) => {
-                                    let percent_done = info.position.as_secs_f64() / v.duration;
-                                    // println!("{}% done", percent_done);
-                                    // let bar = (percent_done * 20.0).round() as usize;
-                                    // message.push_str(&format!("\n`[{:20}]`", "=".repeat(bar)));
-                                    possible_body
-                                        .push_str(&format!("\n{}", get_bar(percent_done, 20)));
+                if !log.is_empty() {
+                    println!("{}", log);
+                    log.clear();
+                }
+
+                let mut finished = false;
+                if let Some(h) = &autoplay_thread {
+                    if h.is_finished() {
+                        finished = true;
+                    }
+                }
+
+                if finished {
+                    let thread = autoplay_thread.take();
+                    if let Some(thread) = thread {
+                        let res = thread.await;
+                        match res {
+                            Err(e) => {
+                                log.push_str(&format!("Error in autoplay thread: {}\n", e));
+                            }
+                            Ok(v) => {
+                                if let Some(v) = v {
+                                    queue.push(v);
                                 }
-                                VideoType::Url(_) => {}
-                            };
+                            }
+                        };
+                        autoplay_thread = None;
+                    }
+                }
+
+                // tokio::time::sleep(std::time::Duration::from_millis(looptime)).await;
+                {
+                    match tokio::time::timeout(g_timeout_time, call.lock()).await {
+                        Ok(call) => {
+                            if let Some(_c) = call.current_connection() {
+                                // println!("{:?}", c)
+                            } else {
+                                log.push_str("No connection, breaking\n");
+                                brk = true;
+                            }
                         }
-                    } else {
-                        log.push_str(&format!(
-                            "Error getting track info: {}\r",
-                            info.unwrap_err()
-                        ));
-                    }
-                }
-
-                // message.push('\n');
-
-                if !queue.is_empty() {
-                    // message.push_str("Queue:\n");
-                    // message.push_str("```\n");
-                    for (i, track) in queue.iter().enumerate() {
-                        // message.push_str(&format!("{}. {}\n", i + 1, track.title));
-                        embed
-                            .fields
-                            .push((format!("{}:", i + 1), track.title.clone(), true));
-                    }
-                    // message.push_str("```");
-                }
-                embed.color = Some(Colour::from_rgb(0, 132, 80));
-            } else {
-                // message.push_str("Queue:\n");
-                // message.push_str("```\n");
-                for (i, track) in queue.iter().enumerate() {
-                    // message.push_str(&format!("{}. {}\n", i + 1, track.title));
-                    embed
-                        .fields
-                        .push((format!("{}:", i + 1), track.title.clone(), true));
-                }
-                // message.push_str("```");
-                embed.color = Some(Colour::from_rgb(253, 218, 22));
-            }
-            if !possible_body.is_empty() {
-                embed.body = Some(possible_body);
-            }
-        }
-        // if transcribed {
-        //     match msg.get_messages().await {
-        //         Ok(msgs) => {
-        //             if let Err(e) = transcribe_handler.update(msgs).await {
-        //                 log.push_str(&format!("Error updating transcribe: {}\r", e));
-        //             }
-        //         }
-        //         Err(e) => {
-        //             log.push_str(&format!("Error getting messages: {}\r", e));
-        //         }
-        //     }
-        // }
-
-        // let r = tokio::time::timeout(g_timeout_time, msg.update(embed)).await;
-
-        let send_now = match last_embed {
-            Some(ref last_embed) => last_embed != &embed,
-            None => true,
-        };
-
-        if send_now {
-            // println!("Sending update");
-            last_embed = Some(embed.clone());
-            if let Err(e) = msg_updater.send(embed).await {
-                log.push_str(&format!("Error sending update: {}\r", e));
-            }
-        }
-
-        // match r {
-        //     Ok(Ok(_)) => {}
-        //     Ok(Err(e)) => {
-        //         log.push_str(&format!("Error updating message: {}\r", e));
-        //     }
-        //     Err(e) => {
-        //         log.push_str(&format!("Error updating message, Timeout: {}\r", e));
-        //     }
-        // }
-
-        if let Some(handle) = trackhandle.as_mut() {
-            let r = handle.set_volume(volume);
-            if let Err(e) = r {
-                let s = format!("Error setting volume: {}\r", e);
-                if !s.contains("track ended") {
-                    log.push_str(&s);
-                }
-            }
-        }
-        if let Some(handle) = nothing_handle.as_mut() {
-            // let r = handle.set_volume(volume / 5.);
-            let r = handle.set_volume(radiovolume);
-            if let Err(e) = r {
-                log.push_str(&format!("Error setting volume: {}\r", e));
-            }
-        }
-
-        // get messages from channel? something something uh oh
-
-        if !log.is_empty() {
-            println!("{}", log);
-            log.clear();
-        }
-
-        let mut finished = false;
-        if let Some(h) = &autoplay_thread {
-            if h.is_finished() {
-                finished = true;
-            }
-        }
-
-        if finished {
-            let thread = autoplay_thread.take();
-            if let Some(thread) = thread {
-                let res = thread.await;
-                match res {
-                    Err(e) => {
-                        log.push_str(&format!("Error in autoplay thread: {}\n", e));
-                    }
-                    Ok(v) => {
-                        if let Some(v) = v {
-                            queue.push(v);
+                        Err(_) => {
+                            log.push_str(&format!("Call lock timed out"));
                         }
                     }
-                };
-                autoplay_thread = None;
-            }
-        }
-
-        tokio::time::sleep(std::time::Duration::from_millis(looptime)).await;
-        let mut brk = false;
-        {
-            match tokio::time::timeout(g_timeout_time, call.lock()).await {
-                Ok(call) => {
-                    if let Some(_c) = call.current_connection() {
-                        // println!("{:?}", c)
-                    } else {
-                        log.push_str("No connection, breaking\n");
-                        brk = true;
-                    }
                 }
-                Err(_) => {
-                    log.push_str(&format!("Call lock timed out"));
+                if brk {
+                    break;
                 }
             }
-        }
-        if brk {
-            break;
         }
     }
     println!("SHUTTING DOWN!");
