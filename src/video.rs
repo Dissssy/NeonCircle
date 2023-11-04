@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 
 use anyhow::Error;
@@ -26,15 +28,40 @@ struct RawVideo {
     #[serde(rename = "webpage_url")]
     url: String,
     title: String,
-    // duration: u32,
+    duration: u32,
 }
 
 async fn get_videos(url: &str) -> Result<Vec<RawVideo>, anyhow::Error> {
-    let output = tokio::process::Command::new("yt-dlp")
-        .arg("--dump-json")
-        .arg(url)
-        .output()
-        .await?;
+    let mut bot_path = crate::Config::get().data_path.clone();
+    bot_path.push("cookies.txt");
+
+    let output = if bot_path.exists() {
+        tokio::process::Command::new("yt-dlp")
+            .args(["--cookies", bot_path.to_str().unwrap()])
+            .args(["--default-search", "ytsearch"])
+            .arg("--dump-json")
+            .arg(url)
+            .output()
+            .await?
+    } else {
+        tokio::process::Command::new("yt-dlp")
+            .args(["--default-search", "ytsearch"])
+            .arg("--dump-json")
+            .arg(url)
+            .output()
+            .await?
+    };
+
+    // let output = tokio::process::Command::new("yt-dlp")
+    //     .arg("--dump-json")
+    //     .arg(url)
+    //     .output()
+    //     .await?;
+
+    // let output =
+    //     .args(args.as_slice())
+    //     .output()
+    //     .await?;
 
     // turn stdout into a string
     let output = String::from_utf8(output.stdout)?;
@@ -106,14 +133,23 @@ impl Video {
                     Arg::new("--embed-metadata"),
                 ];
 
+                // if bot directory/cookies.txt exists, include it
+                let mut bot_path = crate::Config::get().data_path.clone();
+                bot_path.push("cookies.txt");
+                if bot_path.exists() {
+                    args.push(Arg::new_with_arg("--cookies", bot_path.to_str().unwrap()));
+                }
+                // println!("{:?}", args);
+                // println!("{:?}", bot_path);
+
                 if audio_only {
                     args.push(Arg::new("-x"));
                     args.push(Arg::new_with_arg("--audio-format", "mp3"));
                 } else {
-                    args.push(Arg::new_with_arg(
-                        "-f",
-                        format!("best[filesize<={}]", max_filesize).as_str(),
-                    ));
+                    // args.push(Arg::new_with_arg(
+                    //     "-f",
+                    //     format!("best[filesize<={}]", max_filesize).as_str(),
+                    // ));
                     args.push(Arg::new_with_arg("-S", "res,ext:mp4:m4a"));
                     args.push(Arg::new_with_arg("--recode", "mp4"));
                 }
@@ -123,7 +159,14 @@ impl Video {
                     Ok(r) => r,
                     Err(_) => {
                         if !audio_only {
-                            args.remove(4);
+                            args.retain(|a| {
+                                a.to_string()
+                                    != Arg::new_with_arg(
+                                        "-f",
+                                        format!("best[filesize<={}]", max_filesize).as_str(),
+                                    )
+                                    .to_string()
+                            });
                             let ytd = ytd_rs::YoutubeDL::new(&path, args, url.as_str())?;
                             tokio::task::spawn_blocking(move || ytd.download()).await??
                         } else {

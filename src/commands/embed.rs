@@ -255,6 +255,7 @@ fn john(image: Vec<u8>, filename: &str) -> Result<Vec<u8>, Error> {
     }
 }
 
+#[allow(dead_code)]
 fn get_command_data_option_name(
     option: &serenity::model::application::interaction::application_command::CommandDataOptionValue,
 ) -> String {
@@ -430,10 +431,10 @@ async fn dotheroar(ctx: &Context, interaction: Interaction, audio_only: bool) {
                             }
                         }
                     };
-                    println!(
-                        "video size was {}",
-                        std::fs::metadata(&video.path).unwrap().len()
-                    );
+                    // println!(
+                    //     "video size was {}",
+                    //     std::fs::metadata(&video.path).unwrap().len()
+                    // );
                     // println!("Deleting video {}", video.path.display());
                     match video.delete() {
                         Ok(_) => {}

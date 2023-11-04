@@ -1,8 +1,8 @@
 use anyhow::Error;
-use serenity::builder::{CreateApplicationCommand, CreateEmbed};
+use serenity::builder::CreateApplicationCommand;
 use serenity::model::application::interaction::{Interaction, InteractionResponseType};
 use serenity::model::prelude::command::CommandOptionType;
-use serenity::model::prelude::Embed;
+// use serenity::model::prelude::Embed;
 
 use serenity::model::prelude::interaction::autocomplete::AutocompleteInteraction;
 use serenity::prelude::Context;
@@ -140,6 +140,7 @@ impl crate::CommandTrait for EmulateCommand {
     fn name(&self) -> &str {
         "emulate"
     }
+    #[allow(unused_variables)]
     async fn autocomplete(
         &self,
         ctx: &Context,

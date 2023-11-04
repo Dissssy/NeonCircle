@@ -1,7 +1,10 @@
 use serenity::futures::StreamExt;
 
 use serenity::model::prelude::interaction::autocomplete::AutocompleteInteraction;
+use tokio::sync::Mutex;
+// use songbird::driver::Bitrate;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::commands::music::MetaVideo;
@@ -83,11 +86,19 @@ impl crate::CommandTrait for Play {
                             // send new message in channel
                             let msg = interaction
                                 .channel_id
-                                .send_message(&ctx.http, |m| m.content("Joining voice channel"))
+                                .send_message(&ctx.http, |m| {
+                                    m.content("Joining voice channel").flags(
+                                        serenity::model::channel::MessageFlags::from_bits(
+                                            1u64 << 12,
+                                        )
+                                        .expect("Failed to create message flags"),
+                                    )
+                                })
                                 .await
                                 .unwrap();
                             let messageref = MessageReference::new(
                                 ctx.http.clone(),
+                                ctx.cache.clone(),
                                 guild_id,
                                 msg.channel_id,
                                 msg,
@@ -101,9 +112,44 @@ impl crate::CommandTrait for Play {
                             } else {
                                 None
                             };
-                            let handle = tokio::task::spawn(async move {
-                                the_lüüp(call, &mut rx, messageref, cfg.looptime, nothing_path)
+
+                            let guild_id = match interaction.guild_id {
+                                Some(guild) => guild,
+                                None => return,
+                            };
+                            drop(data_read);
+                            let em = {
+                                let mut data_write = ctx.data.write().await;
+                                let mut f = data_write
+                                    .get_mut::<super::transcribe::TranscribeData>()
+                                    .expect("Expected TranscribeData in TypeMap.")
+                                    .lock()
                                     .await;
+                                let mut entry = f.entry(guild_id);
+                                match entry {
+                                    std::collections::hash_map::Entry::Occupied(ref mut e) => {
+                                        e.get_mut()
+                                    }
+                                    std::collections::hash_map::Entry::Vacant(e) => {
+                                        e.insert(Arc::new(Mutex::new(
+                                            super::transcribe::TranscribeChannelHandler::new(),
+                                        )))
+                                    }
+                                }
+                                .clone()
+                            };
+                            let data_read = ctx.data.read().await;
+
+                            let handle = tokio::task::spawn(async move {
+                                the_lüüp(
+                                    call,
+                                    &mut rx,
+                                    messageref,
+                                    cfg.looptime,
+                                    nothing_path,
+                                    em,
+                                )
+                                .await;
                             });
                             // let (handle, producer) = self.begin_playback(ctx, guild_id).await;
                             // e.insert(handle);
@@ -180,6 +226,7 @@ impl crate::CommandTrait for Play {
                                 let t = tokio::task::spawn(crate::youtube::get_tts(
                                     title.clone(),
                                     key.clone(),
+                                    None,
                                 ))
                                 .await
                                 .unwrap();

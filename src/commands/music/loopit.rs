@@ -22,8 +22,14 @@ impl crate::CommandTrait for Loop {
     fn register(&self, command: &mut CreateApplicationCommand) {
         command
             .name(self.name())
-            .description("Loop the current song")
-            .create_option(|option| option.name("loop").description("Loop the current song").kind(CommandOptionType::Boolean).required(true));
+            .description("Loop the queue")
+            .create_option(|option| {
+                option
+                    .name("loop")
+                    .description("Loop the queue")
+                    .kind(CommandOptionType::Boolean)
+                    .required(true)
+            });
     }
     async fn run(&self, ctx: &Context, interaction: Interaction) {
         let interaction = interaction.application_command().unwrap();
@@ -41,25 +47,49 @@ impl crate::CommandTrait for Loop {
         if let Some((join, _channel_id)) = mutual {
             if !join {
                 let data_read = ctx.data.read().await;
-                let audio_command_handler = data_read.get::<AudioCommandHandler>().expect("Expected AudioCommandHandler in TypeMap").clone();
+                let audio_command_handler = data_read
+                    .get::<AudioCommandHandler>()
+                    .expect("Expected AudioCommandHandler in TypeMap")
+                    .clone();
                 let mut audio_command_handler = audio_command_handler.lock().await;
-                let tx = audio_command_handler.get_mut(&guild_id.to_string()).unwrap();
-                let (rtx, mut rrx) = mpsc::unbounded::<String>();
-                tx.unbounded_send((rtx, AudioPromiseCommand::Loop(interaction.data.options[0].value.as_ref().unwrap().as_bool().unwrap())))
+                let tx = audio_command_handler
+                    .get_mut(&guild_id.to_string())
                     .unwrap();
+                let (rtx, mut rrx) = mpsc::unbounded::<String>();
+                tx.unbounded_send((
+                    rtx,
+                    AudioPromiseCommand::Loop(
+                        interaction.data.options[0]
+                            .value
+                            .as_ref()
+                            .unwrap()
+                            .as_bool()
+                            .unwrap(),
+                    ),
+                ))
+                .unwrap();
 
                 let timeout = tokio::time::timeout(Duration::from_secs(10), rrx.next()).await;
                 if let Ok(Some(msg)) = timeout {
-                    interaction.edit_original_interaction_response(&ctx.http, |response| response.content(msg)).await.unwrap();
+                    interaction
+                        .edit_original_interaction_response(&ctx.http, |response| {
+                            response.content(msg)
+                        })
+                        .await
+                        .unwrap();
                 } else {
                     interaction
-                        .edit_original_interaction_response(&ctx.http, |response| response.content("Timed out waiting for song to loop"))
+                        .edit_original_interaction_response(&ctx.http, |response| {
+                            response.content("Timed out waiting for queue to loop")
+                        })
                         .await
                         .unwrap();
                 }
             } else {
                 interaction
-                    .edit_original_interaction_response(&ctx.http, |response| response.content("I'm not in a voice channel you dingus"))
+                    .edit_original_interaction_response(&ctx.http, |response| {
+                        response.content("I'm not in a voice channel you dingus")
+                    })
                     .await
                     .unwrap();
             }
@@ -68,7 +98,11 @@ impl crate::CommandTrait for Loop {
     fn name(&self) -> &str {
         "loop"
     }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &AutocompleteInteraction) -> Result<(), Error> {
+    async fn autocomplete(
+        &self,
+        _ctx: &Context,
+        _auto: &AutocompleteInteraction,
+    ) -> Result<(), Error> {
         Ok(())
     }
 }

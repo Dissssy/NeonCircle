@@ -30,6 +30,8 @@ async-recursion = "1.0.0"
 image = "0.24.5"
 lazy_static = "1.4.0"
 human_format = "1.0.3"
+chrono = "0.4.31"
+linkify = "0.10.0"
 
 # windows only
 [target.'cfg(windows)'.dependencies]

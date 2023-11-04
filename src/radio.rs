@@ -32,6 +32,7 @@ impl AzuraCast {
         self.data.lock().await.clone()
     }
 
+    #[allow(dead_code)]
     pub async fn fast_data(&mut self) -> Root {
         // dispatch a task to update the data
         let d = self.data.clone();

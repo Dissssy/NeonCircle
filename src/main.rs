@@ -9,10 +9,13 @@ mod youtube;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+mod context_menu;
 
 mod bigwetsloppybowser;
 
 use anyhow::Error;
+// use chrono::Timelike;
+use commands::music::transcribe::{TranscribeChannelHandler, TranscribeData};
 use commands::music::VoiceData;
 use serde::{Deserialize, Serialize};
 // use hyper;
@@ -23,7 +26,7 @@ use serenity::builder::CreateApplicationCommand;
 use serenity::model::application::interaction::autocomplete::AutocompleteInteraction;
 use serenity::model::application::interaction::Interaction;
 use serenity::model::gateway::Ready;
-use serenity::model::prelude::{GuildId, Member, ResumedEvent};
+use serenity::model::prelude::{GuildId, Member, Message, ResumedEvent};
 use serenity::model::user::User;
 // use serenity::model::webhook::Webhook;
 // use tokio::io::AsyncWriteExt;
@@ -234,65 +237,114 @@ impl EventHandler for Handler {
         }
     }
 
-    // async fn message(&self, ctx: Context, new_message: Message) {
-    //     // let mut g = SHITGPT.lock().await;
-    //     // let s = g
-    //     //     .entry(new_message.author.id.as_u64().to_string())
-    //     //     .or_insert(ShitGPT::new(7));
-    //     // s.train(new_message.content_safe(&ctx));
-    //     // // save shitgpt with serde_json
-    //     // tokio::fs::write(
-    //     //     Config::get().shitgpt_path,
-    //     //     serde_json::to_string(&*g).unwrap(),
-    //     // )
-    //     // .await
-    //     // .unwrap();
+    async fn message(&self, ctx: Context, new_message: Message) {
+        if new_message.author.bot {
+            return;
+        }
+        if new_message.content.trim().is_empty() {
+            return;
+        }
 
-    //     // get current unix timestamp
-    //     //
-    //     // -------------------------------
-    //     //
-    //     // let validchars = "abcdefghijklmnopqrstuvwxyz";
-    //     let t = std::time::SystemTime::now()
-    //         .duration_since(std::time::UNIX_EPOCH)
-    //         .unwrap()
-    //         .as_secs();
-    //     let string = new_message.content_safe(&ctx);
-    //     //     .split_ascii_whitespace()
-    //     //     .map(|s| TimedString {
-    //     //         string: s
-    //     //             .to_lowercase()
-    //     //             .chars()
-    //     //             .filter(|c| c.is_ascii())
-    //     //             .collect::<String>(),
-    //     //         time: t,
-    //     //     })
-    //     //     .filter(|s| !s.string.is_empty())
-    //     //     .map(|mut s| {
-    //     //         s.string = s
-    //     //             .string
-    //     //             .chars()
-    //     //             .filter(|c| validchars.contains(*c))
-    //     //             .collect::<String>();
-    //     //         s
-    //     //     })
-    //     //     .collect::<Vec<TimedString>>();
-    //     // make a request to localhost:16834
-    //     if !string.is_empty() {
-    //         let mut req = reqwest::Client::new()
-    //             .post("http://localhost:16834/api/add/string")
-    //             .json(&Timed {
-    //                 thing: string,
-    //                 time: t,
-    //             });
-    //         if let Some(token) = Config::get().string_api_token {
-    //             req = req.bearer_auth(token);
-    //         }
-    //         if let Err(e) = req.send().await {
-    //             println!("Failed to send strings to api {e}");
-    //         }
-    //     }
-    // }
+        let guild_id = match new_message.guild_id {
+            Some(guild) => guild,
+            None => return,
+        };
+
+        let mut g = ctx.data.write().await;
+        let mut f = g
+            .get_mut::<TranscribeData>()
+            .expect("Expected TranscribeData in TypeMap.")
+            .lock()
+            .await;
+        let mut entry = f.entry(guild_id);
+        let em = match entry {
+            std::collections::hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let uh = TranscribeChannelHandler::new();
+                // testing thread that just reads from rx and prints
+                // let mut rx = uh.lock().unwrap();
+                // tokio::spawn(async move {
+                //     loop {
+                //         let v = rx.next().await;
+                //         if let Some(v) = v {
+                //             println!("{:?}", v);
+                //         }
+                //     }
+                // });
+                e.insert(Arc::new(Mutex::new(uh)))
+            }
+        };
+
+        let mut e = em.lock().await;
+
+        let v = e.get_tts(&ctx, &new_message).await;
+
+        for raw in v {
+            if let Err(ugh) = e.send(raw).await {
+                if let Some(ughh) = ugh.tts_audio_handle {
+                    ughh.abort();
+                }
+            }
+        }
+
+        //     // let mut g = SHITGPT.lock().await;
+        //     // let s = g
+        //     //     .entry(new_message.author.id.as_u64().to_string())
+        //     //     .or_insert(ShitGPT::new(7));
+        //     // s.train(new_message.content_safe(&ctx));
+        //     // // save shitgpt with serde_json
+        //     // tokio::fs::write(
+        //     //     Config::get().shitgpt_path,
+        //     //     serde_json::to_string(&*g).unwrap(),
+        //     // )
+        //     // .await
+        //     // .unwrap();
+
+        //     // get current unix timestamp
+        //     //
+        //     // -------------------------------
+        //     //
+        //     // let validchars = "abcdefghijklmnopqrstuvwxyz";
+        //     let t = std::time::SystemTime::now()
+        //         .duration_since(std::time::UNIX_EPOCH)
+        //         .unwrap()
+        //         .as_secs();
+        //     let string = new_message.content_safe(&ctx);
+        //     //     .split_ascii_whitespace()
+        //     //     .map(|s| TimedString {
+        //     //         string: s
+        //     //             .to_lowercase()
+        //     //             .chars()
+        //     //             .filter(|c| c.is_ascii())
+        //     //             .collect::<String>(),
+        //     //         time: t,
+        //     //     })
+        //     //     .filter(|s| !s.string.is_empty())
+        //     //     .map(|mut s| {
+        //     //         s.string = s
+        //     //             .string
+        //     //             .chars()
+        //     //             .filter(|c| validchars.contains(*c))
+        //     //             .collect::<String>();
+        //     //         s
+        //     //     })
+        //     //     .collect::<Vec<TimedString>>();
+        //     // make a request to localhost:16834
+        //     if !string.is_empty() {
+        //         let mut req = reqwest::Client::new()
+        //             .post("http://localhost:16834/api/add/string")
+        //             .json(&Timed {
+        //                 thing: string,
+        //                 time: t,
+        //             });
+        //         if let Some(token) = Config::get().string_api_token {
+        //             req = req.bearer_auth(token);
+        //         }
+        //         if let Err(e) = req.send().await {
+        //             println!("Failed to send strings to api {e}");
+        //         }
+        //     }
+    }
 
     async fn resume(&self, ctx: Context, _: ResumedEvent) {
         // resync all users
@@ -457,9 +509,13 @@ async fn main() {
     let token = cfg.token;
 
     let handler = Handler::new(vec![
+        Box::new(commands::music::transcribe::Transcribe),
+        Box::new(commands::music::repeat::Repeat),
         Box::new(commands::music::loopit::Loop),
         Box::new(commands::music::pause::Pause),
         Box::new(commands::music::play::Play),
+        Box::new(commands::music::join::Join),
+        Box::new(commands::music::setbitrate::SetBitrate),
         Box::new(commands::music::remove::Remove),
         Box::new(commands::music::resume::Resume),
         Box::new(commands::music::shuffle::Shuffle),
@@ -472,8 +528,14 @@ async fn main() {
         Box::new(commands::embed::John),
         Box::new(commands::emulate::EmulateCommand),
     ]);
+
+    let config = songbird::Config::default()
+        .preallocated_tracks(2)
+        .decode_mode(songbird::driver::DecodeMode::Pass)
+        .crypto_mode(songbird::driver::CryptoMode::Lite);
+
     let mut client = Client::builder(token, GatewayIntents::all())
-        .register_songbird()
+        .register_songbird_from_config(config)
         .event_handler(handler)
         .await
         .expect("Error creating client");
@@ -488,10 +550,41 @@ async fn main() {
         data.insert::<commands::music::VoiceData>(Arc::new(serenity::prelude::Mutex::new(
             HashMap::new(),
         )));
+        data.insert::<commands::music::transcribe::TranscribeData>(Arc::new(
+            serenity::prelude::Mutex::new(HashMap::new()),
+        ));
     }
 
-    if let Err(why) = client.start().await {
-        println!("Client error: {:?}", why);
+    // tokio interval until the next six am
+    let mut tick = tokio::time::interval({
+        let now = chrono::Local::now();
+        let mut next = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(8, 0, 0)
+            .unwrap()
+            .and_utc();
+        if next < now {
+            next += chrono::Duration::days(1);
+        }
+        let next = next - now.naive_utc().and_utc();
+        tokio::time::Duration::from_secs(next.num_seconds() as u64)
+    });
+
+    // testing, wait 10 seconds
+    // let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(10));
+
+    tick.tick().await;
+
+    tokio::select! {
+        _ = tick.tick() => {
+            println!("Restarting at {}", chrono::Local::now());
+            client.shard_manager.lock().await.shutdown_all().await;
+            println!("Exit code 3 {}", chrono::Local::now());
+            std::process::exit(3);
+        }
+        Err(why) = client.start() => {
+            println!("Client error: {:?}", why);
+        }
     }
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

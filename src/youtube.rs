@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::commands::music::MetaVideo;
 #[cfg(feature = "tts")]
 use crate::{commands::music::VideoType, video::Video};
@@ -5,6 +6,52 @@ use anyhow::Error;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "tts")]
 use tokio::io::AsyncWriteExt;
+
+lazy_static::lazy_static!(
+    pub static ref VOICES: Vec<TTSVoice> = {
+        let v = vec![
+            TTSVoice::new("en-AU", "en-AU-Neural2-A", "FEMALE"),
+            TTSVoice::new("en-AU", "en-AU-Neural2-B", "MALE"),
+            TTSVoice::new("en-AU", "en-AU-Neural2-C", "FEMALE"),
+            TTSVoice::new("en-AU", "en-AU-Neural2-D", "MALE"),
+            TTSVoice::new("en-IN", "en-IN-Neural2-A", "FEMALE"),
+            TTSVoice::new("en-IN", "en-IN-Neural2-B", "MALE"),
+            TTSVoice::new("en-IN", "en-IN-Neural2-C", "MALE"),
+            TTSVoice::new("en-IN", "en-IN-Neural2-D", "FEMALE"),
+            TTSVoice::new("en-GB", "en-GB-Neural2-A", "FEMALE"),
+            TTSVoice::new("en-GB", "en-GB-Neural2-B", "MALE"),
+            TTSVoice::new("en-GB", "en-GB-Neural2-C", "FEMALE"),
+            TTSVoice::new("en-GB", "en-GB-Neural2-D", "MALE"),
+            TTSVoice::new("en-GB", "en-GB-Neural2-F", "FEMALE"),
+            TTSVoice::new("en-US", "en-US-Neural2-A", "MALE"),
+            TTSVoice::new("en-US", "en-US-Neural2-C", "FEMALE"),
+            TTSVoice::new("en-US", "en-US-Neural2-D", "MALE"),
+            TTSVoice::new("en-US", "en-US-Neural2-E", "FEMALE"),
+            TTSVoice::new("en-US", "en-US-Neural2-F", "FEMALE"),
+            TTSVoice::new("en-US", "en-US-Neural2-G", "FEMALE"),
+            TTSVoice::new("en-US", "en-US-Neural2-H", "FEMALE"),
+            TTSVoice::new("en-US", "en-US-Neural2-I", "MALE"),
+            TTSVoice::new("en-US", "en-US-Neural2-J", "MALE"),
+        ];
+        // shuffle
+        let mut v = v;
+        use rand::seq::SliceRandom;
+        v.shuffle(&mut rand::thread_rng());
+        v
+    };
+    static ref SILLYVOICES: Vec<TTSVoice> = {
+        let v = vec![
+            TTSVoice::new("fil-PH", "fil-ph-Neural2-D", "MALE"),
+            TTSVoice::new("de-DE", "de-DE-Neural2-D", "MALE"),
+            TTSVoice::new("ja-JP", "ja-JP-Neural2-D", "MALE"),
+            TTSVoice::new("es-ES", "es-ES-Neural2-F", "MALE"),
+            TTSVoice::new("ko-KR", "ko-KR-Neural2-B", "FEMALE"),
+            TTSVoice::new("th-TH", "th-TH-Neural2-C", "FEMALE"),
+            TTSVoice::new("vi-VN", "vi-VN-Neural2-A", "FEMALE"),
+        ];
+        v
+    };
+);
 
 pub async fn search(query: String, lim: usize) -> Vec<VideoInfo> {
     let url = format!("https://www.youtube.com/results?search_query={}", query);
@@ -224,7 +271,7 @@ impl VideoInfo {
         };
         #[cfg(feature = "tts")]
         if let Ok(key) = key.as_ref() {
-            let t = tokio::task::spawn(crate::youtube::get_tts(title.clone(), key.clone()))
+            let t = tokio::task::spawn(crate::youtube::get_tts(title.clone(), key.clone(), None))
                 .await
                 .unwrap();
             if let Ok(tts) = t {
@@ -258,22 +305,79 @@ impl VideoInfo {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TTSVoice {
+    pub language_code: String,
+    pub name: String,
+    pub gender: String,
+}
+
+impl TTSVoice {
+    pub fn new(language_code: impl ToString, name: impl ToString, gender: impl ToString) -> Self {
+        Self {
+            language_code: language_code.to_string(),
+            name: name.to_string(),
+            gender: gender.to_string(),
+        }
+    }
+}
+
 #[cfg(feature = "tts")]
-pub async fn get_tts(title: String, key: String) -> Result<VideoType, Error> {
+pub async fn get_tts(
+    title: String,
+    key: String,
+    specificvoice: Option<TTSVoice>,
+) -> Result<VideoType, Error> {
+    let mut title = title;
     // return Err(anyhow::anyhow!("TTS is currently disabled"));
     // println!("key: {}", key);
+
+    use rand::seq::SliceRandom;
+
+    // let voice = {
+    //     let fallback = TTSVoice::new("en-US", "en-US-Wavenet-C", "FEMALE");
+
+    //     if let Some(i) = specificvoice {
+    //         let mut i = i;
+    //         if i >= VOICES.len() {
+    //             i %= VOICES.len();
+    //         }
+    //         VOICES.get(i).unwrap_or(&fallback).clone()
+    //     } else {
+    //         VOICES
+    //             .choose(&mut rand::thread_rng())
+    //             .unwrap_or(&fallback)
+    //             .clone()
+    //     }
+    // };
+    let voice = specificvoice
+        .clone()
+        .unwrap_or_else(|| SILLYVOICES.choose(&mut rand::thread_rng()).unwrap().clone());
+
+    // body["voice"] = serde_json::json!(
+    //     {
+    //         "languageCode":"en-us",
+    //         "name":"en-US-Wavenet-C",
+    //         "ssmlGender":"FEMALE"
+    //     }
+    // );
+
+    if specificvoice.is_none() {
+        title = format!("Now playing... {}", title);
+    }
+
     let body = serde_json::json!(
         {
             "input":{
-                "text": format!("Now playing... {}", title)
+                "text": title,
             },
             "voice":{
-                "languageCode":"en-us",
-                "name":"en-US-Wavenet-C",
-                "ssmlGender":"FEMALE"
+                "languageCode": voice.language_code,
+                "name": voice.name,
+                "ssmlGender": voice.gender
             },
             "audioConfig":{
-                "audioEncoding":"MP3"
+                "audioEncoding":"OGG_OPUS"
             }
         }
     );
@@ -287,12 +391,15 @@ pub async fn get_tts(title: String, key: String) -> Result<VideoType, Error> {
         .body(body.to_string())
         .send()
         .await?;
-    // println!("res: {:?}", res);
+
     // let res = res?;
     // let text = res.text().await?;
     // println!("{}", text);
-    // let json: TTSResponse = serde_json::from_str(text.as_str())?;
-    let json: TTSResponse = res.json().await?;
+    // let mut json: TTSResponse = serde_json::from_str(text.as_str())?;
+    let mut json: TTSResponse = res.json().await?;
+
+    // we're using the no_pad decoder so we need to remove the padding google adds
+    json.audio_content = json.audio_content.trim_end_matches('=').to_owned();
 
     let data = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD_NO_PAD,
@@ -302,7 +409,7 @@ pub async fn get_tts(title: String, key: String) -> Result<VideoType, Error> {
     let id = nanoid::nanoid!(10);
     let mut path = crate::Config::get().data_path;
     path.push("tmp");
-    path.push(format!("GTTS{}_NA.mp3", id));
+    path.push(format!("GTTS{}_NA.ogg", id));
     let mut file = tokio::fs::File::create(path.clone()).await?;
     file.write_all(data.as_ref()).await?;
 
