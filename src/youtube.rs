@@ -312,6 +312,12 @@ pub struct TTSVoice {
     pub gender: String,
 }
 
+impl Default for TTSVoice {
+    fn default() -> Self {
+        Self::new("en-US", "en-US-Wavenet-C", "FEMALE")
+    }
+}
+
 impl TTSVoice {
     pub fn new(language_code: impl ToString, name: impl ToString, gender: impl ToString) -> Self {
         Self {

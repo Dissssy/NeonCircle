@@ -19,8 +19,9 @@ use serenity::model::prelude::command::CommandOptionType;
 use serenity::prelude::{Context, TypeMapKey};
 
 use crate::video::Video;
+use crate::youtube::TTSVoice;
 
-use super::{get_mutual_voice_channel, RawMessage};
+use super::RawMessage;
 
 #[derive(Debug, Clone)]
 pub struct Transcribe;
@@ -41,6 +42,7 @@ impl crate::CommandTrait for Transcribe {
     }
     async fn run(&self, ctx: &Context, interaction: Interaction) {
         let interaction = interaction.application_command().unwrap();
+
         interaction
             .create_interaction_response(&ctx.http, |response| {
                 response
@@ -49,125 +51,327 @@ impl crate::CommandTrait for Transcribe {
             })
             .await
             .unwrap();
-        // let guild_id = interaction.guild_id.unwrap();
+        let guild_id = match interaction.guild_id {
+            Some(id) => id,
+            None => {
+                interaction
+                    .edit_original_interaction_response(&ctx.http, |response| {
+                        response.content("This command can only be used in a server")
+                    })
+                    .await
+                    .unwrap();
+                return;
+            }
+        };
 
-        let mutual = get_mutual_voice_channel(ctx, &interaction).await;
-        if let Some((join, _channel_id)) = mutual {
-            if !join {
-                // let data_read = ctx.data.read().await;
-                // let audio_command_handler = data_read
-                //     .get::<AudioCommandHandler>()
-                //     .expect("Expected AudioCommandHandler in TypeMap")
-                //     .clone();
-                // let mut audio_command_handler = audio_command_handler.lock().await;
-                // let tx = audio_command_handler
-                //     .get_mut(&guild_id.to_string())
-                //     .unwrap();
-                // let (rtx, mut rrx) = mpsc::unbounded::<String>();
-                // tx.unbounded_send((
-                //     rtx,
-                //     AudioPromiseCommand::Transcribe(
-                //         interaction.data.options[0]
-                //             .value
-                //             .as_ref()
-                //             .unwrap()
-                //             .as_bool()
-                //             .unwrap(),
-                //         interaction
-                //             .get_interaction_response(&ctx.http)
-                //             .await
-                //             .unwrap()
-                //             .id,
-                //     ),
-                // ))
-                // .unwrap();
-
-                // DO SOME LOGIC HERE MAYBE
-
-                let guild_id = match interaction.guild_id {
-                    Some(guild) => guild,
-                    None => return,
-                };
-
-                let mut g = ctx.data.write().await;
-                let mut f = g
-                    .get_mut::<TranscribeData>()
-                    .expect("Expected TranscribeData in TypeMap.")
-                    .lock()
-                    .await;
-                let mut entry = f.entry(guild_id);
-                let em = match entry {
-                    std::collections::hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert(Arc::new(Mutex::new(TranscribeChannelHandler::new())))
-                    }
-                };
-
-                let mut e = em.lock().await;
-
-                if interaction.data.options[0]
-                    .value
-                    .as_ref()
-                    .unwrap()
-                    .as_bool()
-                    .unwrap()
-                {
-                    if let Err(res) = e.register(interaction.channel_id).await {
+        let option = match interaction
+            .data
+            .options
+            .iter()
+            .find(|o| o.name == "transcribe")
+        {
+            Some(o) => match o.value.as_ref() {
+                Some(v) => {
+                    if let Some(v) = v.as_bool() {
+                        v
+                    } else {
                         interaction
                             .edit_original_interaction_response(&ctx.http, |response| {
-                                response.content(format!("Error registering: {:?}", res))
+                                response.content("This command requires an option")
+                            })
+                            .await
+                            .unwrap();
+                        return;
+                    }
+                }
+                None => {
+                    interaction
+                        .edit_original_interaction_response(&ctx.http, |response| {
+                            response.content("This command requires an option")
+                        })
+                        .await
+                        .unwrap();
+                    return;
+                }
+            },
+            None => {
+                interaction
+                    .edit_original_interaction_response(&ctx.http, |response| {
+                        response.content("This command requires an option")
+                    })
+                    .await
+                    .unwrap();
+                return;
+            }
+        };
+
+        if let (Some(v), Some(member)) = (
+            ctx.data.read().await.get::<super::VoiceData>(),
+            interaction.member.as_ref(),
+        ) {
+            let mut v = v.lock().await;
+            let next_step = v.mutual_channel(ctx, &guild_id, &member.user.id);
+
+            match next_step {
+                super::VoiceAction::UserNotConnected => {
+                    interaction
+                        .edit_original_interaction_response(&ctx.http, |response| {
+                            response.content("You're not in a voice channel")
+                        })
+                        .await
+                        .unwrap();
+                    return;
+                }
+                super::VoiceAction::InDifferent(_channel) => {
+                    interaction
+                        .edit_original_interaction_response(&ctx.http, |response| {
+                            response.content("I'm in a different voice channel")
+                        })
+                        .await
+                        .unwrap();
+                    return;
+                }
+                super::VoiceAction::Join(_channel) => {
+                    interaction
+                        .edit_original_interaction_response(&ctx.http, |response| {
+                            response.content(
+                                "I'm not in a channel, if you want me to join use /join or /play",
+                            )
+                        })
+                        .await
+                        .unwrap();
+                    return;
+                }
+                super::VoiceAction::InSame(_channel) => {
+                    // let audio_command_handler = ctx
+                    //     .data
+                    //     .read()
+                    //     .await
+                    //     .get::<AudioCommandHandler>()
+                    //     .expect("Expected AudioCommandHandler in TypeMap")
+                    //     .clone();
+
+                    // let mut audio_command_handler = audio_command_handler.lock().await;
+
+                    // if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
+                    //     let (rtx, mut rrx) = mpsc::unbounded::<String>();
+                    //     tx.unbounded_send((rtx, AudioPromiseCommand::Shuffle(option)))
+                    //         .unwrap();
+
+                    //     let timeout =
+                    //         tokio::time::timeout(Duration::from_secs(10), rrx.next()).await;
+                    //     if let Ok(Some(msg)) = timeout {
+                    //         interaction
+                    //             .edit_original_interaction_response(&ctx.http, |response| {
+                    //                 response.content(msg)
+                    //             })
+                    //             .await
+                    //             .unwrap();
+                    //     } else {
+                    //         interaction
+                    //             .edit_original_interaction_response(&ctx.http, |response| {
+                    //                 response.content("Timed out waiting for queue to shuffle")
+                    //             })
+                    //             .await
+                    //             .unwrap();
+                    //     }
+                    // } else {
+                    //     interaction
+                    //         .edit_original_interaction_response(&ctx.http, |response| {
+                    //             response.content("Couldnt find the channel handler :( im broken.")
+                    //         })
+                    //         .await
+                    //         .unwrap();
+                    // }
+
+                    let em = match ctx
+                        .data
+                        .read()
+                        .await
+                        .get::<TranscribeData>()
+                        .expect("Expected TranscribeData in TypeMap.")
+                        .lock()
+                        .await
+                        .entry(guild_id)
+                    {
+                        std::collections::hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(Arc::new(Mutex::new(TranscribeChannelHandler::new())))
+                        }
+                    }
+                    .clone();
+
+                    let mut e = em.lock().await;
+
+                    if option {
+                        if let Err(res) = e.register(interaction.channel_id).await {
+                            interaction
+                                .edit_original_interaction_response(&ctx.http, |response| {
+                                    response.content(format!("Error registering: {:?}", res))
+                                })
+                                .await
+                                .unwrap();
+                        } else {
+                            interaction
+                                .edit_original_interaction_response(&ctx.http, |response| {
+                                    response.content("Registered")
+                                })
+                                .await
+                                .unwrap();
+                        }
+                    } else if let Err(res) = e.unregister(interaction.channel_id).await {
+                        interaction
+                            .edit_original_interaction_response(&ctx.http, |response| {
+                                response.content(format!("Error unregistering: {:?}", res))
                             })
                             .await
                             .unwrap();
                     } else {
                         interaction
                             .edit_original_interaction_response(&ctx.http, |response| {
-                                response.content("Registered")
+                                response.content("Unregistered")
                             })
                             .await
                             .unwrap();
                     }
-                } else if let Err(res) = e.unregister(interaction.channel_id).await {
-                    interaction
-                        .edit_original_interaction_response(&ctx.http, |response| {
-                            response.content(format!("Error unregistering: {:?}", res))
-                        })
-                        .await
-                        .unwrap();
-                } else {
-                    interaction
-                        .edit_original_interaction_response(&ctx.http, |response| {
-                            response.content("Unregistered")
-                        })
-                        .await
-                        .unwrap();
                 }
-
-                // let timeout = tokio::time::timeout(Duration::from_secs(10), rrx.next()).await;
-                // if let Ok(Some(msg)) = timeout {
-                //     interaction
-                //         .edit_original_interaction_response(&ctx.http, |response| {
-                //             response.content(msg)
-                //         })
-                //         .await
-                //         .unwrap();
-                // } else {
-                //     interaction
-                //         .edit_original_interaction_response(&ctx.http, |response| {
-                //             response.content("Timed out waiting for transcribe")
-                //         })
-                //         .await
-                //         .unwrap();
-                // }
-            } else {
-                interaction
-                    .edit_original_interaction_response(&ctx.http, |response| {
-                        response.content("I'm not in a voice channel you dingus")
-                    })
-                    .await
-                    .unwrap();
             }
+        } else {
+            interaction
+                .edit_original_interaction_response(&ctx.http, |response| {
+                    response.content("TELL ETHAN THIS SHOULD NEVER HAPPEN :(")
+                })
+                .await
+                .unwrap();
         }
+        // let interaction = interaction.application_command().unwrap();
+        // interaction
+        //     .create_interaction_response(&ctx.http, |response| {
+        //         response
+        //             .interaction_response_data(|f| f.ephemeral(true))
+        //             .kind(InteractionResponseType::DeferredChannelMessageWithSource)
+        //     })
+        //     .await
+        //     .unwrap();
+        // // let guild_id = interaction.guild_id.unwrap();
+
+        // let mutual = get_mutual_voice_channel(ctx, &interaction).await;
+        // if let Some((join, _channel_id)) = mutual {
+        //     if !join {
+        //         // let data_read = ctx.data.read().await;
+        //         // let audio_command_handler = data_read
+        //         //     .get::<AudioCommandHandler>()
+        //         //     .expect("Expected AudioCommandHandler in TypeMap")
+        //         //     .clone();
+        //         // let mut audio_command_handler = audio_command_handler.lock().await;
+        //         // let tx = audio_command_handler
+        //         //     .get_mut(&guild_id.to_string())
+        //         //     .unwrap();
+        //         // let (rtx, mut rrx) = mpsc::unbounded::<String>();
+        //         // tx.unbounded_send((
+        //         //     rtx,
+        //         //     AudioPromiseCommand::Transcribe(
+        //         //         interaction.data.options[0]
+        //         //             .value
+        //         //             .as_ref()
+        //         //             .unwrap()
+        //         //             .as_bool()
+        //         //             .unwrap(),
+        //         //         interaction
+        //         //             .get_interaction_response(&ctx.http)
+        //         //             .await
+        //         //             .unwrap()
+        //         //             .id,
+        //         //     ),
+        //         // ))
+        //         // .unwrap();
+
+        //         // DO SOME LOGIC HERE MAYBE
+
+        //         let guild_id = match interaction.guild_id {
+        //             Some(guild) => guild,
+        //             None => return,
+        //         };
+
+        //         let mut g = ctx.data.write().await;
+        //         let mut f = g
+        //             .get_mut::<TranscribeData>()
+        //             .expect("Expected TranscribeData in TypeMap.")
+        //             .lock()
+        //             .await;
+        //         let mut entry = f.entry(guild_id);
+        //         let em = match entry {
+        //             std::collections::hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
+        //             std::collections::hash_map::Entry::Vacant(e) => {
+        //                 e.insert(Arc::new(Mutex::new(TranscribeChannelHandler::new())))
+        //             }
+        //         };
+
+        //         let mut e = em.lock().await;
+
+        //         if interaction.data.options[0]
+        //             .value
+        //             .as_ref()
+        //             .unwrap()
+        //             .as_bool()
+        //             .unwrap()
+        //         {
+        //             if let Err(res) = e.register(interaction.channel_id).await {
+        //                 interaction
+        //                     .edit_original_interaction_response(&ctx.http, |response| {
+        //                         response.content(format!("Error registering: {:?}", res))
+        //                     })
+        //                     .await
+        //                     .unwrap();
+        //             } else {
+        //                 interaction
+        //                     .edit_original_interaction_response(&ctx.http, |response| {
+        //                         response.content("Registered")
+        //                     })
+        //                     .await
+        //                     .unwrap();
+        //             }
+        //         } else if let Err(res) = e.unregister(interaction.channel_id).await {
+        //             interaction
+        //                 .edit_original_interaction_response(&ctx.http, |response| {
+        //                     response.content(format!("Error unregistering: {:?}", res))
+        //                 })
+        //                 .await
+        //                 .unwrap();
+        //         } else {
+        //             interaction
+        //                 .edit_original_interaction_response(&ctx.http, |response| {
+        //                     response.content("Unregistered")
+        //                 })
+        //                 .await
+        //                 .unwrap();
+        //         }
+
+        //         // let timeout = tokio::time::timeout(Duration::from_secs(10), rrx.next()).await;
+        //         // if let Ok(Some(msg)) = timeout {
+        //         //     interaction
+        //         //         .edit_original_interaction_response(&ctx.http, |response| {
+        //         //             response.content(msg)
+        //         //         })
+        //         //         .await
+        //         //         .unwrap();
+        //         // } else {
+        //         //     interaction
+        //         //         .edit_original_interaction_response(&ctx.http, |response| {
+        //         //             response.content("Timed out waiting for transcribe")
+        //         //         })
+        //         //         .await
+        //         //         .unwrap();
+        //         // }
+        //     } else {
+        //         interaction
+        //             .edit_original_interaction_response(&ctx.http, |response| {
+        //                 response.content("I'm not in a voice channel you dingus")
+        //             })
+        //             .await
+        //             .unwrap();
+        //     }
+        // }
     }
     fn name(&self) -> &str {
         "transcribe"
@@ -184,8 +388,35 @@ impl crate::CommandTrait for Transcribe {
 pub struct Handler {
     call: Arc<Mutex<Call>>,
     queue: Vec<RawMessage>,
-    prepared_next: Option<Video>,
-    current_handle: Option<(TrackHandle, Video)>,
+    prepared_next: Option<Deleteable>,
+    current_handle: Option<(TrackHandle, Deleteable)>,
+    channel_names: HashMap<String, Deleteable>,
+    last_channel_name: String,
+    waiting_on: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Deleteable {
+    Delete(Video),
+    Keep(Video),
+}
+
+impl Deleteable {
+    pub fn delete(&self) -> Result<(), Error> {
+        match self {
+            Self::Delete(v) => v.delete(),
+            Self::Keep(_) => Ok(()),
+        }
+    }
+    pub fn force_delete(&self) -> Result<(), Error> {
+        self.get_video().delete()
+    }
+    pub fn get_video(&self) -> &Video {
+        match self {
+            Self::Delete(v) => v,
+            Self::Keep(v) => v,
+        }
+    }
 }
 
 impl Handler {
@@ -195,6 +426,9 @@ impl Handler {
             queue: Vec::new(),
             prepared_next: None,
             current_handle: None,
+            channel_names: HashMap::new(),
+            waiting_on: None,
+            last_channel_name: String::new(),
         }
     }
     pub async fn update(&mut self, messages: Vec<RawMessage>) -> Result<(), Error> {
@@ -208,9 +442,9 @@ impl Handler {
     }
 
     pub async fn shift(&mut self) -> Result<(), Error> {
-        self.prepare_next_tts().await?;
-        self.check_next_tts().await?;
         self.check_current_handle().await?;
+        self.check_next_tts().await?;
+        self.prepare_next_tts().await?;
         Ok(())
     }
 
@@ -250,7 +484,7 @@ impl Handler {
             if self.current_handle.is_none() {
                 let mut call = self.call.lock().await;
                 let handle = call.play_source(
-                    ffmpeg(v.path.clone())
+                    ffmpeg(v.get_video().path.clone())
                         .await
                         .expect("Error creating ffmpeg source"),
                 );
@@ -267,7 +501,55 @@ impl Handler {
         if self.prepared_next.is_some() {
             return Ok(());
         }
-        if let Some(m) = self.queue.first_mut() {
+        let mut push = None;
+        if let Some(m) = self.queue.get(0) {
+            if let Some(ref mn) = &m.channel_name {
+                if mn != &self.last_channel_name {
+                    self.last_channel_name = mn.clone();
+                    // println!("Waiting on {:?}", mn);
+                    self.waiting_on = Some(mn.clone());
+                    // we want to make the next item in the queue a tts for channel change announcement
+                    let content = format!("in #{}", mn);
+                    push = Some(RawMessage {
+                        author_id: String::new(),
+                        author: String::new(),
+                        channel_id: m.channel_id,
+                        channel_name: Some(mn.clone()),
+                        content: content.clone(),
+                        timestamp: m.timestamp,
+                        tts_audio_handle: match self.channel_names.get(mn) {
+                            Some(v) => {
+                                let v = v.clone().get_video().clone();
+                                Some(tokio::task::spawn(async move { Ok(v) }))
+                            }
+                            None => {
+                                match RawMessage::audio_handle(content, TTSVoice::default()).await {
+                                    Ok(Ok(v)) => {
+                                        self.channel_names
+                                            .insert(mn.clone(), Deleteable::Keep(v.clone()));
+                                        Some(tokio::task::spawn(async move { Ok(v) }))
+                                    }
+                                    _ => None,
+                                }
+                            }
+                        },
+                    });
+                }
+            }
+        }
+        // we need push to be the next element in the queue
+        match push {
+            Some(m) => {
+                self.queue.insert(0, m);
+            }
+            None => {
+                // println!("No tts needed");
+            }
+        }
+
+        if let Some(m) = self.queue.get_mut(0) {
+            let deleteable = !m.author_id.is_empty();
+
             let v = match m.check_tts().await? {
                 Some(Ok(v)) => Some(v),
                 Some(Err(e)) => {
@@ -280,7 +562,13 @@ impl Handler {
                     return Ok(());
                 }
             };
-            self.prepared_next = v;
+            if let Some(v) = v {
+                self.prepared_next = if deleteable {
+                    Some(Deleteable::Delete(v))
+                } else {
+                    Some(Deleteable::Keep(v))
+                };
+            }
             // println!("Next tts is prepared");
             self.queue.remove(0);
         }
@@ -320,6 +608,11 @@ impl Handler {
                         println!("Error getting audio handle: {:?}", e);
                     }
                 }
+            }
+        }
+        for v in self.channel_names.values() {
+            if let Err(e) = v.force_delete() {
+                println!("Error deleting video: {:?}", e);
             }
         }
         self.queue.clear();
@@ -529,14 +822,6 @@ impl TranscribeChannelHandler {
     pub async fn get_tts(&mut self, ctx: &Context, msg: &Message) -> Vec<RawMessage> {
         let mut messages = Vec::new();
 
-        let saychannel = match self.channels.lock().await.len() {
-            0 => {
-                return messages;
-            }
-            1 => false,
-            _ => true,
-        };
-
         // attempt to get voice
         let voice = {
             let mut assigned_voice = self.assigned_voice.lock().await;
@@ -556,7 +841,7 @@ impl TranscribeChannelHandler {
             }
         };
 
-        match RawMessage::message(ctx, msg, &voice, saychannel).await {
+        match RawMessage::message(ctx, msg, &voice).await {
             Ok(b) => {
                 messages.push(b);
             }
@@ -566,5 +851,28 @@ impl TranscribeChannelHandler {
         }
 
         messages
+    }
+    pub async fn send_tts(&mut self, ctx: &Context, msg: &Message) {
+        let undo_voice = {
+            self.assigned_voice
+                .lock()
+                .await
+                .get(&msg.author.id)
+                .is_none()
+        };
+        let messages = self.get_tts(ctx, msg).await;
+
+        let mut errored = false;
+        for raw in messages {
+            if let Err(ugh) = self.send(raw).await {
+                if let Some(ughh) = ugh.tts_audio_handle {
+                    ughh.abort();
+                }
+                errored = true;
+            }
+        }
+        if errored && undo_voice {
+            self.assigned_voice.lock().await.remove(&msg.author.id);
+        }
     }
 }

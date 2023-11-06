@@ -16,9 +16,9 @@ pub mod volume;
 
 use serenity::client::Cache;
 use serenity::http::Http;
-use serenity::model::prelude::interaction::application_command::ApplicationCommandInteraction;
+// use serenity::model::prelude::interaction::application_command::ApplicationCommandInteraction;
 
-use serenity::model::prelude::{ChannelId, GuildId, Message};
+use serenity::model::prelude::{ChannelId, GuildId, Member, Message, UserId};
 use serenity::model::voice::VoiceState;
 use serenity::prelude::Mutex;
 use tokio::time::Instant;
@@ -61,7 +61,161 @@ impl TypeMapKey for AudioCommandHandler {
 pub struct VoiceData;
 
 impl TypeMapKey for VoiceData {
-    type Value = Arc<Mutex<HashMap<GuildId, Vec<VoiceState>>>>;
+    type Value = Arc<Mutex<InnerVoiceData>>;
+}
+
+pub struct InnerVoiceData {
+    pub guilds: HashMap<GuildId, GuildVc>,
+    pub bot_id: UserId,
+}
+
+impl InnerVoiceData {
+    pub fn new(bot_id: UserId) -> Self {
+        Self {
+            guilds: HashMap::new(),
+            bot_id,
+        }
+    }
+    pub fn update(&mut self, old: Option<VoiceState>, new: VoiceState) {
+        if let Some(guild_id) = new.guild_id {
+            let guild = self.guilds.entry(guild_id).or_insert_with(GuildVc::new);
+            guild.update(old, new.clone());
+            if self.bot_id == new.user_id {
+                guild.bot_connected = new.channel_id.is_some();
+            }
+        }
+    }
+    pub fn mutual_channel(
+        &mut self,
+        ctx: &Context,
+        guild: &GuildId,
+        member: &UserId,
+    ) -> VoiceAction {
+        let bot_id = ctx.cache.current_user_id();
+        let guildstate = self.guilds.entry(*guild).or_insert_with(GuildVc::new);
+        let botstate = guildstate.find_user(bot_id);
+        let memberstate = guildstate.find_user(*member);
+
+        if let Some(memberstate) = memberstate {
+            if let Some(botstate) = botstate {
+                if memberstate == botstate {
+                    VoiceAction::InSame(memberstate)
+                } else {
+                    VoiceAction::InDifferent(memberstate)
+                }
+            } else {
+                VoiceAction::Join(memberstate)
+            }
+        } else {
+            VoiceAction::UserNotConnected
+        }
+    }
+    pub async fn refresh_guild(&mut self, ctx: &Context, guild_id: GuildId) -> Result<(), Error> {
+        let mut new = GuildVc::new();
+
+        for (_i, channel) in ctx
+            .http
+            .get_guild(guild_id.0)
+            .await?
+            .channels(&ctx.http)
+            .await?
+        {
+            if channel.kind == serenity::model::channel::ChannelType::Voice {
+                let mut newchannel = HashMap::new();
+                for member in match ctx.http.get_channel(channel.id.0).await {
+                    Ok(serenity::model::channel::Channel::Guild(channel)) => channel,
+                    Err(_) => {
+                        continue;
+                    }
+                    _ => return Err(anyhow::anyhow!("Expected Guild channel")),
+                }
+                .members(&ctx.cache)
+                .await?
+                {
+                    newchannel.insert(
+                        member.user.id,
+                        UserMetadata {
+                            member: member.clone(),
+                            // deaf: member.deaf,
+                            mute: member.mute,
+                        },
+                    );
+                }
+                new.replace_channel(channel.id, newchannel);
+            }
+        }
+        self.guilds.insert(guild_id, new);
+        Ok(())
+    }
+}
+
+pub enum VoiceAction {
+    Join(ChannelId),
+    InSame(ChannelId),
+    InDifferent(ChannelId),
+    UserNotConnected,
+}
+
+pub struct GuildVc {
+    pub channels: HashMap<ChannelId, HashMap<UserId, UserMetadata>>,
+    pub bot_connected: bool,
+}
+
+impl GuildVc {
+    pub fn new() -> Self {
+        Self {
+            channels: HashMap::new(),
+            bot_connected: false,
+        }
+    }
+    pub fn update(&mut self, old: Option<VoiceState>, new: VoiceState) {
+        if let Some(old) = old {
+            if old.channel_id != new.channel_id {
+                // we need to remove the old state
+                if let Some(channel) = old.channel_id {
+                    let channel = self.channels.entry(channel).or_insert_with(HashMap::new);
+                    channel.remove(&old.user_id);
+                }
+            }
+        }
+        if let (Some(channel), Some(member)) = (new.channel_id, new.member.clone()) {
+            let channel = self.channels.entry(channel).or_insert_with(HashMap::new);
+            channel.insert(new.user_id, UserMetadata::new(member, new));
+        }
+    }
+    pub fn replace_channel(&mut self, id: ChannelId, members: HashMap<UserId, UserMetadata>) {
+        self.channels.insert(id, members);
+    }
+    pub fn find_user(&self, user: UserId) -> Option<ChannelId> {
+        for (channel, members) in self.channels.iter() {
+            if members.contains_key(&user) {
+                return Some(*channel);
+            }
+        }
+        None
+    }
+}
+
+pub struct UserMetadata {
+    pub member: Member,
+    // pub deaf: bool,
+    pub mute: bool,
+    //     pub self_deaf: bool,
+    //     pub self_mute: bool,
+    //     pub suppress: bool,
+}
+
+impl UserMetadata {
+    pub fn new(member: Member, state: VoiceState) -> Self {
+        Self {
+            member,
+            // deaf: state.deaf,
+            mute: state.mute,
+            // self_deaf: state.self_deaf,
+            // self_mute: state.self_mute,
+            // suppress: state.suppress,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -518,6 +672,7 @@ pub struct RawMessage {
     pub author: String,
     pub author_id: String,
     pub channel_id: ChannelId,
+    pub channel_name: Option<String>,
     pub content: String,
     pub timestamp: serenity::model::timestamp::Timestamp,
     pub tts_audio_handle: Option<tokio::task::JoinHandle<Result<Video, anyhow::Error>>>,
@@ -540,20 +695,16 @@ impl RawMessage {
     }
     pub fn announcement(msg: &Message, text: String, voice: &TTSVoice) -> Self {
         Self {
-            author: String::from("Announcement"),
+            author: String::new(),
             author_id: String::from("Announcement"),
             channel_id: msg.channel_id,
+            channel_name: None,
             timestamp: msg.timestamp,
             content: text.clone(),
             tts_audio_handle: Some(Self::audio_handle(text, voice.clone())),
         }
     }
-    pub async fn message(
-        ctx: &Context,
-        msg: &Message,
-        voice: &TTSVoice,
-        saychannel: bool,
-    ) -> Result<Self, Error> {
+    pub async fn message(ctx: &Context, msg: &Message, voice: &TTSVoice) -> Result<Self, Error> {
         let safecontent = msg.content_safe(&ctx.cache);
         let finder = linkify::LinkFinder::new();
         let links: Vec<_> = finder.links(&safecontent).map(|l| l.as_str()).collect();
@@ -569,29 +720,29 @@ impl RawMessage {
             return Err(anyhow::anyhow!("Message is empty"));
         }
 
-        let newfilteredcontent = if saychannel {
-            let channelname = match msg.channel(&ctx).await.unwrap() {
-                serenity::model::prelude::Channel::Guild(channel) => channel.name,
-                serenity::model::prelude::Channel::Private(_) => String::from("Private"),
-                serenity::model::prelude::Channel::Category(_) => String::from("Category"),
-                _ => String::from("Unknown"),
-            };
-            format!("in #{}. {}", channelname, filteredcontent,)
-        } else {
-            filteredcontent
+        if let Some(othermsg) = msg.referenced_message.as_ref() {
+            filteredcontent = format!("Replying to {}:\n{}", othermsg.author.name, filteredcontent)
+        }
+
+        let channelname = match msg.channel(&ctx).await.unwrap() {
+            serenity::model::prelude::Channel::Guild(channel) => channel.name,
+            serenity::model::prelude::Channel::Private(_) => String::from("Private"),
+            serenity::model::prelude::Channel::Category(_) => String::from("Category"),
+            _ => String::from("Unknown"),
         };
 
         Ok(Self {
             author: msg.author.name.clone(),
             author_id: msg.author.id.to_string(),
+            channel_name: Some(channelname),
             channel_id: msg.channel_id,
             timestamp: msg.timestamp,
-            content: newfilteredcontent.clone(),
-            tts_audio_handle: Some(Self::audio_handle(newfilteredcontent, voice.clone())),
+            content: filteredcontent.clone(),
+            tts_audio_handle: Some(Self::audio_handle(filteredcontent, voice.clone())),
         })
     }
 
-    fn audio_handle(
+    pub fn audio_handle(
         text: String,
         voice: TTSVoice,
     ) -> tokio::task::JoinHandle<Result<Video, anyhow::Error>> {
@@ -609,67 +760,74 @@ impl RawMessage {
     }
 }
 
-async fn get_mutual_voice_channel(
-    ctx: &Context,
-    interaction: &ApplicationCommandInteraction,
-) -> Option<(bool, ChannelId)> {
-    let guild_id = interaction.guild_id.unwrap();
-    let gvs;
-    {
-        let data_read = ctx.data.read().await;
-        let voice_states = data_read.get::<VoiceData>().unwrap().lock().await;
-        if let Some(this) = voice_states.get(&guild_id) {
-            gvs = this.clone();
-        } else {
-            interaction
-                .edit_original_interaction_response(&ctx.http, |response| {
-                    response.content("You need to be in a voice channel to use this command")
-                })
-                .await
-                .unwrap();
-            return None;
-        }
-    }
-    let bot_id = ctx.cache.current_user_id();
+// async fn get_mutual_voice_channel(
+//     ctx: &Context,
+//     interaction: &ApplicationCommandInteraction,
+// ) -> Option<(bool, ChannelId)> {
+//     // let guild_id = interaction.guild_id.unwrap();
+//     // let gvs;
+//     // {
+//     //     let data_read = ctx.data.read().await;
+//     //     let voice_states = data_read.get::<VoiceData>().unwrap().lock().await;
+//     //     if let Some(this) = voice_states.get(&guild_id) {
+//     //         gvs = this.clone();
+//     //     } else {
+//     //         interaction
+//     //             .edit_original_interaction_response(&ctx.http, |response| {
+//     //                 response.content("You need to be in a voice channel to use this command")
+//     //             })
+//     //             .await
+//     //             .unwrap();
+//     //         return None;
+//     //     }
+//     // }
+//     // let bot_id = ctx.cache.current_user_id();
 
-    if let Some(uvs) = gvs.iter().find(|vs| {
-        vs.user_id == interaction.member.as_ref().unwrap().user.id && vs.channel_id.is_some()
-    }) {
-        if uvs.channel_id.is_some() {
-            if let Some(bvs) = gvs
-                .iter()
-                .find(|vs| vs.user_id == bot_id && vs.channel_id.is_some())
-            {
-                if bvs.channel_id != uvs.channel_id {
-                    interaction
-                        .edit_original_interaction_response(&ctx.http, |response| response.content("You need to be in the same voice channel as the bot to use this command"))
-                        .await
-                        .unwrap();
-                    None
-                } else {
-                    uvs.channel_id.map(|id| (false, id))
-                }
-            } else {
-                uvs.channel_id.map(|channel_id| (true, channel_id))
-            }
-        } else {
-            // println!("User is not in a voice CHANNEL");
-            interaction
-                .edit_original_interaction_response(&ctx.http, |response| {
-                    response.content("You need to be in a voice channel to use this command")
-                })
-                .await
-                .unwrap();
-            None
-        }
-    } else {
-        // println!("User is not in a voice channel");
-        interaction
-            .edit_original_interaction_response(&ctx.http, |response| {
-                response.content("You need to be in a voice channel to use this command")
-            })
-            .await
-            .unwrap();
-        None
-    }
-}
+//     // if let Some(uvs) = gvs.iter().find(|vs| {
+//     //     vs.user_id == interaction.member.as_ref().unwrap().user.id && vs.channel_id.is_some()
+//     // }) {
+//     //     if uvs.channel_id.is_some() {
+//     //         if let Some(bvs) = gvs
+//     //             .iter()
+//     //             .find(|vs| vs.user_id == bot_id && vs.channel_id.is_some())
+//     //         {
+//     //             if bvs.channel_id != uvs.channel_id {
+//     //                 interaction
+//     //                     .edit_original_interaction_response(&ctx.http, |response| response.content("You need to be in the same voice channel as the bot to use this command"))
+//     //                     .await
+//     //                     .unwrap();
+//     //                 None
+//     //             } else {
+//     //                 uvs.channel_id.map(|id| (false, id))
+//     //             }
+//     //         } else {
+//     //             uvs.channel_id.map(|channel_id| (true, channel_id))
+//     //         }
+//     //     } else {
+//     //         // println!("User is not in a voice CHANNEL");
+//     //         interaction
+//     //             .edit_original_interaction_response(&ctx.http, |response| {
+//     //                 response.content("You need to be in a voice channel to use this command")
+//     //             })
+//     //             .await
+//     //             .unwrap();
+//     //         None
+//     //     }
+//     // } else {
+//     //     // println!("User is not in a voice channel");
+//     //     interaction
+//     //         .edit_original_interaction_response(&ctx.http, |response| {
+//     //             response.content("You need to be in a voice channel to use this command")
+//     //         })
+//     //         .await
+//     //         .unwrap();
+//     //     None
+//     // }
+
+//     if let Some(guild_id) = interaction.guild_id {
+//         todo!()
+//     } else {
+//         interaction
+//     }
+
+// }

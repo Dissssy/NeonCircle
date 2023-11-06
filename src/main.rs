@@ -109,6 +109,17 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
         let mut users = Vec::new();
+
+        let voicedata = ctx
+            .data
+            .read()
+            .await
+            .get::<VoiceData>()
+            .expect("Expected VoiceData in TypeMap.")
+            .clone();
+
+        let mut voicedata = voicedata.lock().await;
+
         for guild in ready.guilds {
             match ctx.http.get_guild(guild.id.0).await {
                 Ok(guild) => {
@@ -125,12 +136,17 @@ impl EventHandler for Handler {
                             users.push(id);
                         }
                     }
+
+                    if let Err(e) = voicedata.refresh_guild(&ctx, guild.id).await {
+                        println!("Failed to refresh voice states for guild: {}", e);
+                    }
                 }
                 Err(e) => {
                     println!("Error getting guild: {e}");
                 }
             }
         }
+        drop(voicedata);
         let mut finalusers = Vec::new();
         for id in users {
             // let hashed_id = format!("{:x}", {
@@ -214,27 +230,92 @@ impl EventHandler for Handler {
         }
     }
 
-    async fn voice_state_update(&self, ctx: Context, _old: Option<VoiceState>, new: VoiceState) {
-        if let Some(guild_id) = new.guild_id {
-            let data_lock = ctx.data.read().await;
-            let data = data_lock
-                .get::<VoiceData>()
-                .expect("Expected VoiceData in TypeMap.")
-                .clone();
-            let mut data = data.lock().await;
+    async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
+        let data = ctx
+            .data
+            .read()
+            .await
+            .get::<VoiceData>()
+            .expect("Expected VoiceData in TypeMap.")
+            .clone();
+        let mut data = data.lock().await;
 
-            let guild = data.get_mut(&guild_id);
-            if let Some(guild) = guild {
-                let state = guild.iter_mut().find(|user| user.user_id == new.user_id);
-                if let Some(state) = state {
-                    *state = new;
-                } else {
-                    guild.push(new);
-                }
-            } else {
-                data.insert(guild_id, vec![new]);
-            }
-        }
+        data.update(old, new);
+
+        // if let Some(guild_id) = new.guild_id {
+        //     let data = ctx
+        //         .data
+        //         .read()
+        //         .await
+        //         .get::<VoiceData>()
+        //         .expect("Expected VoiceData in TypeMap.")
+        //         .clone();
+        //     let mut data = data.lock().await;
+
+        //     let guild = data.get_mut(&guild_id);
+        //     if let Some(guild) = guild {
+        //         let state = guild.iter_mut().find(|user| user.user_id == new.user_id);
+        //         if let Some(state) = state {
+        //             *state = new;
+        //         } else {
+        //             guild.push(new);
+        //         }
+        //     } else {
+        //         data.insert(guild_id, vec![new]);
+        //     }
+        //     // if everyone left the channel, stop the music
+        //     if let Some(handler) = data.get(&guild_id) {
+        //         // println!("STOPPING MUSIC");
+        //         let empty = handler
+        //             .iter()
+        //             .filter(|user| {
+        //                 // filter out all of the bots, if member is none, assume it is a bot
+        //                 match user.member {
+        //                     Some(ref member) => !member.user.bot,
+        //                     None => false,
+        //                 }
+        //             })
+        //             .all(|user| user.channel_id.is_none())
+        //             || handler.is_empty();
+        //         // println!("Empty: {}", empty);
+        //         if empty {
+        //             let audio_command_handler = ctx
+        //                 .data
+        //                 .read()
+        //                 .await
+        //                 .get::<commands::music::AudioCommandHandler>()
+        //                 .expect("Expected AudioCommandHandler in TypeMap")
+        //                 .clone();
+        //             let mut audio_command_handler = audio_command_handler.lock().await;
+        //             let tx = audio_command_handler.get_mut(&guild_id.to_string());
+        //             if let Some(tx) = tx {
+        //                 let (rtx, mut rrx) =
+        //                     serenity::futures::channel::mpsc::unbounded::<String>();
+        //                 if tx
+        //                     .unbounded_send((rtx, commands::music::AudioPromiseCommand::Stop))
+        //                     .is_err()
+        //                 {
+        //                     // println!("Failed to send stop command: {}", e);
+        //                     // honestly? just ignore it lol, this was our goal anyways
+        //                 };
+        //                 // wait for up to 10 seconds for the rrx to receive a message
+        //                 let timeout = tokio::time::timeout(
+        //                     std::time::Duration::from_secs(10),
+        //                     serenity::futures::StreamExt::next(&mut rrx),
+        //                 )
+        //                 .await;
+        //                 if let Ok(Some(_msg)) = timeout {
+        //                     // println!("Stopped playing: {}", msg);
+        //                 } else {
+        //                     // println!("Failed to stop playing");
+        //                 }
+        //             } else {
+        //                 // delete the tx
+        //                 audio_command_handler.remove(&guild_id.to_string());
+        //             }
+        //         }
+        //     }
+        // }
     }
 
     async fn message(&self, ctx: Context, new_message: Message) {
@@ -249,15 +330,16 @@ impl EventHandler for Handler {
             Some(guild) => guild,
             None => return,
         };
-
-        let mut g = ctx.data.write().await;
-        let mut f = g
+        let em = match ctx
+            .data
+            .write()
+            .await
             .get_mut::<TranscribeData>()
             .expect("Expected TranscribeData in TypeMap.")
             .lock()
-            .await;
-        let mut entry = f.entry(guild_id);
-        let em = match entry {
+            .await
+            .entry(guild_id)
+        {
             std::collections::hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
             std::collections::hash_map::Entry::Vacant(e) => {
                 let uh = TranscribeChannelHandler::new();
@@ -273,19 +355,20 @@ impl EventHandler for Handler {
                 // });
                 e.insert(Arc::new(Mutex::new(uh)))
             }
-        };
+        }
+        .clone();
 
         let mut e = em.lock().await;
 
-        let v = e.get_tts(&ctx, &new_message).await;
+        e.send_tts(&ctx, &new_message).await;
 
-        for raw in v {
-            if let Err(ugh) = e.send(raw).await {
-                if let Some(ughh) = ugh.tts_audio_handle {
-                    ughh.abort();
-                }
-            }
-        }
+        // for raw in v {
+        //     if let Err(ugh) = e.send(raw).await {
+        //         if let Some(ughh) = ugh.tts_audio_handle {
+        //             ughh.abort();
+        //         }
+        //     }
+        // }
 
         //     // let mut g = SHITGPT.lock().await;
         //     // let s = g
@@ -548,7 +631,7 @@ async fn main() {
             serenity::prelude::Mutex::new(HashMap::new()),
         ));
         data.insert::<commands::music::VoiceData>(Arc::new(serenity::prelude::Mutex::new(
-            HashMap::new(),
+            commands::music::InnerVoiceData::new(client.cache_and_http.cache.current_user_id()),
         )));
         data.insert::<commands::music::transcribe::TranscribeData>(Arc::new(
             serenity::prelude::Mutex::new(HashMap::new()),

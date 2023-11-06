@@ -127,7 +127,7 @@ pub async fn the_lüüp(
         let mut ttshandler = ttshandler;
         let mut bekilled = bekilled;
         loop {
-            let mut every10ms = tokio::time::interval(Duration::from_millis(10));
+            let mut interv = tokio::time::interval(Duration::from_millis(100));
 
             tokio::select! {
                 returnwhatsmine = &mut bekilled => {
@@ -148,7 +148,7 @@ pub async fn the_lüüp(
                         }
                     }
                 }
-                _ = every10ms.tick() => {
+                _ = interv.tick() => {
                     if let Err(e) = ttshandler.shift().await {
                         println!("Error shifting tts: {}", e);
                     }
@@ -161,205 +161,215 @@ pub async fn the_lüüp(
 
     loop {
         tokio::select! {
-            Some((snd, command)) = rx.next() => {
-                match command {
-                    AudioPromiseCommand::Play(videos) => {
-                        for v in videos {
-                            queue.push(v);
-                        }
+            t = rx.next() => {
+                match t {
+                    Some((snd, command)) => {
+                        // println!("Got command: {:?}", command);
+                        match command {
+                            AudioPromiseCommand::Play(videos) => {
+                                for v in videos {
+                                    queue.push(v);
+                                }
 
-                        snd.unbounded_send(String::from("Added to queue")).unwrap();
-                    }
-                    AudioPromiseCommand::Stop => {
-                        let r = snd.unbounded_send(String::from("Stopped"));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error sending stop: {}\r", e));
-                        }
-                        brk = true;
-                    }
-                    AudioPromiseCommand::Pause => {
-                        if let Some(trackhandle) = trackhandle.as_mut() {
-                            paused = true;
-                            let r = trackhandle.pause();
-                            if r.is_ok() {
-                                let r2 = snd.unbounded_send(String::from("Paused"));
-                                if let Err(e) = r2 {
-                                    log.push_str(&format!("Error sending pause: {}\r", e));
-                                }
-                            } else {
-                                log.push_str(&format!("Error pausing track: {}\r", r.unwrap_err()));
+                                snd.unbounded_send(String::from("Added to queue")).unwrap();
                             }
-                        } else {
-                            let r = snd.unbounded_send(String::from("Nothing is playing"));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        }
-                    }
-                    AudioPromiseCommand::Resume => {
-                        if let Some(trackhandle) = trackhandle.as_mut() {
-                            paused = false;
-                            let r = trackhandle.play();
-                            if r.is_ok() {
-                                let r2 = snd.unbounded_send(String::from("Resumed"));
-                                if let Err(e) = r2 {
-                                    log.push_str(&format!("Error sending resume: {}\r", e));
-                                }
-                            } else {
-                                log.push_str(&format!("Error resuming track: {}\r", r.unwrap_err()));
-                            }
-                        } else {
-                            let r = snd.unbounded_send(String::from("Nothing is playing"));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        }
-                    }
-                    AudioPromiseCommand::Shuffle(shuffle) => {
-                        if shuffled != shuffle {
-                            shuffled = shuffle;
-                            let r = snd.unbounded_send(format!("Shuffle set to `{}`", shuffled));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        } else {
-                            let r = snd.unbounded_send(format!("Shuffle is already `{}`", shuffled));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        }
-                    }
-                    // AudioPromiseCommand::Transcribe(transcribe, id) => {
-                    //     if transcribed != transcribe {
-                    //         transcribed = transcribe;
-                    //         let r = snd.unbounded_send(format!("Transcribe set to `{}`", transcribed));
-                    //         if let Err(e) = r {
-                    //             log.push_str(&format!("Error updating message: {}\r", e));
-                    //         }
-                    //         // if transcribed {
-                    //         //     msg.last_processed = Some(id);
-                    //         // }
-                    //     } else {
-                    //         let r =
-                    //             snd.unbounded_send(format!("Transcribe is already `{}`", transcribed));
-                    //         if let Err(e) = r {
-                    //             log.push_str(&format!("Error updating message: {}\r", e));
-                    //         }
-                    //     }
-                    // }
-                    AudioPromiseCommand::Autoplay(autoplayi) => {
-                        if autoplay != autoplayi {
-                            autoplay = autoplayi;
-                            let r = snd.unbounded_send(format!("Autoplay set to `{}`", autoplay));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        } else {
-                            let r = snd.unbounded_send(format!("Autoplay is already `{}`", autoplay));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        }
-                    }
-                    AudioPromiseCommand::Loop(loopi) => {
-                        if looped != loopi {
-                            looped = loopi;
-                            let r = snd.unbounded_send(format!("Loop set to `{}`", looped));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        } else {
-                            let r = snd.unbounded_send(format!("Loop is already `{}`", looped));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        }
-                    }
-                    AudioPromiseCommand::Repeat(repeati) => {
-                        if repeated != repeati {
-                            repeated = repeati;
-                            let r = snd.unbounded_send(format!("Repeat set to `{}`", repeated));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        } else {
-                            let r = snd.unbounded_send(format!("Repeat is already `{}`", repeated));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        }
-                    }
-                    AudioPromiseCommand::Skip => {
-                        if let Some(trackhandle) = trackhandle.as_mut() {
-                            let r = trackhandle.stop();
-                            if r.is_ok() {
-                                let r2 = snd.unbounded_send(String::from("Skipped"));
-                                if let Err(e) = r2 {
-                                    log.push_str(&format!("Error sending skip: {}\r", e));
-                                }
-                            } else {
-                                log.push_str(&format!("Error skipping track: {}\r", r.unwrap_err()));
-                            }
-                        } else {
-                            let r = snd.unbounded_send(String::from("Nothing is playing"));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
-                            }
-                        }
-                    }
-                    AudioPromiseCommand::Volume(v) => {
-                        let msg = if nothing_handle.is_some() {
-                            radiovolume = v;
-                            format!("Radio volume set to `{}%`", radiovolume * 100.0)
-                        } else {
-                            volume = v;
-                            format!("Song volume set to `{}%`", volume * 100.0)
-                        };
-
-                        let r = snd.unbounded_send(msg);
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
-                        }
-                    }
-                    AudioPromiseCommand::Remove(index) => {
-                        let index = index - 1;
-                        if index < queue.len() {
-                            let mut v = queue.remove(index);
-                            let r = v.delete();
-                            if let Err(r) = r {
-                                log.push_str(&format!("Error removing `{}`: {}\r", v.title, r));
-                                let r =
-                                    snd.unbounded_send(format!("Error removing `{}`: {}", v.title, r));
+                            AudioPromiseCommand::Stop => {
+                                let r = snd.unbounded_send(String::from("Stopped"));
                                 if let Err(e) = r {
-                                    log.push_str(&format!("Error updating message: {}\r", e));
+                                    log.push_str(&format!("Error sending stop: {}\r", e));
                                 }
-                            } else {
-                                let r = snd.unbounded_send(format!("Removed `{}`", v.title));
+                                brk = true;
+                            }
+                            AudioPromiseCommand::Pause => {
+                                if let Some(trackhandle) = trackhandle.as_mut() {
+                                    paused = true;
+                                    let r = trackhandle.pause();
+                                    if r.is_ok() {
+                                        let r2 = snd.unbounded_send(String::from("Paused"));
+                                        if let Err(e) = r2 {
+                                            log.push_str(&format!("Error sending pause: {}\r", e));
+                                        }
+                                    } else {
+                                        log.push_str(&format!("Error pausing track: {}\r", r.unwrap_err()));
+                                    }
+                                } else {
+                                    let r = snd.unbounded_send(String::from("Nothing is playing"));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                }
+                            }
+                            AudioPromiseCommand::Resume => {
+                                if let Some(trackhandle) = trackhandle.as_mut() {
+                                    paused = false;
+                                    let r = trackhandle.play();
+                                    if r.is_ok() {
+                                        let r2 = snd.unbounded_send(String::from("Resumed"));
+                                        if let Err(e) = r2 {
+                                            log.push_str(&format!("Error sending resume: {}\r", e));
+                                        }
+                                    } else {
+                                        log.push_str(&format!("Error resuming track: {}\r", r.unwrap_err()));
+                                    }
+                                } else {
+                                    let r = snd.unbounded_send(String::from("Nothing is playing"));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                }
+                            }
+                            AudioPromiseCommand::Shuffle(shuffle) => {
+                                if shuffled != shuffle {
+                                    shuffled = shuffle;
+                                    let r = snd.unbounded_send(format!("Shuffle set to `{}`", shuffled));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                } else {
+                                    let r = snd.unbounded_send(format!("Shuffle is already `{}`", shuffled));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                }
+                            }
+                            // AudioPromiseCommand::Transcribe(transcribe, id) => {
+                            //     if transcribed != transcribe {
+                            //         transcribed = transcribe;
+                            //         let r = snd.unbounded_send(format!("Transcribe set to `{}`", transcribed));
+                            //         if let Err(e) = r {
+                            //             log.push_str(&format!("Error updating message: {}\r", e));
+                            //         }
+                            //         // if transcribed {
+                            //         //     msg.last_processed = Some(id);
+                            //         // }
+                            //     } else {
+                            //         let r =
+                            //             snd.unbounded_send(format!("Transcribe is already `{}`", transcribed));
+                            //         if let Err(e) = r {
+                            //             log.push_str(&format!("Error updating message: {}\r", e));
+                            //         }
+                            //     }
+                            // }
+                            AudioPromiseCommand::Autoplay(autoplayi) => {
+                                if autoplay != autoplayi {
+                                    autoplay = autoplayi;
+                                    let r = snd.unbounded_send(format!("Autoplay set to `{}`", autoplay));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                } else {
+                                    let r = snd.unbounded_send(format!("Autoplay is already `{}`", autoplay));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                }
+                            }
+                            AudioPromiseCommand::Loop(loopi) => {
+                                if looped != loopi {
+                                    looped = loopi;
+                                    let r = snd.unbounded_send(format!("Loop set to `{}`", looped));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                } else {
+                                    let r = snd.unbounded_send(format!("Loop is already `{}`", looped));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                }
+                            }
+                            AudioPromiseCommand::Repeat(repeati) => {
+                                if repeated != repeati {
+                                    repeated = repeati;
+                                    let r = snd.unbounded_send(format!("Repeat set to `{}`", repeated));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                } else {
+                                    let r = snd.unbounded_send(format!("Repeat is already `{}`", repeated));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                }
+                            }
+                            AudioPromiseCommand::Skip => {
+                                if let Some(trackhandle) = trackhandle.as_mut() {
+                                    let r = trackhandle.stop();
+                                    if r.is_ok() {
+                                        let r2 = snd.unbounded_send(String::from("Skipped"));
+                                        if let Err(e) = r2 {
+                                            log.push_str(&format!("Error sending skip: {}\r", e));
+                                        }
+                                    } else {
+                                        log.push_str(&format!("Error skipping track: {}\r", r.unwrap_err()));
+                                    }
+                                } else {
+                                    let r = snd.unbounded_send(String::from("Nothing is playing"));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                }
+                            }
+                            AudioPromiseCommand::Volume(v) => {
+                                let msg = if nothing_handle.is_some() {
+                                    radiovolume = v;
+                                    format!("Radio volume set to `{}%`", radiovolume * 100.0)
+                                } else {
+                                    volume = v;
+                                    format!("Song volume set to `{}%`", volume * 100.0)
+                                };
+
+                                let r = snd.unbounded_send(msg);
                                 if let Err(e) = r {
                                     log.push_str(&format!("Error updating message: {}\r", e));
                                 }
                             }
-                        } else {
-                            let r = snd.unbounded_send(format!(
-                                "Index out of range, max is `{}`",
-                                queue.len()
-                            ));
-                            if let Err(e) = r {
-                                log.push_str(&format!("Error updating message: {}\r", e));
+                            AudioPromiseCommand::Remove(index) => {
+                                let index = index - 1;
+                                if index < queue.len() {
+                                    let mut v = queue.remove(index);
+                                    let r = v.delete();
+                                    if let Err(r) = r {
+                                        log.push_str(&format!("Error removing `{}`: {}\r", v.title, r));
+                                        let r =
+                                            snd.unbounded_send(format!("Error removing `{}`: {}", v.title, r));
+                                        if let Err(e) = r {
+                                            log.push_str(&format!("Error updating message: {}\r", e));
+                                        }
+                                    } else {
+                                        let r = snd.unbounded_send(format!("Removed `{}`", v.title));
+                                        if let Err(e) = r {
+                                            log.push_str(&format!("Error updating message: {}\r", e));
+                                        }
+                                    }
+                                } else {
+                                    let r = snd.unbounded_send(format!(
+                                        "Index out of range, max is `{}`",
+                                        queue.len()
+                                    ));
+                                    if let Err(e) = r {
+                                        log.push_str(&format!("Error updating message: {}\r", e));
+                                    }
+                                }
+                            }
+                            AudioPromiseCommand::SetBitrate(bitrate) => {
+                                let mut cl = call.lock().await;
+                                cl.set_bitrate(songbird::driver::Bitrate::BitsPerSecond(bitrate as i32));
+                                let r = snd.unbounded_send(format!("Bitrate set to `{}`", bitrate));
+                                if let Err(e) = r {
+                                    log.push_str(&format!("Error updating message: {}\r", e));
+                                }
                             }
                         }
                     }
-                    AudioPromiseCommand::SetBitrate(bitrate) => {
-                        let mut cl = call.lock().await;
-                        cl.set_bitrate(songbird::driver::Bitrate::BitsPerSecond(bitrate as i32));
-                        let r = snd.unbounded_send(format!("Bitrate set to `{}`", bitrate));
-                        if let Err(e) = r {
-                            log.push_str(&format!("Error updating message: {}\r", e));
-                        }
+                    None => {
+                        println!("rx closed");
+                        break;
                     }
                 }
             }
             _ = run_dur.tick() => {
+                // println!("Tick");
                 if let Some(current) = current_track.as_mut() {
                     if let Some(thandle) = trackhandle.as_mut() {
                         let playmode = tokio::time::timeout(g_timeout_time, thandle.get_info()).await;
