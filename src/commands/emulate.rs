@@ -23,8 +23,12 @@ impl crate::CommandTrait for EmulateCommand {
                     .required(true)
             });
     }
-    async fn run(&self, ctx: &Context, interaction: Interaction) {
-        let interaction = interaction.application_command().expect("Not a command");
+    async fn run(
+        &self,
+        ctx: &Context,
+        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
+    ) {
+        // let interaction = interaction.application_command().expect("Not a command");
         interaction
             .create_interaction_response(&ctx.http, |response| {
                 response.kind(InteractionResponseType::DeferredChannelMessageWithSource)

@@ -14,6 +14,7 @@ pub mod stop;
 pub mod transcribe;
 pub mod volume;
 
+use serenity::builder::CreateActionRow;
 use serenity::client::Cache;
 use serenity::http::Http;
 // use serenity::model::prelude::interaction::application_command::ApplicationCommandInteraction;
@@ -36,7 +37,7 @@ use serenity::prelude::{Context, TypeMapKey};
 use crate::video::Video;
 use crate::youtube::{TTSVoice, VideoInfo};
 
-use self::mainloop::EmbedData;
+use self::mainloop::{EmbedData, SettingsData};
 
 // create the struct for holding the promises for audio playback
 pub struct AudioHandler;
@@ -220,19 +221,33 @@ impl UserMetadata {
 
 #[derive(Debug, Clone)]
 pub enum AudioPromiseCommand {
+    // probably not gonna do
     Play(Vec<MetaVideo>),
-    Stop,
+
+    // added
     Pause,
     Resume,
-    Skip,
-    Volume(f32),
-    Remove(usize),
+    Stop,
     Loop(bool),
     Repeat(bool),
     Shuffle(bool),
     Autoplay(bool),
+
+    // needs impl??
+    Volume(f64),
+    SpecificVolume(SpecificVolume),
     SetBitrate(i64),
+
+    // todo
+    Skip,
+    Remove(usize),
     // Transcribe(bool, MessageId),
+}
+
+#[derive(Debug, Clone)]
+pub enum SpecificVolume {
+    Volume(f64),
+    RadioVolume(f64),
 }
 
 #[allow(dead_code)]
@@ -273,6 +288,7 @@ pub struct MessageReference {
     channel_id: ChannelId,
     message: Option<Message>,
     last_content: Option<EmbedData>,
+    last_settings: Option<SettingsData>,
     last_edit: Instant,
     edit_delay: u128,
     first_time: bool,
@@ -299,6 +315,7 @@ impl MessageReference {
             message: Some(message),
             last_edit: Instant::now(),
             last_content: None,
+            last_settings: None,
             first_time: true,
             edit_delay: 1500,
             // message_queue: Arc::new(Mutex::new(Vec::new())),
@@ -308,7 +325,7 @@ impl MessageReference {
             resend_next_time: false,
         }
     }
-    async fn update(&mut self, content: EmbedData) -> Result<(), Error> {
+    async fn update(&mut self, settings: SettingsData, content: EmbedData) -> Result<(), Error> {
         // let addbackticks = content.ends_with("```");
         // let mut content = content.to_string();
         // if content.len() > 2000 {
@@ -344,6 +361,11 @@ impl MessageReference {
         let diff = match self.last_content {
             None => true,
             Some(ref last_content) => last_content != &content,
+        };
+
+        let forcediff = match self.last_settings {
+            None => true,
+            Some(ref last_settings) => last_settings != &settings,
         };
 
         let mut messages = match message.channel(&self.http).await? {
@@ -502,10 +524,13 @@ impl MessageReference {
             // }
         }
 
-        if diff && ((self.last_edit.elapsed().as_millis() > self.edit_delay) || self.first_time) {
+        if (diff && ((self.last_edit.elapsed().as_millis() > self.edit_delay) || self.first_time))
+            || forcediff
+        {
             self.first_time = false;
             let write_content = content.clone();
             self.last_content = Some(content);
+            self.last_settings = Some(settings);
             // match message
             //     .edit(&self.http, |m| {
             //         m.content("".to_string());
@@ -549,7 +574,17 @@ impl MessageReference {
                         m.embed(move |e| {
                             write_content.write_into(e);
                             e
-                        })
+                        });
+                        if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
+                            m.components(|f| {
+                                for ar in ars {
+                                    f.add_action_row(ar);
+                                }
+                                f
+                            })
+                        } else {
+                            m
+                        }
                     })
                     .await
                 {
@@ -598,7 +633,17 @@ impl MessageReference {
                             .flags(
                                 serenity::model::channel::MessageFlags::from_bits(1u64 << 12)
                                     .expect("Failed to create message flags"),
-                            )
+                            );
+                        if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
+                            m.components(|f| {
+                                for ar in ars {
+                                    f.add_action_row(ar);
+                                }
+                                f
+                            })
+                        } else {
+                            m
+                        }
                     })
                     .await?;
                 // self.messages_sent_to_tts = Vec::new();
@@ -618,7 +663,18 @@ impl MessageReference {
                         .flags(
                             serenity::model::channel::MessageFlags::from_bits(1u64 << 12)
                                 .expect("Failed to create message flags"),
-                        )
+                        );
+
+                        if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
+                            m.components(|f| {
+                                for ar in ars {
+                                    f.add_action_row(ar);
+                                }
+                                f
+                            })
+                        } else {
+                            m
+                        }
                     })
                     .await?;
                 // self.messages_sent_to_tts = Vec::new();
@@ -635,6 +691,179 @@ impl MessageReference {
         self.message = None;
         Ok(())
     }
+
+    fn get_ars(settings: &SettingsData) -> Vec<CreateActionRow> {
+        // if let Some(settings) = self.last_settings.as_ref() {
+        // [volume] [radiovolume] [bitrate] [pause]
+        // [looped] [repeat] [shuffle] [autoplay]
+
+        // volume, radiovolume, and bitrate will be grey and non-clickable (for now, maybe a modal later?)
+        // pause, looped, repeat, shuffle, autoplay will be clickable toggles, red when off green when on
+
+        // possibly later we can do an extra button at the bottom to submit a song url/search to the queue (but will lack feedback bc discord SUCKS)
+
+        // AR1 (pause, skip, loop, shuffle)
+
+        let mut ar1 = CreateActionRow::default();
+
+        // pause
+        ar1.create_button(|b| {
+            b.style(if settings.pause {
+                serenity::model::application::component::ButtonStyle::Danger
+            } else {
+                serenity::model::application::component::ButtonStyle::Success
+            })
+            .label(if settings.pause { "▶️" } else { "⏸️" }.to_owned())
+            .custom_id("pause")
+            // .disabled(true)
+        });
+
+        // skip
+        ar1.create_button(|b| {
+            b.style(serenity::model::application::component::ButtonStyle::Primary)
+                // .emoji(ReactionType::Unicode("⏭️".to_owned()))
+                .label("⏭️")
+                .custom_id("skip")
+            // .disabled(true)
+        });
+
+        // loop
+        ar1.create_button(|b| {
+            b.style(if settings.looped {
+                serenity::model::application::component::ButtonStyle::Success
+            } else {
+                serenity::model::application::component::ButtonStyle::Danger
+            })
+            // .emoji(ReactionType::Unicode("🔄️".to_owned()))
+            .label("🔄️")
+            .custom_id("looped")
+            // .disabled(true)
+        });
+
+        // shuffle
+        ar1.create_button(|b| {
+            b.style(if settings.shuffle {
+                serenity::model::application::component::ButtonStyle::Success
+            } else {
+                serenity::model::application::component::ButtonStyle::Danger
+            })
+            // .emoji(ReactionType::Unicode("🔀".to_owned()))
+            .custom_id("shuffle")
+            .label("🔀")
+            // .disabled(true)
+        });
+
+        // AR2 (repeaat, remove, autoplay, stop)
+
+        let mut ar2 = CreateActionRow::default();
+
+        // repeat
+        ar2.create_button(|b| {
+            b.style(if settings.repeat {
+                serenity::model::application::component::ButtonStyle::Success
+            } else {
+                serenity::model::application::component::ButtonStyle::Danger
+            })
+            // .emoji(ReactionType::Unicode("🔁".to_owned()))
+            .label("🔁")
+            .custom_id("repeat")
+            // .disabled(true)
+        });
+
+        // remove
+        ar2.create_button(|b| {
+            b.style(serenity::model::application::component::ButtonStyle::Primary)
+                // .emoji(ReactionType::Unicode("🗑️".to_owned()))
+                .custom_id("remove")
+                .label("🗑️")
+            // .disabled(true)
+        });
+
+        // autoplay
+        ar2.create_button(|b| {
+            b.style(if settings.autoplay {
+                serenity::model::application::component::ButtonStyle::Success
+            } else {
+                serenity::model::application::component::ButtonStyle::Danger
+            })
+            // .emoji(ReactionType::Unicode("🎲".to_owned()))
+            .custom_id("autoplay")
+            .label("🎲")
+            // .disabled(true)
+        });
+
+        // stop
+        ar2.create_button(|b| {
+            b.style(serenity::model::application::component::ButtonStyle::Primary)
+                // .emoji(ReactionType::Unicode("⏹️".to_owned()))
+                .custom_id("stop")
+                .label("⏹️")
+        });
+
+        // AR3 (volume, radiovolume, bitrate)
+
+        let mut ar3 = CreateActionRow::default();
+
+        // volume
+        ar3.create_button(|b| {
+            b.style(serenity::model::application::component::ButtonStyle::Secondary)
+                // .emoji(ReactionType::Unicode(
+                //     match settings.volume {
+                //         // 0%
+                //         v if v == 0.0 => "🔇",
+                //         // 0-33%
+                //         v if v <= 0.33 => "🔈",
+                //         // 33-66%
+                //         v if v <= 0.66 => "🔉",
+                //         // 66-100%
+                //         _ => "🔊",
+                //     }
+                //     .to_owned(),
+                // ))
+                .custom_id("volume")
+                .disabled(true)
+                .label(format!(
+                    "{} {}%",
+                    match settings.volume {
+                        // 0%
+                        v if v == 0.0 => "🔇",
+                        // 0-33%
+                        v if v <= 0.33 => "🔈",
+                        // 33-66%
+                        v if v <= 0.66 => "🔉",
+                        // 66-100%
+                        _ => "🔊",
+                    },
+                    settings.volume * 100.0
+                ))
+        });
+
+        // radiovolume
+        ar3.create_button(|b| {
+            b.style(serenity::model::application::component::ButtonStyle::Secondary)
+                // .emoji(ReactionType::Unicode("📻".to_owned()))
+                .custom_id("radiovolume")
+                .disabled(true)
+                .label(format!("📻 {}%", settings.radiovolume * 100.0))
+        });
+
+        // bitrate
+        ar3.create_button(|b| {
+            b.style(serenity::model::application::component::ButtonStyle::Secondary)
+                // .emoji(ReactionType::Unicode("📡".to_owned()))
+                .custom_id("bitrate")
+                .disabled(true)
+                .label(
+                    settings
+                        .bitrate
+                        .map(|b| format!("{} bps", b))
+                        .unwrap_or("Auto".to_owned()),
+                )
+        });
+
+        vec![ar1, ar2, ar3]
+    }
+
     // fn is_different_enough(new: &str, old: &str, threshold: usize) -> bool {
     //     let old = Self::filter_bar_emojis(old);
     //     let new = Self::filter_bar_emojis(new);

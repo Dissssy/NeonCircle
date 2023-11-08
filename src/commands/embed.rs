@@ -25,7 +25,11 @@ pub struct Video;
 
 #[serenity::async_trait]
 impl crate::CommandTrait for Video {
-    async fn run(&self, ctx: &Context, interaction: Interaction) {
+    async fn run(
+        &self,
+        ctx: &Context,
+        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
+    ) {
         dotheroar(ctx, interaction, false).await;
     }
 
@@ -67,7 +71,11 @@ pub struct Audio;
 
 #[serenity::async_trait]
 impl crate::CommandTrait for Audio {
-    async fn run(&self, ctx: &Context, interaction: Interaction) {
+    async fn run(
+        &self,
+        ctx: &Context,
+        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
+    ) {
         dotheroar(ctx, interaction, true).await;
     }
 
@@ -116,8 +124,12 @@ impl CommandTrait for John {
     fn name(&self) -> &str {
         "john"
     }
-    async fn run(&self, ctx: &Context, interaction: Interaction) {
-        let interaction = interaction.application_command().unwrap();
+    async fn run(
+        &self,
+        ctx: &Context,
+        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
+    ) {
+        // let interaction = interaction.application_command().unwrap();
         interaction
             .create_interaction_response(&ctx.http, |response| {
                 response.kind(InteractionResponseType::DeferredChannelMessageWithSource)
@@ -272,8 +284,12 @@ fn get_command_data_option_name(
     }.to_owned()
 }
 
-async fn dotheroar(ctx: &Context, interaction: Interaction, audio_only: bool) {
-    let interaction = interaction.application_command().expect("Not a command");
+async fn dotheroar(
+    ctx: &Context,
+    interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
+    audio_only: bool,
+) {
+    // let interaction = interaction.application_command().expect("Not a command");
     match interaction.defer_ephemeral(&ctx.http).await {
         Ok(_) => {}
         Err(e) => {

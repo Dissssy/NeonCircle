@@ -17,24 +17,75 @@ use std::time::Duration;
 
 use serenity::futures::channel::mpsc;
 
-use crate::commands::music::{AudioPromiseCommand, MetaVideo, RawMessage, VideoType};
+use crate::commands::music::{
+    AudioPromiseCommand, MetaVideo, RawMessage, SpecificVolume, VideoType,
+};
 use crate::radio::AzuraCast;
 
 use super::transcribe::TranscribeChannelHandler;
 use super::MessageReference;
 
+pub struct ControlData {
+    pub call: Arc<Mutex<Call>>,
+    pub rx: mpsc::UnboundedReceiver<(mpsc::UnboundedSender<String>, AudioPromiseCommand)>,
+    pub msg: MessageReference,
+    pub nothing_uri: Option<PathBuf>,
+    pub transcribe: Arc<Mutex<TranscribeChannelHandler>>,
+    pub settings: SettingsData,
+    pub brk: bool,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct SettingsData {
+    // READ ONLY?
+    pub volume: f64,
+    pub radiovolume: f64,
+    pub bitrate: Option<i64>,
+
+    // CLICKABLE
+    pub autoplay: bool,
+    pub looped: bool,
+    pub repeat: bool,
+    pub shuffle: bool,
+    pub pause: bool,
+}
+
+impl Default for SettingsData {
+    fn default() -> Self {
+        Self {
+            volume: 1.0,
+            radiovolume: 0.33,
+            autoplay: false,
+            looped: false,
+            repeat: false,
+            shuffle: false,
+            pause: false,
+            bitrate: None,
+        }
+    }
+}
+
 pub async fn the_lüüp(
-    call: Arc<Mutex<Call>>,
-    rx: &mut mpsc::UnboundedReceiver<(mpsc::UnboundedSender<String>, AudioPromiseCommand)>,
-    msg: MessageReference,
-    looptime: u64,
-    nothing_uri: Option<PathBuf>,
-    transcribe: Arc<Mutex<TranscribeChannelHandler>>,
+    rawcall: Arc<Mutex<Call>>,
+    rawrx: mpsc::UnboundedReceiver<(mpsc::UnboundedSender<String>, AudioPromiseCommand)>,
+    rawmsg: MessageReference,
+    rawlooptime: u64,
+    rawnothing_uri: Option<PathBuf>,
+    rawtranscribe: Arc<Mutex<TranscribeChannelHandler>>,
 ) {
+    let mut control = ControlData {
+        call: rawcall,
+        rx: rawrx,
+        msg: rawmsg,
+        nothing_uri: rawnothing_uri,
+        transcribe: rawtranscribe,
+        settings: SettingsData::default(),
+        brk: false,
+    };
     {
-        let mut cl = call.lock().await;
+        let mut cl = control.call.lock().await;
         // cl.set_bitrate(Bitrate::BitsPerSecond(6_000));
-        cl.set_bitrate(songbird::driver::Bitrate::BitsPerSecond(64_000));
+        cl.set_bitrate(songbird::driver::Bitrate::Auto);
         match cl.deafen(true).await {
             Ok(_) => {}
             Err(e) => {
@@ -42,68 +93,72 @@ pub async fn the_lüüp(
             }
         };
     }
-    let msg = msg.clone();
-    let (mut msg_updater, update_msg) = serenity::futures::channel::mpsc::channel::<EmbedData>(8);
+    let (mut msg_updater, update_msg) =
+        serenity::futures::channel::mpsc::channel::<(SettingsData, EmbedData)>(8);
     let (killmsg, killrx) = tokio::sync::oneshot::channel::<()>();
 
-    let msghandler = tokio::task::spawn(async move {
-        let mut msg = msg;
-        let mut killrx = killrx;
-        let mut update_msg = update_msg;
-        loop {
-            tokio::select! {
-                _ = &mut killrx => {
-                    break;
-                }
-                shakesbutt = update_msg.next() => {
-                    // only get the latest
-
-                    // println!("Updating message");
-                    if let Some(shakesbutt) = shakesbutt {
-
-                        let mut shakesbutt = shakesbutt;
-                        while let Ok(Some(u)) = update_msg.try_next() {
-                            shakesbutt = u;
-                        }
-
-                        let r = msg.update(shakesbutt).await;
-                        if let Err(e) = r {
-                            println!("Error updating message: {}", e);
-                        }
-                    } else {
-                        println!("Error getting shakesbutt");
+    let msghandler = {
+        let msg = control.msg.clone();
+        tokio::task::spawn(async move {
+            let mut msg = msg;
+            let mut killrx = killrx;
+            let mut update_msg = update_msg;
+            loop {
+                tokio::select! {
+                    _ = &mut killrx => {
                         break;
+                    }
+                    shakesbutt = update_msg.next() => {
+                        // only get the latest
+
+                        // println!("Updating message");
+                        if let Some(shakesbutt) = shakesbutt {
+
+                            let mut shakesbutt = shakesbutt;
+                            while let Ok(Some(u)) = update_msg.try_next() {
+                                shakesbutt = u;
+                            }
+                            // println!("Updating message");
+                            let r = msg.update(shakesbutt.0, shakesbutt.1).await;
+                            if let Err(e) = r {
+                                println!("Error updating message: {}", e);
+                            }
+                        } else {
+                            println!("Error getting shakesbutt");
+                            break;
+                        }
                     }
                 }
             }
-        }
-        if let Err(e) = msg.delete().await {
-            println!("Error deleting message: {}", e);
-        }
-    });
+            if let Err(e) = msg.delete().await {
+                println!("Error deleting message: {}", e);
+            }
+        })
+    };
 
     let mut log = String::new();
     let mut trackhandle: Option<TrackHandle> = None;
     let mut queue: Vec<MetaVideo> = Vec::new();
-    let mut paused = false;
-    let mut repeated = false;
-    let mut looped = false;
+    // let mut paused = false;
+    // let mut repeated = false;
+    // let mut looped = false;
     // let mut transcribed = false;
     let mut last_embed = None;
-    let mut shuffled = false;
+    let mut last_settings = None;
+    // let mut shuffled = false;
     let mut nothing_handle: Option<TrackHandle> = None;
     let mut tts_handle: Option<TrackHandle> = None;
-    let mut volume = 1.0;
-    let mut radiovolume = 0.33;
-    let mut autoplay = false;
+    // let mut volume = 1.0;
+    // let mut radiovolume = 0.33;
+    // let mut autoplay = false;
     let mut autoplay_thread: Option<tokio::task::JoinHandle<Option<MetaVideo>>> = None;
     let mut azuracast = match crate::Config::get().api_url {
         Some(ref url) => AzuraCast::new(url).await.ok(),
         None => None,
     };
-    let mut brk = false;
+    // let mut brk = false;
 
-    // let mut transcribe_handler = super::transcribe::Holder::new(Arc::clone(&call));
+    // let mut transcribe_handler = super::transcribe::Holder::new(Arc::clone(&control.call));
     // let mut transcribe_handler =
     //     super::transcribe::MetaTranscribeHandler::new(Arc::clone(&_t_arcmutex));
     let mut data = None;
@@ -111,8 +166,8 @@ pub async fn the_lüüp(
 
     let mut current_track: Option<MetaVideo> = None;
 
-    let ttsrx = transcribe.lock().await.lock().unwrap();
-    let ttshandler = super::transcribe::Handler::new(Arc::clone(&call));
+    let ttsrx = control.transcribe.lock().await.lock().unwrap();
+    let ttshandler = super::transcribe::Handler::new(Arc::clone(&control.call));
 
     // psuedocode
 
@@ -157,11 +212,11 @@ pub async fn the_lüüp(
         }
     });
 
-    let mut run_dur = tokio::time::interval(tokio::time::Duration::from_millis(looptime));
+    let mut run_dur = tokio::time::interval(tokio::time::Duration::from_millis(rawlooptime));
 
     loop {
         tokio::select! {
-            t = rx.next() => {
+            t = control.rx.next() => {
                 match t {
                     Some((snd, command)) => {
                         // println!("Got command: {:?}", command);
@@ -178,11 +233,11 @@ pub async fn the_lüüp(
                                 if let Err(e) = r {
                                     log.push_str(&format!("Error sending stop: {}\r", e));
                                 }
-                                brk = true;
+                                control.brk = true;
                             }
                             AudioPromiseCommand::Pause => {
                                 if let Some(trackhandle) = trackhandle.as_mut() {
-                                    paused = true;
+                                    control.settings.pause = true;
                                     let r = trackhandle.pause();
                                     if r.is_ok() {
                                         let r2 = snd.unbounded_send(String::from("Paused"));
@@ -201,7 +256,7 @@ pub async fn the_lüüp(
                             }
                             AudioPromiseCommand::Resume => {
                                 if let Some(trackhandle) = trackhandle.as_mut() {
-                                    paused = false;
+                                    control.settings.pause = false;
                                     let r = trackhandle.play();
                                     if r.is_ok() {
                                         let r2 = snd.unbounded_send(String::from("Resumed"));
@@ -219,14 +274,14 @@ pub async fn the_lüüp(
                                 }
                             }
                             AudioPromiseCommand::Shuffle(shuffle) => {
-                                if shuffled != shuffle {
-                                    shuffled = shuffle;
-                                    let r = snd.unbounded_send(format!("Shuffle set to `{}`", shuffled));
+                                if control.settings.shuffle != shuffle {
+                                    control.settings.shuffle = shuffle;
+                                    let r = snd.unbounded_send(format!("Shuffle set to `{}`", control.settings.shuffle));
                                     if let Err(e) = r {
                                         log.push_str(&format!("Error updating message: {}\r", e));
                                     }
                                 } else {
-                                    let r = snd.unbounded_send(format!("Shuffle is already `{}`", shuffled));
+                                    let r = snd.unbounded_send(format!("Shuffle is already `{}`", control.settings.shuffle));
                                     if let Err(e) = r {
                                         log.push_str(&format!("Error updating message: {}\r", e));
                                     }
@@ -251,42 +306,42 @@ pub async fn the_lüüp(
                             //     }
                             // }
                             AudioPromiseCommand::Autoplay(autoplayi) => {
-                                if autoplay != autoplayi {
-                                    autoplay = autoplayi;
-                                    let r = snd.unbounded_send(format!("Autoplay set to `{}`", autoplay));
+                                if control.settings.autoplay != autoplayi {
+                                    control.settings.autoplay = autoplayi;
+                                    let r = snd.unbounded_send(format!("Autoplay set to `{}`", control.settings.autoplay));
                                     if let Err(e) = r {
                                         log.push_str(&format!("Error updating message: {}\r", e));
                                     }
                                 } else {
-                                    let r = snd.unbounded_send(format!("Autoplay is already `{}`", autoplay));
+                                    let r = snd.unbounded_send(format!("Autoplay is already `{}`", control.settings.autoplay));
                                     if let Err(e) = r {
                                         log.push_str(&format!("Error updating message: {}\r", e));
                                     }
                                 }
                             }
                             AudioPromiseCommand::Loop(loopi) => {
-                                if looped != loopi {
-                                    looped = loopi;
-                                    let r = snd.unbounded_send(format!("Loop set to `{}`", looped));
+                                if control.settings.looped != loopi {
+                                    control.settings.looped = loopi;
+                                    let r = snd.unbounded_send(format!("Loop set to `{}`", control.settings.looped));
                                     if let Err(e) = r {
                                         log.push_str(&format!("Error updating message: {}\r", e));
                                     }
                                 } else {
-                                    let r = snd.unbounded_send(format!("Loop is already `{}`", looped));
+                                    let r = snd.unbounded_send(format!("Loop is already `{}`", control.settings.looped));
                                     if let Err(e) = r {
                                         log.push_str(&format!("Error updating message: {}\r", e));
                                     }
                                 }
                             }
                             AudioPromiseCommand::Repeat(repeati) => {
-                                if repeated != repeati {
-                                    repeated = repeati;
-                                    let r = snd.unbounded_send(format!("Repeat set to `{}`", repeated));
+                                if control.settings.repeat != repeati {
+                                    control.settings.repeat = repeati;
+                                    let r = snd.unbounded_send(format!("Repeat set to `{}`", control.settings.repeat));
                                     if let Err(e) = r {
                                         log.push_str(&format!("Error updating message: {}\r", e));
                                     }
                                 } else {
-                                    let r = snd.unbounded_send(format!("Repeat is already `{}`", repeated));
+                                    let r = snd.unbounded_send(format!("Repeat is already `{}`", control.settings.repeat));
                                     if let Err(e) = r {
                                         log.push_str(&format!("Error updating message: {}\r", e));
                                     }
@@ -312,14 +367,30 @@ pub async fn the_lüüp(
                             }
                             AudioPromiseCommand::Volume(v) => {
                                 let msg = if nothing_handle.is_some() {
-                                    radiovolume = v;
-                                    format!("Radio volume set to `{}%`", radiovolume * 100.0)
+                                    control.settings.radiovolume = v;
+                                    format!("Radio volume set to `{}%`", control.settings.radiovolume * 100.0)
                                 } else {
-                                    volume = v;
-                                    format!("Song volume set to `{}%`", volume * 100.0)
+                                    control.settings.volume = v;
+                                    format!("Song volume set to `{}%`", control.settings.volume * 100.0)
                                 };
 
                                 let r = snd.unbounded_send(msg);
+                                if let Err(e) = r {
+                                    log.push_str(&format!("Error updating message: {}\r", e));
+                                }
+                            }
+                            AudioPromiseCommand::SpecificVolume(SpecificVolume::Volume(v)) => {
+                                control.settings.volume = v;
+
+                                let r = snd.unbounded_send(format!("Song volume set to `{}%`", control.settings.volume * 100.0));
+                                if let Err(e) = r {
+                                    log.push_str(&format!("Error updating message: {}\r", e));
+                                }
+                            }
+                            AudioPromiseCommand::SpecificVolume(SpecificVolume::RadioVolume(v)) => {
+                                control.settings.radiovolume = v;
+
+                                let r = snd.unbounded_send(format!("Radio volume set to `{}%`", control.settings.radiovolume * 100.0));
                                 if let Err(e) = r {
                                     log.push_str(&format!("Error updating message: {}\r", e));
                                 }
@@ -353,7 +424,8 @@ pub async fn the_lüüp(
                                 }
                             }
                             AudioPromiseCommand::SetBitrate(bitrate) => {
-                                let mut cl = call.lock().await;
+                                let mut cl = control.call.lock().await;
+                                control.settings.bitrate = Some(bitrate);
                                 cl.set_bitrate(songbird::driver::Bitrate::BitsPerSecond(bitrate as i32));
                                 let r = snd.unbounded_send(format!("Bitrate set to `{}`", bitrate));
                                 if let Err(e) = r {
@@ -381,7 +453,7 @@ pub async fn the_lüüp(
                                         VideoType::Url(ref y) => Some(y.url.clone()),
                                     });
 
-                                    if autoplay && queue.is_empty() {
+                                    if control.settings.autoplay && queue.is_empty() {
                                         // get a new song to play next as well
                                         if let Some(url) = url {
                                             autoplay_thread = Some(tokio::spawn(async move {
@@ -412,9 +484,9 @@ pub async fn the_lüüp(
                                     let mut t = None;
                                     mem::swap(&mut current_track, &mut t);
                                     if let Some(t) = t.as_mut() {
-                                        if repeated {
+                                        if control.settings.repeat {
                                             queue.insert(0, t.clone());
-                                        } else if looped {
+                                        } else if control.settings.looped {
                                             queue.push(t.clone());
                                         } else {
                                             let r = t.delete();
@@ -438,7 +510,7 @@ pub async fn the_lüüp(
                         if let Ok(r) = r {
                             if let Err(r) = r {
                                 if r == songbird::tracks::TrackError::Finished {
-                                    let calllock = call.try_lock();
+                                    let calllock = control.call.try_lock();
                                     if let Ok(mut clock) = calllock {
                                         let r = match current.video.clone() {
                                             VideoType::Disk(v) => {
@@ -456,7 +528,7 @@ pub async fn the_lüüp(
                                         if let Ok(r) = r {
                                             if let Ok(src) = r {
                                                 let (mut audio, handle) = create_player(src);
-                                                audio.set_volume(volume);
+                                                audio.set_volume(control.settings.volume as f32);
                                                 clock.play(audio);
                                                 trackhandle = Some(handle);
                                             } else {
@@ -477,7 +549,7 @@ pub async fn the_lüüp(
                             log.push_str(&format!("Error getting tts info: {}\r", r.unwrap_err()));
                         }
                     } else {
-                        let calllock = call.try_lock();
+                        let calllock = control.call.try_lock();
                         if let Ok(mut clock) = calllock {
                             #[cfg(feature = "tts")]
                             if let Some(tts) = current.ttsmsg.as_ref() {
@@ -486,7 +558,7 @@ pub async fn the_lüüp(
                                     .unwrap();
                                 if let Ok(r) = r {
                                     let (mut audio, handle) = create_player(r);
-                                    audio.set_volume(volume);
+                                    audio.set_volume(control.settings.volume as f32);
                                     clock.play(audio);
                                     tts_handle = Some(handle);
                                 } else {
@@ -495,7 +567,7 @@ pub async fn the_lüüp(
                                             .await
                                             .unwrap(),
                                     );
-                                    audio.set_volume(volume);
+                                    audio.set_volume(control.settings.volume as f32);
                                     clock.play(audio);
                                     tts_handle = Some(handle);
                                 }
@@ -505,7 +577,7 @@ pub async fn the_lüüp(
                                         .await
                                         .unwrap(),
                                 );
-                                audio.set_volume(volume);
+                                audio.set_volume(control.settings.volume as f32);
                                 clock.play(audio);
                                 tts_handle = Some(handle);
                             }
@@ -516,14 +588,14 @@ pub async fn the_lüüp(
                                         .await
                                         .unwrap(),
                                 );
-                                audio.set_volume(volume);
+                                audio.set_volume(control.settings.volume as f32);
                                 clock.play(audio);
                                 tts_handle = Some(handle);
                             }
                         }
                     }
                 } else if !queue.is_empty() {
-                    let index = if shuffled {
+                    let index = if control.settings.shuffle {
                         rand::thread_rng().gen_range(0..queue.len())
                     } else {
                         0
@@ -532,7 +604,7 @@ pub async fn the_lüüp(
                     current_track = Some(vid);
                 }
 
-                if queue.is_empty() && autoplay && autoplay_thread.is_none() {
+                if queue.is_empty() && control.settings.autoplay && autoplay_thread.is_none() {
                     let url = current_track.as_ref().and_then(|t| match t.video {
                         VideoType::Disk(_) => None,
                         VideoType::Url(ref y) => Some(y.url.clone()),
@@ -572,8 +644,9 @@ pub async fn the_lüüp(
                 }
 
                 if queue.is_empty() && current_track.is_none() {
+                    control.settings.pause = false;
                     if nothing_handle.is_none() {
-                        let r = if let Some(uri) = nothing_uri.clone() {
+                        let r = if let Some(uri) = control.nothing_uri.clone() {
                             tokio::time::timeout(g_timeout_time, Restartable::ffmpeg(uri, false)).await
                         } else {
                             // tokio::time::timeout(g_timeout_time, Restartable::ytdl("https://www.youtube.com/watch?v=xy_NKN75Jhw", false)).await
@@ -587,11 +660,11 @@ pub async fn the_lüüp(
                         if let Ok(r) = r {
                             if let Ok(src) = r {
                                 let (mut audio, handle) = create_player(src.into());
-                                let calllock = call.try_lock();
+                                let calllock = control.call.try_lock();
                                 if let Ok(mut clock) = calllock {
                                     audio.set_loops(LoopState::Infinite).unwrap();
                                     // audio.set_volume(volume / 5.);
-                                    audio.set_volume(radiovolume);
+                                    audio.set_volume(control.settings.radiovolume as f32);
                                     clock.play(audio);
                                     nothing_handle = Some(handle);
                                 } else {
@@ -604,14 +677,14 @@ pub async fn the_lüüp(
                                 log.push_str(&format!(
                                     "Error playing nothing: {}\nfile_uri: {:?}",
                                     r.unwrap_err(),
-                                    nothing_uri.clone()
+                                    control.nothing_uri.clone()
                                 ));
                             }
                         } else {
                             log.push_str(&format!(
                                 "Error playing nothing: {}\nfile_uri: {:?}",
                                 r.unwrap_err(),
-                                nothing_uri.clone()
+                                control.nothing_uri.clone()
                             ));
                         }
                     }
@@ -692,21 +765,21 @@ pub async fn the_lüüp(
 
                     // let mut message = String::new();
                     let mut possible_body = String::new();
-                    if paused {
-                        possible_body.push_str("<:pause:1038954686402789518>");
-                    }
-                    if repeated {
-                        possible_body.push_str("<:Sliderfix09:1038954711585390654>");
-                    }
-                    if looped {
-                        possible_body.push_str("<:loop:1038954691318526024>");
-                    }
-                    if shuffled {
-                        possible_body.push_str("<:shuffle:1038954690114764880>");
-                    }
-                    if autoplay {
-                        possible_body.push_str("<a:speEEEeeeEEEeeen:1108745209451397171>");
-                    }
+                    // if control.settings.pause {
+                    //     possible_body.push_str("<:pause:1038954686402789518>");
+                    // }
+                    // if control.settings.repeat {
+                    //     possible_body.push_str("<:Sliderfix09:1038954711585390654>");
+                    // }
+                    // if control.settings.looped {
+                    //     possible_body.push_str("<:loop:1038954691318526024>");
+                    // }
+                    // if control.settings.shuffle {
+                    //     possible_body.push_str("<:shuffle:1038954690114764880>");
+                    // }
+                    // if control.settings.autoplay {
+                    //     possible_body.push_str("<a:speEEEeeeEEEeeen:1108745209451397171>");
+                    // }
                     if let Some(t) = current_track.as_ref() {
                         // message.push_str(&format!("Playing: `{}` ", t.title));
                         embed
@@ -784,12 +857,16 @@ pub async fn the_lüüp(
                 let send_now = match last_embed {
                     Some(ref last_embed) => last_embed != &embed,
                     None => true,
+                } || match last_settings {
+                    Some(ref last_settings) => last_settings != &control.settings,
+                    None => true,
                 };
 
                 if send_now {
                     // println!("Sending update");
                     last_embed = Some(embed.clone());
-                    if let Err(e) = msg_updater.send(embed).await {
+                    last_settings = Some(control.settings.clone());
+                    if let Err(e) = msg_updater.send((control.settings.clone(), embed)).await {
                         log.push_str(&format!("Error sending update: {}\r", e));
                     }
                 }
@@ -805,7 +882,7 @@ pub async fn the_lüüp(
                 // }
 
                 if let Some(handle) = trackhandle.as_mut() {
-                    let r = handle.set_volume(volume);
+                    let r = handle.set_volume(control.settings.volume as f32);
                     if let Err(e) = r {
                         let s = format!("Error setting volume: {}\r", e);
                         if !s.contains("track ended") {
@@ -815,7 +892,7 @@ pub async fn the_lüüp(
                 }
                 if let Some(handle) = nothing_handle.as_mut() {
                     // let r = handle.set_volume(volume / 5.);
-                    let r = handle.set_volume(radiovolume);
+                    let r = handle.set_volume(control.settings.radiovolume as f32);
                     if let Err(e) = r {
                         log.push_str(&format!("Error setting volume: {}\r", e));
                     }
@@ -855,13 +932,13 @@ pub async fn the_lüüp(
 
                 // tokio::time::sleep(std::time::Duration::from_millis(looptime)).await;
                 {
-                    match tokio::time::timeout(g_timeout_time, call.lock()).await {
+                    match tokio::time::timeout(g_timeout_time, control.call.lock()).await {
                         Ok(call) => {
                             if let Some(_c) = call.current_connection() {
                                 // println!("{:?}", c)
                             } else {
                                 log.push_str("No connection, breaking\n");
-                                brk = true;
+                                control.brk = true;
                             }
                         }
                         Err(_) => {
@@ -869,7 +946,7 @@ pub async fn the_lüüp(
                         }
                     }
                 }
-                if brk {
+                if control.brk {
                     break;
                 }
             }
@@ -890,7 +967,7 @@ pub async fn the_lüüp(
 
     match gimme.await {
         Ok(gimme) => {
-            if let Err(e) = transcribe.lock().await.unlock(gimme).await {
+            if let Err(e) = control.transcribe.lock().await.unlock(gimme).await {
                 log.push_str(&format!("Error unlocking transcribe: {}\n", e));
             }
         }
@@ -898,9 +975,12 @@ pub async fn the_lüüp(
             println!("Error getting ttsrx: {}", e);
         }
     }
-    let mut calllock = call.lock().await;
-    rx.close();
+    let mut calllock = control.call.lock().await;
+    control.rx.close();
     calllock.stop();
+    if let Err(e) = calllock.leave().await {
+        log.push_str(&format!("Error leaving voice channel: {}\n", e));
+    }
     if let Some(t) = trackhandle.as_mut() {
         let r = t.stop();
         if let Err(e) = r {
@@ -931,6 +1011,12 @@ pub async fn the_lüüp(
         log.push_str(&format!("Error leaving voice channel: {}\n", e));
     }
 
+    if killmsg.send(()).is_err() {
+        log.push_str("Error sending killmsg");
+    } else if let Err(e) = msghandler.await {
+        log.push_str(&format!("Error joining msghandler: {}\n", e));
+    }
+
     if !log.is_empty() {
         println!("Final log: {}", log);
     }
@@ -938,12 +1024,6 @@ pub async fn the_lüüp(
     // if let Err(e) = r {
     //     println!("Error deleting message: {}", e);
     // }
-
-    if killmsg.send(()).is_err() {
-        println!("Error sending killmsg");
-    } else if let Err(e) = msghandler.await {
-        println!("Error joining msghandler: {}", e);
-    }
 
     // println!("Gracefully exited");
 }

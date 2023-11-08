@@ -22,8 +22,12 @@ impl crate::CommandTrait for Join {
     fn register(&self, command: &mut CreateApplicationCommand) {
         command.name(self.name()).description("Join vc");
     }
-    async fn run(&self, ctx: &Context, rawinteraction: Interaction) {
-        let interaction = rawinteraction.application_command().unwrap();
+    async fn run(
+        &self,
+        ctx: &Context,
+        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
+    ) {
+        // let interaction = rawinteraction.application_command().unwrap();
         interaction
             .create_interaction_response(&ctx.http, |response| {
                 response
@@ -46,7 +50,7 @@ impl crate::CommandTrait for Join {
         };
 
         if let (Some(v), Some(member)) = (
-            ctx.data.read().await.get::<super::VoiceData>(),
+            ctx.data.read().await.get::<super::VoiceData>().cloned(),
             interaction.member.as_ref(),
         ) {
             let mut v = v.lock().await;
@@ -99,7 +103,7 @@ impl crate::CommandTrait for Join {
                         let mut audio_handler = audio_handler.lock().await;
                         let (call, result) = manager.join(guild_id, channel).await;
                         if result.is_ok() {
-                            let (tx, mut rx) = mpsc::unbounded::<(
+                            let (tx, rx) = mpsc::unbounded::<(
                                 mpsc::UnboundedSender<String>,
                                 AudioPromiseCommand,
                             )>();
@@ -177,15 +181,8 @@ impl crate::CommandTrait for Join {
                             // .clone();
 
                             let handle = tokio::task::spawn(async move {
-                                the_lüüp(
-                                    call,
-                                    &mut rx,
-                                    messageref,
-                                    cfg.looptime,
-                                    nothing_path,
-                                    em,
-                                )
-                                .await;
+                                the_lüüp(call, rx, messageref, cfg.looptime, nothing_path, em)
+                                    .await;
                             });
                             // let (handle, producer) = self.begin_joinback(ctx, guild_id).await;
                             // e.insert(handle);

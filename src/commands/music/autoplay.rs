@@ -25,8 +25,12 @@ impl crate::CommandTrait for Autoplay {
             .description("Autoplay with youtube recommendations, only works if the last video was a youtube video")
             .create_option(|option| option.name("autoplay").description("Autoplay next video").kind(CommandOptionType::Boolean).required(true));
     }
-    async fn run(&self, ctx: &Context, interaction: Interaction) {
-        let interaction = interaction.application_command().unwrap();
+    async fn run(
+        &self,
+        ctx: &Context,
+        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
+    ) {
+        // let interaction = interaction.application_command().unwrap();
 
         interaction
             .create_interaction_response(&ctx.http, |response| {
@@ -91,7 +95,7 @@ impl crate::CommandTrait for Autoplay {
         };
 
         if let (Some(v), Some(member)) = (
-            ctx.data.read().await.get::<super::VoiceData>(),
+            ctx.data.read().await.get::<super::VoiceData>().cloned(),
             interaction.member.as_ref(),
         ) {
             let mut v = v.lock().await;

@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 // use hyper;
 // use hyper_rustls;
 use serenity::async_trait;
-use serenity::builder::CreateApplicationCommand;
+use serenity::builder::{CreateApplicationCommand, CreateInputText};
 
 use serenity::model::application::interaction::autocomplete::AutocompleteInteraction;
 use serenity::model::application::interaction::Interaction;
@@ -64,7 +64,11 @@ where
     Self: Send + Sync,
 {
     fn register(&self, command: &mut CreateApplicationCommand);
-    async fn run(&self, ctx: &Context, interaction: Interaction);
+    async fn run(
+        &self,
+        ctx: &Context,
+        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
+    );
     fn name(&self) -> &str;
     async fn autocomplete(
         &self,
@@ -82,11 +86,11 @@ pub struct UserSafe {
 impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         match &interaction {
-            Interaction::ApplicationCommand(command) => {
-                let command_name = command.data.name.clone();
+            Interaction::ApplicationCommand(rawcommand) => {
+                let command_name = rawcommand.data.name.clone();
                 let command = self.commands.iter().find(|c| c.name() == command_name);
                 if let Some(command) = command {
-                    command.run(&ctx, interaction).await;
+                    command.run(&ctx, rawcommand).await;
                 } else {
                     println!("Command not found: {command_name}");
                 }
@@ -102,7 +106,61 @@ impl EventHandler for Handler {
                     println!("Command not found: {commandn}");
                 }
             }
-            _ => {}
+            Interaction::Ping(p) => {
+                println!("Ping: {:?}", p);
+            }
+            Interaction::MessageComponent(m) => {
+                m.create_interaction_response(&ctx.http, |r| {
+                    r.kind(
+                        serenity::model::application::interaction::InteractionResponseType::Modal,
+                    )
+                    .interaction_response_data(|d| {
+                        d.components(|f| {
+                            f.create_action_row(|r| {
+                                r.add_input_text({
+                                    let mut m = CreateInputText::default();
+                                    m.placeholder("I might read your feedback")
+                                        .custom_id("string")
+                                        .label("What should clicking this do?")
+                                        .style(serenity::model::prelude::component::InputTextStyle::Paragraph)
+                                        .required(true);
+                                    m
+                                })
+                            })
+                        });
+                        d.custom_id("feedback");
+                        d.title("Feedback");
+
+                        d
+                    })
+                })
+                .await
+                .unwrap();
+            }
+            Interaction::ModalSubmit(p) => {
+                println!(
+                    "ModalSubmit: {:?}",
+                    match p.data.components[0].components[0].clone() {
+                        serenity::model::prelude::component::ActionRowComponent::InputText(i) => {
+                            i.value
+                        }
+                        _ => {
+                            "nope".to_owned()
+                        }
+                    }
+                );
+
+                p.create_interaction_response(&ctx.http, |r| {
+                    r.kind(
+                        serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                    )
+                    .interaction_response_data(|d| {
+                        d.content("Thanks for the feedback!");
+                        d.ephemeral(true);
+                        d
+                    })
+                }).await.unwrap();
+            }
         }
     }
 
@@ -658,17 +716,74 @@ async fn main() {
 
     tick.tick().await;
 
+    let exit_code;
+
     tokio::select! {
         _ = tick.tick() => {
             println!("Restarting at {}", chrono::Local::now());
             client.shard_manager.lock().await.shutdown_all().await;
             println!("Exit code 3 {}", chrono::Local::now());
-            std::process::exit(3);
+            // std::process::exit(3);
+            exit_code = 3;
         }
         Err(why) = client.start() => {
             println!("Client error: {:?}", why);
+            println!("Exit code 1 {}", chrono::Local::now());
+            // std::process::exit(1);
+            exit_code = 1;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("Exit code 2 {}", chrono::Local::now());
+            // std::process::exit(2);
+            exit_code = 2;
         }
     }
+    let dw = client.data.write().await;
+
+    if let Some(v) = dw.get::<commands::music::AudioCommandHandler>().take() {
+        for x in v.lock().await.values() {
+            let (tx, mut rx) = serenity::futures::channel::mpsc::unbounded::<String>();
+
+            if let Err(e) = x.unbounded_send((tx, commands::music::AudioPromiseCommand::Stop)) {
+                println!("Failed to send stop command: {}", e);
+            };
+
+            // wait for up to 10 seconds for the rx to receive a message
+            let timeout = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                serenity::futures::StreamExt::next(&mut rx),
+            );
+
+            if let Ok(Some(msg)) = timeout.await {
+                println!("Stopped playing: {}", msg);
+            } else {
+                println!("Failed to stop playing");
+            }
+        }
+    }
+
+    if let Some(v) = dw.get::<commands::music::AudioHandler>().take() {
+        for x in v.lock().await.values_mut() {
+            // wait for up to 10 seconds to join the handle, abort if it takes too long
+
+            let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), x);
+
+            if let Ok(Ok(())) = timeout.await {
+                println!("Joined handle");
+            } else {
+                println!("Failed to join handle");
+            }
+        }
+    }
+
+    if let Some(v) = dw
+        .get::<commands::music::transcribe::TranscribeData>()
+        .take()
+    {
+        v.lock().await.clear();
+    }
+
+    std::process::exit(exit_code);
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Config {

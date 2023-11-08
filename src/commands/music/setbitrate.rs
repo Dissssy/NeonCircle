@@ -27,14 +27,18 @@ impl crate::CommandTrait for SetBitrate {
                 option
                     .name("bitrate")
                     .description("the bitrate to set the bot to")
-                    .min_int_value(1200)
-                    .max_int_value(384000)
+                    .min_int_value(512)
+                    .max_int_value(512_000)
                     .kind(CommandOptionType::Integer)
                     .required(true)
             });
     }
-    async fn run(&self, ctx: &Context, interaction: Interaction) {
-        let interaction = interaction.application_command().unwrap();
+    async fn run(
+        &self,
+        ctx: &Context,
+        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
+    ) {
+        // let interaction = interaction.application_command().unwrap();
 
         interaction
             .create_interaction_response(&ctx.http, |response| {
@@ -99,7 +103,7 @@ impl crate::CommandTrait for SetBitrate {
         };
 
         if let (Some(v), Some(member)) = (
-            ctx.data.read().await.get::<super::VoiceData>(),
+            ctx.data.read().await.get::<super::VoiceData>().cloned(),
             interaction.member.as_ref(),
         ) {
             let mut v = v.lock().await;

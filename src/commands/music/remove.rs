@@ -33,8 +33,12 @@ impl crate::CommandTrait for Remove {
                     .required(true)
             });
     }
-    async fn run(&self, ctx: &Context, interaction: Interaction) {
-        let interaction = interaction.application_command().unwrap();
+    async fn run(
+        &self,
+        ctx: &Context,
+        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
+    ) {
+        // let interaction = interaction.application_command().unwrap();
 
         interaction
             .create_interaction_response(&ctx.http, |response| {
@@ -94,7 +98,7 @@ impl crate::CommandTrait for Remove {
         } as usize;
 
         if let (Some(v), Some(member)) = (
-            ctx.data.read().await.get::<super::VoiceData>(),
+            ctx.data.read().await.get::<super::VoiceData>().cloned(),
             interaction.member.as_ref(),
         ) {
             let mut v = v.lock().await;
