@@ -1,5 +1,6 @@
 // clippy deny unwraps and expects
 // #![deny(clippy::unwrap_used)]
+// #![deny(clippy::implicit_return)]
 
 mod commands;
 
@@ -16,13 +17,14 @@ mod bigwetsloppybowser;
 use anyhow::Error;
 // use chrono::Timelike;
 use commands::music::transcribe::{TranscribeChannelHandler, TranscribeData};
-use commands::music::VoiceData;
+use commands::music::{ OrAuto, SpecificVolume, VoiceAction, VoiceData};
 use serde::{Deserialize, Serialize};
 // use hyper;
 // use hyper_rustls;
 use serenity::async_trait;
 use serenity::builder::{CreateApplicationCommand, CreateInputText};
 
+use serenity::futures::StreamExt;
 use serenity::model::application::interaction::autocomplete::AutocompleteInteraction;
 use serenity::model::application::interaction::Interaction;
 use serenity::model::gateway::Ready;
@@ -36,6 +38,8 @@ use serenity::model::prelude::command::Command;
 use serenity::model::voice::VoiceState;
 use serenity::prelude::*;
 use songbird::SerenityInit;
+
+use crate::commands::music::{AudioCommandHandler, AudioPromiseCommand, OrToggle};
 
 struct Handler {
     commands: Vec<Box<dyn CommandTrait>>,
@@ -109,8 +113,443 @@ impl EventHandler for Handler {
             Interaction::Ping(p) => {
                 println!("Ping: {:?}", p);
             }
-            Interaction::MessageComponent(m) => {
-                m.create_interaction_response(&ctx.http, |r| {
+            Interaction::MessageComponent(mci) => match mci.data.custom_id.clone().as_str() {
+                original_command
+                    if [
+                        "pause", "skip", "stop", "looped", "shuffle", "repeat", "autoplay",
+                    ]
+                    .iter()
+                    .any(|a| *a == original_command) =>
+                {
+                    let guild_id = match mci.guild_id {
+                        Some(id) => id,
+                        None => {
+                            mci.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("This can only be used in a server").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
+                        }
+                    };
+
+                    if let (Some(v), Some(member)) = (
+                        ctx.data.read().await.get::<VoiceData>().cloned(),
+                        mci.member.as_ref(),
+                    ) {
+                        let mut v = v.lock().await;
+                        let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
+
+                        if let VoiceAction::InSame(_c) = next_step {
+                            let audio_command_handler = ctx
+                                .data
+                                .read()
+                                .await
+                                .get::<AudioCommandHandler>()
+                                .expect("Expected AudioCommandHandler in TypeMap")
+                                .clone();
+
+                            let mut audio_command_handler = audio_command_handler.lock().await;
+
+                            if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
+                                let (rtx, rrx) =
+                                    serenity::futures::channel::oneshot::channel::<String>();
+                                tx.unbounded_send((
+                                    rtx,
+                                    match original_command {
+                                        "pause" => AudioPromiseCommand::Paused(OrToggle::Toggle),
+                                        "skip" => AudioPromiseCommand::Skip,
+                                        "stop" => AudioPromiseCommand::Stop,
+                                        "looped" => AudioPromiseCommand::Loop(OrToggle::Toggle),
+                                        "shuffle" => AudioPromiseCommand::Shuffle(OrToggle::Toggle),
+                                        "repeat" => AudioPromiseCommand::Repeat(OrToggle::Toggle),
+                                        "autoplay" => {
+                                            AudioPromiseCommand::Autoplay(OrToggle::Toggle)
+                                        }
+                                        uh => {
+                                            println!("Unknown command: {}", uh);
+                                            return;
+                                        }
+                                    },
+                                ))
+                                .unwrap();
+
+                                let timeout =
+                                    tokio::time::timeout(std::time::Duration::from_secs(10), rrx)
+                                        .await;
+
+                                match timeout {
+                                    Ok(Ok(_msg)) => {
+                                        mci.create_interaction_response(&ctx.http, |r| {
+                                            r.kind(
+                                                serenity::model::application::interaction::InteractionResponseType::DeferredUpdateMessage,
+                                            )
+                                        })
+                                        .await
+                                        .unwrap();
+                                        return;
+                                    }
+                                    Ok(Err(e)) => {
+                                        println!(
+                                            "Failed to issue command for {} ERR: {}",
+                                            original_command, e
+                                        );
+                                    }
+                                    Err(e) => {
+                                        println!(
+                                            "Failed to issue command for {} ERR: {}",
+                                            original_command, e
+                                        );
+                                    }
+                                }
+                                mci.create_interaction_response(&ctx.http, |r| {
+                                        r.kind(
+                                            serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                        )
+                                        .interaction_response_data(|d| {
+                                            d.content(format!("Failed to issue command for {}", original_command)).ephemeral(true);
+                                            d
+                                        })
+                                    })
+                                    .await
+                                    .unwrap();
+                                return;
+                            }
+
+                            println!("{}", _c);
+                        } else {
+                            mci.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("Get on in here, enjoy the tunes!").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
+                        }
+                    }
+                }
+                raw if ["volume", "radiovolume"].iter().any(|a| *a == raw) => {
+                    let guild_id = match mci.guild_id {
+                        Some(id) => id,
+                        None => {
+                            mci.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("This can only be used in a server").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
+                        }
+                    };
+
+                    if let (Some(v), Some(member)) = (
+                        ctx.data.read().await.get::<VoiceData>().cloned(),
+                        mci.member.as_ref(),
+                    ) {
+                        let mut v = v.lock().await;
+                        let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
+
+                        if let VoiceAction::InSame(_c) = next_step {
+                            mci.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::Modal,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.components(|f| {
+                                        f.create_action_row(|r| {
+                                            r.add_input_text({
+                                                let mut m = CreateInputText::default();
+                                                m.placeholder("Number 0-100")
+                                                    .custom_id("volume")
+                                                    .label("%")
+                                                    .style(serenity::model::prelude::component::InputTextStyle::Short)
+                                                    .required(true);
+                                                m
+                                            })
+                                        })
+                                    });
+                                    d.custom_id(raw);
+                                    d.title(match raw {
+                                        "volume" => "Volume",
+                                        "radiovolume" => "Radio Volume",
+                                        _ => unreachable!(),
+                                    });
+
+                                    d
+                                })
+                            }).await.unwrap();
+                            return;
+                        } else {
+                            mci.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("Get on in here, enjoy the tunes!").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
+                        }
+                    }
+                }
+                "bitrate" => {
+                    // modal, same as volume, just bps between 512 and 512000 or left blank for auto
+                    let guild_id = match mci.guild_id {
+                        Some(id) => id,
+                        None => {
+                            mci.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("This can only be used in a server").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
+                        }
+                    };
+
+                    if let (Some(v), Some(member)) = (
+                        ctx.data.read().await.get::<VoiceData>().cloned(),
+                        mci.member.as_ref(),
+                    ) {
+                        let mut v = v.lock().await;
+                        let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
+
+                        if let VoiceAction::InSame(_c) = next_step {
+                            mci.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::Modal,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.components(|f| {
+                                        f.create_action_row(|r| {
+                                            r.add_input_text({
+                                                let mut m = CreateInputText::default();
+                                                m.placeholder("Number 512-512000")
+                                                    .custom_id("bitrate")
+                                                    .label("bps")
+                                                    .style(serenity::model::prelude::component::InputTextStyle::Short)
+                                                    .required(false);
+                                                m
+                                            })
+                                        })
+                                    });
+                                    d.custom_id("bitrate");
+                                    d.title("Bitrate");
+
+                                    d
+                                })
+                            }).await.unwrap();
+                            return;
+                        } else {
+                            mci.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("Get on in here, enjoy the tunes!").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
+                        }
+                    }
+                }
+                "log" => {
+                    // modal submit that contains the log from the thread (if applicable)
+                    let guild_id = match mci.guild_id {
+                        Some(id) => id,
+                        None => {
+                            mci.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("This can only be used in a server").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
+                        }
+                    };
+
+                    if let (Some(v), Some(member)) = (
+                        ctx.data.read().await.get::<VoiceData>().cloned(),
+                        mci.member.as_ref(),
+                    ) {
+                        let mut v = v.lock().await;
+                        let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
+
+                        if let VoiceAction::InSame(_c) = next_step {
+
+
+
+
+                            // mci.create_interaction_response(&ctx.http, |r| {
+                            //     r.kind(
+                            //         serenity::model::application::interaction::InteractionResponseType::Modal,
+                            //     )
+                            //     .interaction_response_data(|d| {
+                            //         d.components(|f| {
+                            //             f.create_action_row(|r| {
+                            //                 r.add_input_text({
+                            //                     let mut m = CreateInputText::default();
+                            //                     m.placeholder("Number 512-512000")
+                            //                         .custom_id("bitrate")
+                            //                         .label("bps")
+                            //                         .style(serenity::model::prelude::component::InputTextStyle::Short)
+                            //                         .required(false);
+                            //                     m
+                            //                 })
+                            //             })
+                            //         });
+                            //         d.custom_id("bitrate");
+                            //         d.title("Bitrate");
+
+                            //         d
+                            //     })
+                            // }).await.unwrap();
+                            // return;
+
+                            let audio_command_handler = ctx
+                                .data
+                                .read()
+                                .await
+                                .get::<AudioCommandHandler>()
+                                .expect("Expected AudioCommandHandler in TypeMap")
+                                .clone();
+
+                            let mut audio_command_handler = audio_command_handler.lock().await;
+
+                            if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
+                                let (rtx, rrx) =
+                                    serenity::futures::channel::oneshot::channel::<String>();
+                                let (realrtx, mut realrrx) = serenity::futures::channel::mpsc::channel::<Vec<String>>(1);
+                                tx.unbounded_send((
+                                    rtx,
+                                    AudioPromiseCommand::RetrieveLog(realrtx),
+                                ))
+                                .unwrap();
+
+                                let timeout =
+                                    tokio::time::timeout(std::time::Duration::from_secs(10), rrx)
+                                        .await;
+
+                                match timeout {
+                                    Ok(Ok(_)) => {
+
+                                        let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), realrrx.next()).await;
+
+                                        match timeout {
+                                            Ok(Some(log)) => {
+                                                mci.create_interaction_response(&ctx.http, |r| {
+                                                    r.kind(
+                                                        serenity::model::application::interaction::InteractionResponseType::Modal,
+                                                    )
+                                                    .interaction_response_data(|d| {
+                                                        d.components(|f| {
+                                                            for (i, log) in log.iter().enumerate() {
+                                                                f.create_action_row(|r| {
+                                                                    r.add_input_text({
+                                                                        let mut m = CreateInputText::default();
+                                                                        m.placeholder("Log")
+                                                                            .custom_id(format!("log{}", i))
+                                                                            .label("Log")
+                                                                            .style(serenity::model::prelude::component::InputTextStyle::Paragraph)
+                                                                            .required(false);
+                                                                        m.value(log);
+                                                                        m
+                                                                    });
+                                                                    r
+                                                                });
+                                                            }
+                                                            f
+                                                        });
+                                                        d.custom_id("log");
+                                                        d.title("Log (Submitting this does nothing)");
+
+                                                        d
+                                                    })
+                                                    
+                                                })
+                                                .await
+                                                .unwrap();
+                                                return;
+                                            }
+                                            Ok(None) => {
+                                                println!("Failed to issue command for `log` ERR: None");
+                                            }
+                                            Err(e) => {
+                                                println!("Failed to issue command for `log` ERR: {}", e);
+                                            }
+                                        }
+                                    }
+                                    Ok(Err(e)) => {
+                                        println!("Failed to issue command for `log` ERR: {}", e);
+                                    }
+                                    Err(e) => {
+                                        println!("Failed to issue command for `log` ERR: {}", e);
+                                    }
+                                }
+                                mci.create_interaction_response(&ctx.http, |r| {
+                                        r.kind(
+                                            serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                        )
+                                        .interaction_response_data(|d| {
+                                            d.content("Failed to issue command for `log`").ephemeral(true);
+                                            d
+                                        })
+                                    })
+                                    .await
+                                    .unwrap();
+                                return;
+                            }
+                        } else {
+                            mci.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("Get on in here, enjoy the tunes!").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
+                        }
+                    }
+                }
+                p => {
+                    println!("You missed one, idiot: {:?}", p);
+                    mci.create_interaction_response(&ctx.http, |r| {
                     r.kind(
                         serenity::model::application::interaction::InteractionResponseType::Modal,
                     )
@@ -119,9 +558,9 @@ impl EventHandler for Handler {
                             f.create_action_row(|r| {
                                 r.add_input_text({
                                     let mut m = CreateInputText::default();
-                                    m.placeholder("I might read your feedback")
-                                        .custom_id("string")
-                                        .label("What should clicking this do?")
+                                    m.placeholder("Read the discord documentation and figure out what i can ACTUALLY do. I can't think of anything.")
+                                        .custom_id(p)
+                                        .label(format!("How should clicking `{}` work?", p))
                                         .style(serenity::model::prelude::component::InputTextStyle::Paragraph)
                                         .required(true);
                                     m
@@ -136,31 +575,356 @@ impl EventHandler for Handler {
                 })
                 .await
                 .unwrap();
-            }
-            Interaction::ModalSubmit(p) => {
-                println!(
-                    "ModalSubmit: {:?}",
-                    match p.data.components[0].components[0].clone() {
+                }
+            },
+            Interaction::ModalSubmit(p) => match p.data.custom_id.as_str() {
+                "feedback" => {
+                    let i = match p.data.components[0].components[0].clone() {
+                        serenity::model::prelude::component::ActionRowComponent::InputText(i) => i,
+                        _ => {
+                            return;
+                        }
+                    };
+                    let mut content = "Thanks for the feedback!".to_owned();
+                    let feedback =
+                        format!("User thinks `{}` should\n```\n{}```", i.custom_id, i.value);
+
+                    if let Err(e) = ctx
+                        .http
+                        .get_user(156533151198478336)
+                        .await
+                        .unwrap()
+                        .dm(&ctx.http, |m| {
+                            m.content(&feedback);
+                            m
+                        })
+                        .await
+                    {
+                        println!("Failed to send feedback: {}", e);
+                        content = format!("{}\nUnfortunately, I failed to send your feedback to the developer. If you're able to, be sure to send it to him yourself! He's <@156533151198478336> (monkey_d._issy)\n\nHere's a copy if you need it.\n{}", content, feedback);
+                    }
+
+                    p.create_interaction_response(&ctx.http, |r| {
+                        r.kind(
+                            serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                        )
+                        .interaction_response_data(|d| {
+                            d.content(content);
+                            d.ephemeral(true);
+                            d
+                        })
+                    }).await.unwrap();
+                }
+                raw if ["volume", "radiovolume"].iter().any(|a| *a == raw) => {
+                    let val = match p.data.components[0].components[0].clone() {
                         serenity::model::prelude::component::ActionRowComponent::InputText(i) => {
                             i.value
                         }
                         _ => {
-                            "nope".to_owned()
+                            return;
+                        }
+                    };
+
+                    let val = match val.parse::<f64>() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            println!("Failed to parse volume: {}", e);
+                            p.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content(format!("`{}` is not a valid number", val));
+                                    d.ephemeral(true);
+                                    d
+                                })
+                            }).await.unwrap();
+                            return;
+                        }
+                    };
+
+                    if !(0.0..=100.0).contains(&val) {
+                        p.create_interaction_response(&ctx.http, |r| {
+                            r.kind(
+                                serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                            )
+                            .interaction_response_data(|d| {
+                                d.content(format!("`{}` is outside 0-100", val));
+                                d.ephemeral(true);
+                                d
+                            })
+                        }).await.unwrap();
+                        return;
+                    }
+
+                    let guild_id = match p.guild_id {
+                        Some(id) => id,
+                        None => {
+                            p.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("This can only be used in a server").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
+                        }
+                    };
+
+                    if let (Some(v), Some(member)) = (
+                        ctx.data.read().await.get::<VoiceData>().cloned(),
+                        p.member.as_ref(),
+                    ) {
+                        let mut v = v.lock().await;
+                        let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
+
+                        if let VoiceAction::InSame(_c) = next_step {
+                            let audio_command_handler = ctx
+                                .data
+                                .read()
+                                .await
+                                .get::<AudioCommandHandler>()
+                                .expect("Expected AudioCommandHandler in TypeMap")
+                                .clone();
+
+                            let mut audio_command_handler = audio_command_handler.lock().await;
+
+                            if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
+                                let (rtx, rrx) =
+                                    serenity::futures::channel::oneshot::channel::<String>();
+                                tx.unbounded_send((
+                                    rtx,
+                                    match raw {
+                                        "volume" => AudioPromiseCommand::SpecificVolume(
+                                            SpecificVolume::Volume(val / 100.0),
+                                        ),
+                                        "radiovolume" => AudioPromiseCommand::SpecificVolume(
+                                            SpecificVolume::RadioVolume(val / 100.0),
+                                        ),
+                                        uh => {
+                                            println!("Unknown volume to set: {}", uh);
+                                            return;
+                                        }
+                                    },
+                                ))
+                                .unwrap();
+
+                                let timeout =
+                                    tokio::time::timeout(std::time::Duration::from_secs(10), rrx)
+                                        .await;
+
+                                match timeout {
+                                    Ok(Ok(_msg)) => {
+                                        p.create_interaction_response(&ctx.http, |r| {
+                                            r.kind(
+                                                serenity::model::application::interaction::InteractionResponseType::DeferredUpdateMessage,
+                                            )
+                                        })
+                                        .await
+                                        .unwrap();
+                                        return;
+                                    }
+                                    Ok(Err(e)) => {
+                                        println!("Failed to issue command for {} ERR: {}", raw, e);
+                                    }
+                                    Err(e) => {
+                                        println!("Failed to issue command for {} ERR: {}", raw, e);
+                                    }
+                                }
+                                p.create_interaction_response(&ctx.http, |r| {
+                                        r.kind(
+                                            serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                        )
+                                        .interaction_response_data(|d| {
+                                            d.content(format!("Failed to issue command for {}", raw)).ephemeral(true);
+                                            d
+                                        })
+                                    })
+                                    .await
+                                    .unwrap();
+                                return;
+                            }
+
+                            println!("{}", _c);
+                        } else {
+                            p.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("Why did you leave? I was just about to change the volume!").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
                         }
                     }
-                );
+                }
+                "bitrate" => {
+                    // same as volume, just an i64 between 512 and 512000 or left blank for auto
+                    let val = match p.data.components[0].components[0].clone() {
+                        serenity::model::prelude::component::ActionRowComponent::InputText(i) => {
+                            i.value
+                        }
+                        _ => {
+                            return;
+                        }
+                    };
 
-                p.create_interaction_response(&ctx.http, |r| {
-                    r.kind(
-                        serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
-                    )
-                    .interaction_response_data(|d| {
-                        d.content("Thanks for the feedback!");
-                        d.ephemeral(true);
-                        d
+                    let val = if val.is_empty() {
+                        OrAuto::Auto
+                    } else {
+                        OrAuto::Specific({
+                            let val = match val.parse::<i64>() {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    println!("Failed to parse bitrate: {}", e);
+                                    p.create_interaction_response(&ctx.http, |r| {
+                                        r.kind(
+                                            serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                        )
+                                        .interaction_response_data(|d| {
+                                            d.content(format!("`{}` is not a valid number", val));
+                                            d.ephemeral(true);
+                                            d
+                                        })
+                                    }).await.unwrap();
+                                    return;
+                                }
+                            };
+                            if !(512..=512000).contains(&val) {
+                                p.create_interaction_response(&ctx.http, |r| {
+                                    r.kind(
+                                        serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                    )
+                                    .interaction_response_data(|d| {
+                                        d.content(format!("`{}` is outside 512-512000", val));
+                                        d.ephemeral(true);
+                                        d
+                                    })
+                                }).await.unwrap();
+                                return;
+                            }
+
+                            val
+                        })
+                    };
+
+                    let guild_id = match p.guild_id {
+                        Some(id) => id,
+                        None => {
+                            p.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("This can only be used in a server").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
+                        }
+                    };
+
+                    if let (Some(v), Some(member)) = (
+                        ctx.data.read().await.get::<VoiceData>().cloned(),
+                        p.member.as_ref(),
+                    ) {
+                        let mut v = v.lock().await;
+                        let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
+
+                        if let VoiceAction::InSame(_c) = next_step {
+                            let audio_command_handler = ctx
+                                .data
+                                .read()
+                                .await
+                                .get::<AudioCommandHandler>()
+                                .expect("Expected AudioCommandHandler in TypeMap")
+                                .clone();
+
+                            let mut audio_command_handler = audio_command_handler.lock().await;
+
+                            if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
+                                let (rtx, rrx) =
+                                    serenity::futures::channel::oneshot::channel::<String>();
+                                tx.unbounded_send((rtx, AudioPromiseCommand::SetBitrate(val)))
+                                    .unwrap();
+
+                                let timeout =
+                                    tokio::time::timeout(std::time::Duration::from_secs(10), rrx)
+                                        .await;
+
+                                match timeout {
+                                    Ok(Ok(_msg)) => {
+                                        p.create_interaction_response(&ctx.http, |r| {
+                                            r.kind(
+                                                serenity::model::application::interaction::InteractionResponseType::DeferredUpdateMessage,
+                                            )
+                                        })
+                                        .await
+                                        .unwrap();
+                                        return;
+                                    }
+                                    Ok(Err(e)) => {
+                                        println!("Failed to issue command for bitrate ERR: {}", e);
+                                    }
+                                    Err(e) => {
+                                        println!("Failed to issue command for bitrate ERR: {}", e);
+                                    }
+                                }
+                                p.create_interaction_response(&ctx.http, |r| {
+                                        r.kind(
+                                            serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                        )
+                                        .interaction_response_data(|d| {
+                                            d.content(format!("Failed to issue command for bitrate")).ephemeral(true);
+                                            d
+                                        })
+                                    })
+                                    .await
+                                    .unwrap();
+                                return;
+                            }
+
+                            println!("{}", _c);
+                        } else {
+                            p.create_interaction_response(&ctx.http, |r| {
+                                r.kind(
+                                    serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                )
+                                .interaction_response_data(|d| {
+                                    d.content("Why did you leave? I was just about to change the bitrate!").ephemeral(true);
+                                    d
+                                })
+                            })
+                            .await
+                            .unwrap();
+                            return;
+                        }
+                    }
+                }
+                "log" => {
+                    // deferred update message
+                    p.create_interaction_response(&ctx.http, |r| {
+                        r.kind(
+                            serenity::model::application::interaction::InteractionResponseType::DeferredUpdateMessage,
+                        )
                     })
-                }).await.unwrap();
-            }
+                    .await
+                    .unwrap();
+                }
+                _ => {
+                    println!("You missed one, idiot: {:?}", p);
+                }
+            },
         }
     }
 
@@ -289,91 +1053,64 @@ impl EventHandler for Handler {
     }
 
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
-        let data = ctx
+        let data = {
+            let uh = ctx.data.read().await;
+            uh.get::<VoiceData>()
+            .expect("Expected VoiceData in TypeMap.")
+            .clone()
+        };
+        {
+            let mut data = data.lock().await;
+            data.update(old.clone(), new.clone());
+        }
+
+
+        let guild_id = match (old.and_then(|o| o.guild_id), new.guild_id) {
+            (Some(g), _) => g,
+            (_, Some(g)) => g,
+            _ => return,
+        };
+
+
+        let leave = {
+            let mut data = data.lock().await;
+            data.bot_alone(&guild_id)
+        };
+
+
+        if !leave {
+            return;
+        }
+
+        let audio_command_handler = ctx
             .data
             .read()
             .await
-            .get::<VoiceData>()
-            .expect("Expected VoiceData in TypeMap.")
+            .get::<AudioCommandHandler>()
+            .expect("Expected AudioCommandHandler in TypeMap")
             .clone();
-        let mut data = data.lock().await;
 
-        data.update(old, new);
+        let mut audio_command_handler = audio_command_handler.lock().await;
 
-        // if let Some(guild_id) = new.guild_id {
-        //     let data = ctx
-        //         .data
-        //         .read()
-        //         .await
-        //         .get::<VoiceData>()
-        //         .expect("Expected VoiceData in TypeMap.")
-        //         .clone();
-        //     let mut data = data.lock().await;
+        if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
+            let (rtx, rrx) = serenity::futures::channel::oneshot::channel::<String>();
+            tx.unbounded_send((rtx, AudioPromiseCommand::Stop)).unwrap();
 
-        //     let guild = data.get_mut(&guild_id);
-        //     if let Some(guild) = guild {
-        //         let state = guild.iter_mut().find(|user| user.user_id == new.user_id);
-        //         if let Some(state) = state {
-        //             *state = new;
-        //         } else {
-        //             guild.push(new);
-        //         }
-        //     } else {
-        //         data.insert(guild_id, vec![new]);
-        //     }
-        //     // if everyone left the channel, stop the music
-        //     if let Some(handler) = data.get(&guild_id) {
-        //         // println!("STOPPING MUSIC");
-        //         let empty = handler
-        //             .iter()
-        //             .filter(|user| {
-        //                 // filter out all of the bots, if member is none, assume it is a bot
-        //                 match user.member {
-        //                     Some(ref member) => !member.user.bot,
-        //                     None => false,
-        //                 }
-        //             })
-        //             .all(|user| user.channel_id.is_none())
-        //             || handler.is_empty();
-        //         // println!("Empty: {}", empty);
-        //         if empty {
-        //             let audio_command_handler = ctx
-        //                 .data
-        //                 .read()
-        //                 .await
-        //                 .get::<commands::music::AudioCommandHandler>()
-        //                 .expect("Expected AudioCommandHandler in TypeMap")
-        //                 .clone();
-        //             let mut audio_command_handler = audio_command_handler.lock().await;
-        //             let tx = audio_command_handler.get_mut(&guild_id.to_string());
-        //             if let Some(tx) = tx {
-        //                 let (rtx, mut rrx) =
-        //                     serenity::futures::channel::mpsc::unbounded::<String>();
-        //                 if tx
-        //                     .unbounded_send((rtx, commands::music::AudioPromiseCommand::Stop))
-        //                     .is_err()
-        //                 {
-        //                     // println!("Failed to send stop command: {}", e);
-        //                     // honestly? just ignore it lol, this was our goal anyways
-        //                 };
-        //                 // wait for up to 10 seconds for the rrx to receive a message
-        //                 let timeout = tokio::time::timeout(
-        //                     std::time::Duration::from_secs(10),
-        //                     serenity::futures::StreamExt::next(&mut rrx),
-        //                 )
-        //                 .await;
-        //                 if let Ok(Some(_msg)) = timeout {
-        //                     // println!("Stopped playing: {}", msg);
-        //                 } else {
-        //                     // println!("Failed to stop playing");
-        //                 }
-        //             } else {
-        //                 // delete the tx
-        //                 audio_command_handler.remove(&guild_id.to_string());
-        //             }
-        //         }
-        //     }
-        // }
+            let timeout =
+                tokio::time::timeout(std::time::Duration::from_secs(10), rrx).await;
+
+            match timeout {
+                Ok(Ok(_msg)) => {
+                    return;
+                }
+                Ok(Err(e)) => {
+                    println!("Failed to issue command for stop ERR: {}", e);
+                }
+                Err(e) => {
+                    println!("Failed to issue command for stop ERR: {}", e);
+                }
+            }
+        }
     }
 
     async fn message(&self, ctx: Context, new_message: Message) {
@@ -624,6 +1361,9 @@ struct Timed<T> {
 
 #[tokio::main]
 async fn main() {
+
+    env_logger::init();
+
     // let v = crate::youtube::youtube_search("KIKUOWORLD2".to_owned())
     //     .await
     //     .unwrap();
@@ -720,8 +1460,6 @@ async fn main() {
 
     tokio::select! {
         _ = tick.tick() => {
-            println!("Restarting at {}", chrono::Local::now());
-            client.shard_manager.lock().await.shutdown_all().await;
             println!("Exit code 3 {}", chrono::Local::now());
             // std::process::exit(3);
             exit_code = 3;
@@ -738,32 +1476,31 @@ async fn main() {
             exit_code = 2;
         }
     }
+    println!("Getting write lock on data");
     let dw = client.data.write().await;
-
+    println!("Got write lock on data");
     if let Some(v) = dw.get::<commands::music::AudioCommandHandler>().take() {
-        for x in v.lock().await.values() {
-            let (tx, mut rx) = serenity::futures::channel::mpsc::unbounded::<String>();
+        for (i, x) in v.lock().await.values().enumerate() {
+            println!("Sending stop command {}", i);
+            let (tx, rx) = serenity::futures::channel::oneshot::channel::<String>();
 
             if let Err(e) = x.unbounded_send((tx, commands::music::AudioPromiseCommand::Stop)) {
                 println!("Failed to send stop command: {}", e);
             };
 
             // wait for up to 10 seconds for the rx to receive a message
-            let timeout = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                serenity::futures::StreamExt::next(&mut rx),
-            );
+            let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rx);
 
-            if let Ok(Some(msg)) = timeout.await {
+            if let Ok(Ok(msg)) = timeout.await {
                 println!("Stopped playing: {}", msg);
             } else {
                 println!("Failed to stop playing");
             }
         }
     }
-
     if let Some(v) = dw.get::<commands::music::AudioHandler>().take() {
-        for x in v.lock().await.values_mut() {
+        for (i, x) in v.lock().await.values_mut().enumerate() {
+            println!("Joining handle {}", i);
             // wait for up to 10 seconds to join the handle, abort if it takes too long
 
             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), x);
@@ -782,6 +1519,8 @@ async fn main() {
     {
         v.lock().await.clear();
     }
+
+    client.shard_manager.lock().await.shutdown_all().await;
 
     std::process::exit(exit_code);
 }

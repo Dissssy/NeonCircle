@@ -1,13 +1,11 @@
-use serenity::futures::StreamExt;
-
 use serenity::model::prelude::interaction::autocomplete::AutocompleteInteraction;
 
 use std::time::Duration;
 
 use anyhow::Error;
 use serenity::builder::CreateApplicationCommand;
-use serenity::futures::channel::mpsc;
-use serenity::model::application::interaction::{Interaction, InteractionResponseType};
+
+use serenity::model::application::interaction::InteractionResponseType;
 use serenity::model::prelude::command::CommandOptionType;
 
 use serenity::prelude::Context;
@@ -98,12 +96,18 @@ impl crate::CommandTrait for Volume {
         } as f64
             / 100.0;
 
-        if let (Some(v), Some(member)) = (
-            ctx.data.read().await.get::<super::VoiceData>().cloned(),
-            interaction.member.as_ref(),
-        ) {
-            let mut v = v.lock().await;
-            let next_step = v.mutual_channel(ctx, &guild_id, &member.user.id);
+        let ungus = {
+            let bingus = ctx.data.read().await;
+            let bungly = bingus.get::<super::VoiceData>();
+
+            bungly.cloned()
+        };
+
+        if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
+            let next_step = {
+                let mut v = v.lock().await;
+                v.mutual_channel(ctx, &guild_id, &member.user.id)
+            };
 
             match next_step {
                 super::VoiceAction::UserNotConnected => {
@@ -147,13 +151,12 @@ impl crate::CommandTrait for Volume {
                     let mut audio_command_handler = audio_command_handler.lock().await;
 
                     if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
-                        let (rtx, mut rrx) = mpsc::unbounded::<String>();
+                        let (rtx, rrx) = serenity::futures::channel::oneshot::channel::<String>();
                         tx.unbounded_send((rtx, AudioPromiseCommand::Volume(option)))
                             .unwrap();
 
-                        let timeout =
-                            tokio::time::timeout(Duration::from_secs(10), rrx.next()).await;
-                        if let Ok(Some(msg)) = timeout {
+                        let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
+                        if let Ok(Ok(msg)) = timeout {
                             interaction
                                 .edit_original_interaction_response(&ctx.http, |response| {
                                     response.content(msg)
@@ -205,12 +208,12 @@ impl crate::CommandTrait for Volume {
         //         let audio_command_handler = data_read.get::<AudioCommandHandler>().expect("Expected AudioCommandHandler in TypeMap").clone();
         //         let mut audio_command_handler = audio_command_handler.lock().await;
         //         let tx = audio_command_handler.get_mut(&guild_id.to_string()).unwrap();
-        //         let (rtx, mut rrx) = mpsc::unbounded::<String>();
+        //         let (rtx, mut rrx) = serenity::futures::channel::oneshot::channel::<String>();
         //         tx.unbounded_send((rtx, AudioPromiseCommand::Volume(interaction.data.options[0].value.as_ref().unwrap().as_f64().unwrap() as f32 / 100.0)))
         //             .unwrap();
 
-        //         let timeout = tokio::time::timeout(Duration::from_secs(10), rrx.next()).await;
-        //         if let Ok(Some(msg)) = timeout {
+        //         let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
+        //         if let Ok(Ok(msg)) = timeout {
         //             interaction.edit_original_interaction_response(&ctx.http, |response| response.content(msg)).await.unwrap();
         //         } else {
         //             interaction

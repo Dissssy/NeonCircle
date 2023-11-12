@@ -13,7 +13,7 @@ use anyhow::Error;
 use serenity::builder::CreateApplicationCommand;
 use serenity::futures::channel::mpsc;
 use serenity::futures::channel::mpsc::{Receiver, Sender};
-use serenity::model::application::interaction::{Interaction, InteractionResponseType};
+use serenity::model::application::interaction::InteractionResponseType;
 use serenity::model::prelude::command::CommandOptionType;
 
 use serenity::prelude::{Context, TypeMapKey};
@@ -109,12 +109,18 @@ impl crate::CommandTrait for Transcribe {
             }
         };
 
-        if let (Some(v), Some(member)) = (
-            ctx.data.read().await.get::<super::VoiceData>().cloned(),
-            interaction.member.as_ref(),
-        ) {
-            let mut v = v.lock().await;
-            let next_step = v.mutual_channel(ctx, &guild_id, &member.user.id);
+        let ungus = {
+            let bingus = ctx.data.read().await;
+            let bungly = bingus.get::<super::VoiceData>();
+
+            bungly.cloned()
+        };
+
+        if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
+            let next_step = {
+                let mut v = v.lock().await;
+                v.mutual_channel(ctx, &guild_id, &member.user.id)
+            };
 
             match next_step {
                 super::VoiceAction::UserNotConnected => {

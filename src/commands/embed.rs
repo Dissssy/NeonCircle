@@ -3,7 +3,7 @@ use std::io::{BufReader, BufWriter, Cursor};
 use anyhow::Error;
 use image::ImageOutputFormat;
 use serenity::builder::CreateApplicationCommand;
-use serenity::model::application::interaction::{Interaction, InteractionResponseType};
+use serenity::model::application::interaction::InteractionResponseType;
 use serenity::model::prelude::command::CommandOptionType;
 use serenity::model::prelude::PremiumTier;
 
@@ -302,31 +302,91 @@ async fn dotheroar(
     // .await
     // .unwrap();
 
-    let mut spoiler = false;
-    let mut v = Err(anyhow::anyhow!("No url provided"));
+    // let mut spoiler = false;
+    // let mut v = Err(anyhow::anyhow!("No url provided"));
 
-    for option in interaction.data.options.clone() {
-        // println!("{}: {:?}", option.name, option.resolved);
-        match option.name.as_str() {
-            "spoiler" => {
-                spoiler = match option.resolved {
-                    Some(serenity::model::application::interaction::application_command::CommandDataOptionValue::Boolean(b)) => b,
-                    _ => false,
+    // for option in interaction.data.options.clone() {
+    //     // println!("{}: {:?}", option.name, option.resolved);
+    //     match option.name.as_str() {
+    //         "spoiler" => {
+    //             spoiler = match option.resolved {
+    //                 Some(serenity::model::application::interaction::application_command::CommandDataOptionValue::Boolean(b)) => b,
+    //                 _ => false,
+    //             }
+    //         }
+    //         "video_url" | "audio_url" => {
+    //             v = match option.resolved {
+    //                 Some(serenity::model::application::interaction::application_command::CommandDataOptionValue::String(s)) => {
+    //                     Ok(s)
+    //                 }
+    //                 _ => Err(anyhow::anyhow!("No value provided")),
+    //             }
+    //         }
+    //         s => {
+    //             println!("Unknown option: {}", s);
+    //         }
+    //     }
+    // }
+
+    let option = match interaction
+        .data
+        .options
+        .iter()
+        .find(|o| o.name == "video_url" || o.name == "audio_url")
+    {
+        Some(o) => match o.value.as_ref() {
+            Some(v) => {
+                if let Some(v) = v.as_str() {
+                    v
+                } else {
+                    interaction
+                        .edit_original_interaction_response(&ctx.http, |response| {
+                            response.content("This command requires an option")
+                        })
+                        .await
+                        .unwrap();
+                    return;
                 }
             }
-            "video_url" | "audio_url" => {
-                v = match option.resolved {
-                    Some(serenity::model::application::interaction::application_command::CommandDataOptionValue::String(s)) => {
-                        Ok(s)
-                    }
-                    _ => Err(anyhow::anyhow!("No value provided")),
-                }
+            None => {
+                interaction
+                    .edit_original_interaction_response(&ctx.http, |response| {
+                        response.content("This command requires an option")
+                    })
+                    .await
+                    .unwrap();
+                return;
             }
-            s => {
-                println!("Unknown option: {}", s);
-            }
+        },
+        None => {
+            interaction
+                .edit_original_interaction_response(&ctx.http, |response| {
+                    response.content("This command requires an option")
+                })
+                .await
+                .unwrap();
+            return;
         }
-    }
+    };
+
+    let spoiler = match interaction
+        .data
+        .options
+        .iter()
+        .find(|o| o.name == "spoiler")
+    {
+        Some(o) => match o.value.as_ref() {
+            Some(v) => {
+                if let Some(v) = v.as_bool() {
+                    v
+                } else {
+                    false
+                }
+            }
+            None => false,
+        },
+        None => false,
+    };
 
     let mut max_size = "8M";
 
@@ -373,12 +433,14 @@ async fn dotheroar(
     //         None => Err(anyhow::anyhow!("No url provided")),
     //     };
 
-    let fuckyouclosures = match v {
-        Ok(v) => crate::video::Video::download_video(v, audio_only, spoiler, max_size).await,
-        Err(e) => Err(e),
-    };
+    // let fuckyouclosures = match v {
+    //     Ok(v) => crate::video::Video::download_video(v, audio_only, spoiler, max_size).await,
+    //     Err(e) => Err(e),
+    // };
 
-    match fuckyouclosures {
+    match crate::video::Video::download_video(option.to_owned(), audio_only, spoiler, max_size)
+        .await
+    {
         Err(e) => {
             match interaction
                 .edit_original_interaction_response(&ctx.http, |response| {

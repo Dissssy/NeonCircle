@@ -8,6 +8,7 @@ pub mod remove;
 pub mod repeat;
 pub mod resume;
 pub mod setbitrate;
+pub mod settingsdata;
 pub mod shuffle;
 pub mod skip;
 pub mod stop;
@@ -26,6 +27,7 @@ use tokio::time::Instant;
 
 use std::collections::HashMap;
 
+use std::fmt::Display;
 use std::sync::Arc;
 
 use anyhow::Error;
@@ -37,7 +39,8 @@ use serenity::prelude::{Context, TypeMapKey};
 use crate::video::Video;
 use crate::youtube::{TTSVoice, VideoInfo};
 
-use self::mainloop::{EmbedData, SettingsData};
+use self::mainloop::EmbedData;
+use self::settingsdata::SettingsData;
 
 // create the struct for holding the promises for audio playback
 pub struct AudioHandler;
@@ -53,7 +56,10 @@ impl TypeMapKey for AudioCommandHandler {
         Mutex<
             HashMap<
                 String,
-                mpsc::UnboundedSender<(mpsc::UnboundedSender<String>, AudioPromiseCommand)>,
+                mpsc::UnboundedSender<(
+                    serenity::futures::channel::oneshot::Sender<String>,
+                    AudioPromiseCommand,
+                )>,
             >,
         >,
     >;
@@ -93,23 +99,39 @@ impl InnerVoiceData {
         member: &UserId,
     ) -> VoiceAction {
         let bot_id = ctx.cache.current_user_id();
+        if bot_id != self.bot_id {
+            self.bot_id = bot_id;
+        }
+
         let guildstate = self.guilds.entry(*guild).or_insert_with(GuildVc::new);
         let botstate = guildstate.find_user(bot_id);
         let memberstate = guildstate.find_user(*member);
 
-        if let Some(memberstate) = memberstate {
-            if let Some(botstate) = botstate {
-                if memberstate == botstate {
-                    VoiceAction::InSame(memberstate)
+        match (botstate, memberstate) {
+            (Some(botstate), Some(memberstate)) => {
+                if botstate == memberstate {
+                    VoiceAction::InSame(botstate)
                 } else {
-                    VoiceAction::InDifferent(memberstate)
+                    VoiceAction::InDifferent(botstate)
                 }
-            } else {
-                VoiceAction::Join(memberstate)
             }
-        } else {
-            VoiceAction::UserNotConnected
+            (None, Some(memberstate)) => VoiceAction::Join(memberstate),
+            _ => VoiceAction::UserNotConnected,
         }
+
+        // if let Some(memberstate) = memberstate {
+        //     if let Some(botstate) = botstate {
+        //         if memberstate == botstate {
+        //             VoiceAction::InSame(memberstate)
+        //         } else {
+        //             VoiceAction::InDifferent(memberstate)
+        //         }
+        //     } else {
+        //         VoiceAction::Join(memberstate)
+        //     }
+        // } else {
+        //     VoiceAction::UserNotConnected
+        // }
     }
     pub async fn refresh_guild(&mut self, ctx: &Context, guild_id: GuildId) -> Result<(), Error> {
         let mut new = GuildVc::new();
@@ -148,6 +170,23 @@ impl InnerVoiceData {
         self.guilds.insert(guild_id, new);
         Ok(())
     }
+    pub fn bot_alone(&mut self, guild: &GuildId) -> bool {
+        // if the bot is alone in a channel in the guild return true
+
+        let guild = self.guilds.entry(*guild).or_insert_with(GuildVc::new);
+        let channel = match guild.find_user(self.bot_id) {
+            Some(channel) => channel,
+            None => return false,
+        };
+        let channel = guild.channels.entry(channel).or_insert_with(HashMap::new);
+
+        for user in channel.values() {
+            if !user.member.user.bot {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 pub enum VoiceAction {
@@ -157,6 +196,7 @@ pub enum VoiceAction {
     UserNotConnected,
 }
 
+#[derive(Debug, Clone)]
 pub struct GuildVc {
     pub channels: HashMap<ChannelId, HashMap<UserId, UserMetadata>>,
     pub bot_connected: bool,
@@ -197,6 +237,7 @@ impl GuildVc {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct UserMetadata {
     pub member: Member,
     // pub deaf: bool,
@@ -220,28 +261,60 @@ impl UserMetadata {
 }
 
 #[derive(Debug, Clone)]
+pub enum OrToggle {
+    Specific(bool),
+    Toggle,
+}
+
+impl OrToggle {
+    pub fn get_val(&self, current: bool) -> bool {
+        match self {
+            OrToggle::Specific(b) => *b,
+            OrToggle::Toggle => !current,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum AudioPromiseCommand {
     // probably not gonna do
     Play(Vec<MetaVideo>),
 
     // added
-    Pause,
-    Resume,
+    Paused(OrToggle),
     Stop,
-    Loop(bool),
-    Repeat(bool),
-    Shuffle(bool),
-    Autoplay(bool),
+    Loop(OrToggle),
+    Repeat(OrToggle),
+    Shuffle(OrToggle),
+    Autoplay(OrToggle),
 
     // needs impl??
     Volume(f64),
     SpecificVolume(SpecificVolume),
-    SetBitrate(i64),
+    SetBitrate(OrAuto),
 
     // todo
     Skip,
     Remove(usize),
     // Transcribe(bool, MessageId),
+
+    // META
+    RetrieveLog(serenity::futures::channel::mpsc::Sender<Vec<String>>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrAuto {
+    Specific(i64),
+    Auto,
+}
+
+impl Display for OrAuto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OrAuto::Specific(i) => write!(f, "{}", i),
+            OrAuto::Auto => write!(f, "Auto"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -702,111 +775,27 @@ impl MessageReference {
 
         // possibly later we can do an extra button at the bottom to submit a song url/search to the queue (but will lack feedback bc discord SUCKS)
 
-        // AR1 (pause, skip, loop, shuffle)
+        let mut ars = Vec::new();
 
-        let mut ar1 = CreateActionRow::default();
+        // AR3 (volume, radiovolume, bitrate, ?log?)
 
-        // pause
-        ar1.create_button(|b| {
-            b.style(if settings.pause {
-                serenity::model::application::component::ButtonStyle::Danger
-            } else {
-                serenity::model::application::component::ButtonStyle::Success
-            })
-            .label(if settings.pause { "▶️" } else { "⏸️" }.to_owned())
-            .custom_id("pause")
-            // .disabled(true)
-        });
+        let mut ar = CreateActionRow::default();
 
-        // skip
-        ar1.create_button(|b| {
-            b.style(serenity::model::application::component::ButtonStyle::Primary)
-                // .emoji(ReactionType::Unicode("⏭️".to_owned()))
-                .label("⏭️")
-                .custom_id("skip")
-            // .disabled(true)
-        });
-
-        // loop
-        ar1.create_button(|b| {
-            b.style(if settings.looped {
-                serenity::model::application::component::ButtonStyle::Success
-            } else {
-                serenity::model::application::component::ButtonStyle::Danger
-            })
-            // .emoji(ReactionType::Unicode("🔄️".to_owned()))
-            .label("🔄️")
-            .custom_id("looped")
-            // .disabled(true)
-        });
-
-        // shuffle
-        ar1.create_button(|b| {
-            b.style(if settings.shuffle {
-                serenity::model::application::component::ButtonStyle::Success
-            } else {
-                serenity::model::application::component::ButtonStyle::Danger
-            })
-            // .emoji(ReactionType::Unicode("🔀".to_owned()))
-            .custom_id("shuffle")
-            .label("🔀")
-            // .disabled(true)
-        });
-
-        // AR2 (repeaat, remove, autoplay, stop)
-
-        let mut ar2 = CreateActionRow::default();
-
-        // repeat
-        ar2.create_button(|b| {
-            b.style(if settings.repeat {
-                serenity::model::application::component::ButtonStyle::Success
-            } else {
-                serenity::model::application::component::ButtonStyle::Danger
-            })
-            // .emoji(ReactionType::Unicode("🔁".to_owned()))
-            .label("🔁")
-            .custom_id("repeat")
-            // .disabled(true)
-        });
-
-        // remove
-        ar2.create_button(|b| {
-            b.style(serenity::model::application::component::ButtonStyle::Primary)
-                // .emoji(ReactionType::Unicode("🗑️".to_owned()))
-                .custom_id("remove")
-                .label("🗑️")
-            // .disabled(true)
-        });
-
-        // autoplay
-        ar2.create_button(|b| {
-            b.style(if settings.autoplay {
-                serenity::model::application::component::ButtonStyle::Success
-            } else {
-                serenity::model::application::component::ButtonStyle::Danger
-            })
-            // .emoji(ReactionType::Unicode("🎲".to_owned()))
-            .custom_id("autoplay")
-            .label("🎲")
-            // .disabled(true)
-        });
-
-        // stop
-        ar2.create_button(|b| {
-            b.style(serenity::model::application::component::ButtonStyle::Primary)
-                // .emoji(ReactionType::Unicode("⏹️".to_owned()))
-                .custom_id("stop")
-                .label("⏹️")
-        });
-
-        // AR3 (volume, radiovolume, bitrate)
-
-        let mut ar3 = CreateActionRow::default();
+        let (volumestyle, radiostyle) = if settings.something_playing {
+            (
+                serenity::model::application::component::ButtonStyle::Primary,
+                serenity::model::application::component::ButtonStyle::Secondary,
+            )
+        } else {
+            (
+                serenity::model::application::component::ButtonStyle::Secondary,
+                serenity::model::application::component::ButtonStyle::Primary,
+            )
+        };
 
         // volume
-        ar3.create_button(|b| {
-            b.style(serenity::model::application::component::ButtonStyle::Secondary)
+        ar.create_button(|b| {
+            b.style(volumestyle)
                 // .emoji(ReactionType::Unicode(
                 //     match settings.volume {
                 //         // 0%
@@ -821,10 +810,10 @@ impl MessageReference {
                 //     .to_owned(),
                 // ))
                 .custom_id("volume")
-                .disabled(true)
+                // .disabled(true)
                 .label(format!(
                     "{} {}%",
-                    match settings.volume {
+                    match settings.raw_volume() {
                         // 0%
                         v if v == 0.0 => "🔇",
                         // 0-33%
@@ -834,34 +823,156 @@ impl MessageReference {
                         // 66-100%
                         _ => "🔊",
                     },
-                    settings.volume * 100.0
+                    settings.raw_volume() * 100.0
                 ))
         });
 
         // radiovolume
-        ar3.create_button(|b| {
-            b.style(serenity::model::application::component::ButtonStyle::Secondary)
+        ar.create_button(|b| {
+            b.style(radiostyle)
                 // .emoji(ReactionType::Unicode("📻".to_owned()))
                 .custom_id("radiovolume")
-                .disabled(true)
-                .label(format!("📻 {}%", settings.radiovolume * 100.0))
+                // .disabled(true)
+                .label(format!("📻 {}%", settings.raw_radiovolume() * 100.0))
         });
 
         // bitrate
-        ar3.create_button(|b| {
+        ar.create_button(|b| {
             b.style(serenity::model::application::component::ButtonStyle::Secondary)
                 // .emoji(ReactionType::Unicode("📡".to_owned()))
                 .custom_id("bitrate")
-                .disabled(true)
-                .label(
-                    settings
-                        .bitrate
-                        .map(|b| format!("{} bps", b))
-                        .unwrap_or("Auto".to_owned()),
-                )
+                // .disabled(true)
+                .label(match settings.bitrate {
+                    OrAuto::Specific(i) => {
+                        if i >= 1000 {
+                            format!("{}kbps", i / 1000)
+                        } else {
+                            format!("{}bps", i)
+                        }
+                    }
+                    OrAuto::Auto => "Auto".to_owned(),
+                })
         });
 
-        vec![ar1, ar2, ar3]
+        // log
+        ar.create_button(|b| {
+            b.style(if settings.log_empty {
+                serenity::model::application::component::ButtonStyle::Secondary
+            } else {
+                serenity::model::application::component::ButtonStyle::Danger
+            })
+            // .emoji(ReactionType::Unicode("📜".to_owned()))
+            .custom_id("log")
+            // .disabled(true)
+            .label("📜")
+            .disabled(settings.log_empty)
+        });
+
+        ars.push(ar);
+
+        // AR1 (pause, skip, remove, stop)
+
+        let mut ar = CreateActionRow::default();
+
+        // pause
+        ar.create_button(|b| {
+            b.style(if settings.pause {
+                serenity::model::application::component::ButtonStyle::Success
+            } else {
+                serenity::model::application::component::ButtonStyle::Danger
+            })
+            .label(if settings.pause { "▶️" } else { "⏸️" }.to_owned())
+            .custom_id("pause")
+            .disabled(!settings.something_playing)
+        });
+
+        // skip
+        ar.create_button(|b| {
+            b.style(serenity::model::application::component::ButtonStyle::Primary)
+                // .emoji(ReactionType::Unicode("⏭️".to_owned()))
+                .label("⏭️")
+                .custom_id("skip")
+                .disabled(!settings.something_playing)
+        });
+
+        // remove
+        ar.create_button(|b| {
+            b.style(serenity::model::application::component::ButtonStyle::Danger)
+                // .emoji(ReactionType::Unicode("🗑️".to_owned()))
+                .custom_id("remove")
+                .label("🗑️")
+            // .disabled(true)
+        });
+
+        // stop
+        ar.create_button(|b| {
+            b.style(serenity::model::application::component::ButtonStyle::Danger)
+                // .emoji(ReactionType::Unicode("⏹️".to_owned()))
+                .custom_id("stop")
+                .label("⏹️")
+        });
+
+        ars.push(ar);
+
+        // AR2 (looped, shuffle, repeat, autoplay)
+
+        let mut ar = CreateActionRow::default();
+
+        // loop
+        ar.create_button(|b| {
+            b.style(if settings.looped {
+                serenity::model::application::component::ButtonStyle::Primary
+            } else {
+                serenity::model::application::component::ButtonStyle::Secondary
+            })
+            // .emoji(ReactionType::Unicode("🔄️".to_owned()))
+            .label("🔄️")
+            .custom_id("looped")
+            // .disabled(true)
+        });
+
+        // shuffle
+        ar.create_button(|b| {
+            b.style(if settings.shuffle {
+                serenity::model::application::component::ButtonStyle::Primary
+            } else {
+                serenity::model::application::component::ButtonStyle::Secondary
+            })
+            // .emoji(ReactionType::Unicode("🔀".to_owned()))
+            .custom_id("shuffle")
+            .label("🔀")
+            // .disabled(true)
+        });
+
+        // repeat
+        ar.create_button(|b| {
+            b.style(if settings.repeat {
+                serenity::model::application::component::ButtonStyle::Primary
+            } else {
+                serenity::model::application::component::ButtonStyle::Secondary
+            })
+            // .emoji(ReactionType::Unicode("🔁".to_owned()))
+            .label("🔁")
+            .custom_id("repeat")
+            // .disabled(true)
+        });
+
+        // autoplay
+        ar.create_button(|b| {
+            b.style(if settings.autoplay {
+                serenity::model::application::component::ButtonStyle::Primary
+            } else {
+                serenity::model::application::component::ButtonStyle::Secondary
+            })
+            // .emoji(ReactionType::Unicode("🎲".to_owned()))
+            .custom_id("autoplay")
+            .label("🎲")
+            // .disabled(true)
+        });
+
+        ars.push(ar);
+
+        ars
     }
 
     // fn is_different_enough(new: &str, old: &str, threshold: usize) -> bool {
@@ -943,7 +1054,7 @@ impl RawMessage {
         for link in links {
             filteredcontent = filteredcontent.replace(link, "");
         }
-        filteredcontent = filteredcontent.trim().to_string();
+        filteredcontent = filteredcontent.trim().to_lowercase().to_string();
 
         if filteredcontent.is_empty() {
             return Err(anyhow::anyhow!("Message is empty"));

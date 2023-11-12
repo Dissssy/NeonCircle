@@ -32,6 +32,7 @@ lazy_static = "1.4.0"
 human_format = "1.0.3"
 chrono = "0.4.31"
 linkify = "0.10.0"
+env_logger = "0.10.0"
 
 # windows only
 [target.'cfg(windows)'.dependencies]

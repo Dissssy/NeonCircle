@@ -5,7 +5,7 @@ use serenity::model::prelude::interaction::autocomplete::AutocompleteInteraction
 use anyhow::Error;
 use serenity::builder::CreateApplicationCommand;
 use serenity::futures::channel::mpsc;
-use serenity::model::application::interaction::{Interaction, InteractionResponseType};
+use serenity::model::application::interaction::InteractionResponseType;
 
 use serenity::prelude::Context;
 use tokio::sync::Mutex;
@@ -49,12 +49,18 @@ impl crate::CommandTrait for Join {
             }
         };
 
-        if let (Some(v), Some(member)) = (
-            ctx.data.read().await.get::<super::VoiceData>().cloned(),
-            interaction.member.as_ref(),
-        ) {
-            let mut v = v.lock().await;
-            let next_step = v.mutual_channel(ctx, &guild_id, &member.user.id);
+        let ungus = {
+            let bingus = ctx.data.read().await;
+            let bungly = bingus.get::<super::VoiceData>();
+
+            bungly.cloned()
+        };
+
+        if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
+            let next_step = {
+                let mut v = v.lock().await;
+                v.mutual_channel(ctx, &guild_id, &member.user.id)
+            };
 
             match next_step {
                 super::VoiceAction::UserNotConnected => {
@@ -104,7 +110,7 @@ impl crate::CommandTrait for Join {
                         let (call, result) = manager.join(guild_id, channel).await;
                         if result.is_ok() {
                             let (tx, rx) = mpsc::unbounded::<(
-                                mpsc::UnboundedSender<String>,
+                                serenity::futures::channel::oneshot::Sender<String>,
                                 AudioPromiseCommand,
                             )>();
                             let msg = interaction

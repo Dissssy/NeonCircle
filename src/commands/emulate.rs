@@ -1,6 +1,6 @@
 use anyhow::Error;
 use serenity::builder::CreateApplicationCommand;
-use serenity::model::application::interaction::{Interaction, InteractionResponseType};
+use serenity::model::application::interaction::InteractionResponseType;
 use serenity::model::prelude::command::CommandOptionType;
 // use serenity::model::prelude::Embed;
 

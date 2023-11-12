@@ -1,54 +1,143 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
+use anyhow::Error;
 use serde::{Deserialize, Serialize};
 use tokio::{sync::Mutex, time::Instant};
 
+use crate::commands::music::mainloop::Log;
+
 pub struct AzuraCast {
     data: Arc<Mutex<Root>>,
+    log: Log,
     last_update: Instant,
     url: String,
+    timeout: Duration,
 }
 
+#[allow(dead_code)]
 impl AzuraCast {
-    pub async fn new(url: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(
+        url: &str,
+        log: Log,
+        timeout: Duration,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let data = reqwest::get(url).await?.json::<Root>().await?;
         Ok(Self {
             data: Arc::new(Mutex::new(data)),
             last_update: Instant::now(),
             url: url.to_string(),
+            log,
+            timeout,
         })
     }
 
-    pub async fn slow_data(&mut self) -> Root {
-        if self.last_update.elapsed().as_secs() > 5 {
-            match self.data.lock().await.update(&self.url).await {
-                Ok(_) => {}
-                Err(e) => {
-                    println!("Failed to update data: {}", e);
-                }
-            }
-            self.last_update = Instant::now();
-        }
-        self.data.lock().await.clone()
-    }
+    pub async fn slow_data(&mut self) -> Result<Root, Error> {
+        let r = tokio::time::timeout(self.timeout, self.data.lock()).await;
 
-    #[allow(dead_code)]
-    pub async fn fast_data(&mut self) -> Root {
-        // dispatch a task to update the data
-        let d = self.data.clone();
-        let url = self.url.clone();
-        if self.last_update.elapsed().as_secs() > 5 {
-            tokio::spawn(async move {
-                match d.lock().await.update(&url).await {
-                    Ok(_) => {}
+        match r {
+            Ok(mut i) => {
+                let r = tokio::time::timeout(self.timeout, i.update(&self.url)).await;
+                match r {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        self.log
+                            .log(&format!("Error updating azuracast data: {}", e))
+                            .await;
+                    }
                     Err(e) => {
-                        println!("Failed to update data: {}", e);
+                        self.log
+                            .log(&format!("Timeout updating azuracast data: {}", e))
+                            .await;
                     }
                 }
+            }
+            Err(e) => {
+                self.log
+                    .log(&format!("Timeout getting azuracast data: {}", e))
+                    .await;
+            }
+        }
+
+        let r = tokio::time::timeout(self.timeout, self.data.lock()).await;
+
+        match r {
+            Ok(i) => Ok(i.clone()),
+            Err(e) => {
+                self.log
+                    .log(&format!("Timeout getting azuracast data: {}", e))
+                    .await;
+                Err(e.into())
+            }
+        }
+
+        // if self.last_update.elapsed().as_secs() > 5 {
+        //     match self.data.lock().await.update(&self.url).await {
+        //         Ok(_) => {}
+        //         Err(e) => {
+        //             self.log
+        //                 .log(&format!("Failed to update azuracast data: {}", e))
+        //                 .await;
+        //         }
+        //     }
+        //     self.last_update = Instant::now();
+        // }
+        // self.data.lock().await.clone()
+    }
+
+    pub async fn fast_data(&mut self) -> Result<Root, Error> {
+        // dispatch a task to update the data
+        if self.last_update.elapsed().as_secs() > 5 {
+            let d = self.data.clone();
+            let url = self.url.clone();
+            let log = self.log.clone();
+            let timeout = self.timeout;
+            tokio::spawn(async move {
+                let r = tokio::time::timeout(timeout, d.lock()).await;
+
+                match r {
+                    Ok(mut i) => {
+                        let r = tokio::time::timeout(timeout, i.update(&url)).await;
+                        match r {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
+                                log.log(&format!("Error updating azuracast data: {}", e))
+                                    .await;
+                            }
+                            Err(e) => {
+                                log.log(&format!("Timeout updating azuracast data: {}", e))
+                                    .await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log.log(&format!("Timeout getting azuracast data: {}", e))
+                            .await;
+                    }
+                }
+
+                // match d.lock().await.update(&url).await {
+                //     Ok(()) => {}
+                //     Err(e) => {
+                //         log.log(&format!("Failed to update azuracast data: {}", e))
+                //             .await;
+                //     }
+                // }
             });
             self.last_update = Instant::now();
         }
-        self.data.lock().await.clone()
+        // self.data.lock().await.clone()
+
+        let r = tokio::time::timeout(self.timeout, self.data.lock()).await;
+
+        match r {
+            Ok(i) => Ok(i.clone()),
+            Err(e) => {
+                self.log
+                    .log(&format!("Timeout getting azuracast data: {}", e))
+                    .await;
+                Err(e.into())
+            }
+        }
     }
 }
 
@@ -69,7 +158,7 @@ pub struct Root {
 }
 
 impl Root {
-    pub async fn update(&mut self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn update(&mut self, url: &str) -> Result<(), Error> {
         let data = reqwest::get(url).await?.json::<Root>().await?;
         *self = data;
         Ok(())

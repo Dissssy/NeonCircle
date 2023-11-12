@@ -1,13 +1,11 @@
-use serenity::futures::StreamExt;
-
 use serenity::model::prelude::interaction::autocomplete::AutocompleteInteraction;
 
 use std::time::Duration;
 
 use anyhow::Error;
 use serenity::builder::CreateApplicationCommand;
-use serenity::futures::channel::mpsc;
-use serenity::model::application::interaction::{Interaction, InteractionResponseType};
+
+use serenity::model::application::interaction::InteractionResponseType;
 
 use serenity::prelude::Context;
 
@@ -50,12 +48,18 @@ impl crate::CommandTrait for Skip {
             }
         };
 
-        if let (Some(v), Some(member)) = (
-            ctx.data.read().await.get::<super::VoiceData>().cloned(),
-            interaction.member.as_ref(),
-        ) {
-            let mut v = v.lock().await;
-            let next_step = v.mutual_channel(ctx, &guild_id, &member.user.id);
+        let ungus = {
+            let bingus = ctx.data.read().await;
+            let bungly = bingus.get::<super::VoiceData>();
+
+            bungly.cloned()
+        };
+
+        if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
+            let next_step = {
+                let mut v = v.lock().await;
+                v.mutual_channel(ctx, &guild_id, &member.user.id)
+            };
 
             match next_step {
                 super::VoiceAction::UserNotConnected => {
@@ -99,12 +103,11 @@ impl crate::CommandTrait for Skip {
                     let mut audio_command_handler = audio_command_handler.lock().await;
 
                     if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
-                        let (rtx, mut rrx) = mpsc::unbounded::<String>();
+                        let (rtx, rrx) = serenity::futures::channel::oneshot::channel::<String>();
                         tx.unbounded_send((rtx, AudioPromiseCommand::Skip)).unwrap();
 
-                        let timeout =
-                            tokio::time::timeout(Duration::from_secs(10), rrx.next()).await;
-                        if let Ok(Some(msg)) = timeout {
+                        let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
+                        if let Ok(Ok(msg)) = timeout {
                             interaction
                                 .edit_original_interaction_response(&ctx.http, |response| {
                                     response.content(msg)
@@ -150,11 +153,11 @@ impl crate::CommandTrait for Skip {
         //         let tx = audio_command_handler
         //             .get_mut(&guild_id.to_string())
         //             .unwrap();
-        //         let (rtx, mut rrx) = mpsc::unbounded::<String>();
+        //         let (rtx, mut rrx) = serenity::futures::channel::oneshot::channel::<String>();
         //         tx.unbounded_send((rtx, AudioPromiseCommand::Skip)).unwrap();
 
-        //         let timeout = tokio::time::timeout(Duration::from_secs(10), rrx.next()).await;
-        //         if let Ok(Some(msg)) = timeout {
+        //         let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
+        //         if let Ok(Ok(msg)) = timeout {
         //             interaction
         //                 .edit_original_interaction_response(&ctx.http, |response| {
         //                     response.content(msg)
