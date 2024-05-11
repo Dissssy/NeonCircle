@@ -512,20 +512,20 @@ impl Handler {
             return Ok(());
         }
         let mut push = None;
-        if let Some(m) = self.queue.get(0) {
+        if let Some(m) = self.queue.first() {
             if let Some(ref mn) = &m.channel_name {
                 if mn != &self.last_channel_name {
-                    self.last_channel_name = mn.clone();
+                    self.last_channel_name.clone_from(mn);
                     // println!("Waiting on {:?}", mn);
                     self.waiting_on = Some(mn.clone());
                     // we want to make the next item in the queue a tts for channel change announcement
                     let content = format!("in #{}", mn);
                     push = Some(RawMessage {
                         author_id: String::new(),
-                        author: String::new(),
+                        // author: String::new(),
                         channel_id: m.channel_id,
                         channel_name: Some(mn.clone()),
-                        content: content.clone(),
+                        // content: content.clone(),
                         timestamp: m.timestamp,
                         tts_audio_handle: match self.channel_names.get(mn) {
                             Some(v) => {

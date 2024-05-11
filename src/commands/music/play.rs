@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::commands::music::MetaVideo;
+use crate::commands::music::{Author, MetaVideo};
 use anyhow::{anyhow, Error};
 use serenity::builder::CreateApplicationCommand;
 use serenity::futures::channel::mpsc;
@@ -16,7 +16,10 @@ use serenity::prelude::Context;
 
 use super::mainloop::the_lüüp;
 
-use super::{AudioCommandHandler, AudioHandler, AudioPromiseCommand, MessageReference, VideoType};
+use super::{
+    AudioCommandHandler, AudioHandler, AudioPromiseCommand, LazyLoadedVideo, MessageReference,
+    VideoType,
+};
 
 #[derive(Debug, Clone)]
 pub struct Play;
@@ -298,39 +301,53 @@ impl crate::CommandTrait for Play {
                         };
                         #[cfg(feature = "tts")]
                         if let Ok(key) = key.as_ref() {
-                            let t = tokio::task::spawn(crate::youtube::get_tts(
-                                title.clone(),
-                                key.clone(),
-                                None,
-                            ))
-                            .await
-                            .unwrap();
-                            if let Ok(tts) = t {
-                                match tts {
-                                    VideoType::Disk(tts) => {
-                                        truevideos.push(MetaVideo {
-                                            video: v,
-                                            ttsmsg: Some(tts),
-                                            title,
-                                        });
-                                    }
-                                    VideoType::Url(_) => {
-                                        unreachable!("TTS should always be a disk file");
-                                    }
-                                }
-                            } else {
-                                println!("Error {:?}", t);
-                                truevideos.push(MetaVideo {
-                                    video: v,
-                                    ttsmsg: None,
-                                    title,
-                                });
-                            }
+                            // if let Ok(tts) = t {
+                            // match tts {
+                            //     VideoType::Disk(tts) => {
+                            //         truevideos.push(MetaVideo {
+                            //             video: v,
+                            //             ttsmsg: Some(tts),
+                            //             title,
+                            //         });
+                            //     }
+                            //     VideoType::Url(_) => {
+                            //         unreachable!("TTS should always be a disk file");
+                            //     }
+                            // }
+                            println!("Getting tts for {}", title);
+                            truevideos.push(MetaVideo {
+                                video: v,
+                                ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(
+                                    crate::youtube::get_tts(title.clone(), key.clone(), None),
+                                ))),
+                                title,
+                                author: Author::from_user(
+                                    ctx,
+                                    &interaction.user,
+                                    interaction.guild_id,
+                                )
+                                .await,
+                            })
+
+                            // } else {
+                            //     println!("Error {:?}", t);
+                            //     truevideos.push(MetaVideo {
+                            //         video: v,
+                            //         ttsmsg: None,
+                            //         title,
+                            //     });
+                            // }
                         } else {
                             truevideos.push(MetaVideo {
                                 video: v,
                                 ttsmsg: None,
                                 title,
+                                author: Author::from_user(
+                                    ctx,
+                                    &interaction.user,
+                                    interaction.guild_id,
+                                )
+                                .await,
                             });
                         }
                         #[cfg(not(feature = "tts"))]

@@ -353,6 +353,21 @@ pub async fn the_lüüp(
                                     }
                                 }
                             }
+                            AudioPromiseCommand::ReadTitles(read_titles) => {
+                                let read_titles = read_titles.get_val(control.settings.read_titles);
+                                if control.settings.read_titles != read_titles {
+                                    control.settings.read_titles = read_titles;
+                                    let r = snd.send(format!("Read titles set to `{}`", control.settings.read_titles));
+                                    if let Err(e) = r {
+                                        log.log(&format!("Error updating message: {}\n", e)).await;
+                                    }
+                                } else {
+                                    let r = snd.send(format!("Read titles is already `{}`", control.settings.read_titles));
+                                    if let Err(e) = r {
+                                        log.log(&format!("Error updating message: {}\n", e)).await;
+                                    }
+                                }
+                            }
                             AudioPromiseCommand::Loop(looped) => {
                                 let looped = looped.get_val(control.settings.looped);
                                 if control.settings.looped != looped {
@@ -407,10 +422,10 @@ pub async fn the_lüüp(
                             AudioPromiseCommand::Volume(v) => {
                                 let msg = if nothing_handle.is_some() {
                                     control.settings.set_radiovolume(v);
-                                    format!("Radio volume set to `{}%`", control.settings.radiovolume() * 100.0)
+                                    format!("Radio volume set to `{}%`", control.settings.raw_radiovolume() * 100.0)
                                 } else {
                                     control.settings.set_volume(v);
-                                    format!("Song volume set to `{}%`", control.settings.volume() * 100.0)
+                                    format!("Song volume set to `{}%`", control.settings.raw_volume() * 100.0)
                                 };
 
                                 let r = snd.send(msg);
@@ -421,7 +436,7 @@ pub async fn the_lüüp(
                             AudioPromiseCommand::SpecificVolume(SpecificVolume::Volume(v)) => {
                                 control.settings.set_volume(v);
 
-                                let r = snd.send(format!("Song volume set to `{}%`", control.settings.volume() * 100.0));
+                                let r = snd.send(format!("Song volume set to `{}%`", control.settings.raw_volume() * 100.0));
                                 if let Err(e) = r {
                                     log.log(&format!("Error updating message: {}\n", e)).await;
                                 }
@@ -429,7 +444,7 @@ pub async fn the_lüüp(
                             AudioPromiseCommand::SpecificVolume(SpecificVolume::RadioVolume(v)) => {
                                 control.settings.set_radiovolume(v);
 
-                                let r = snd.send(format!("Radio volume set to `{}%`", control.settings.radiovolume() * 100.0));
+                                let r = snd.send(format!("Radio volume set to `{}%`", control.settings.raw_radiovolume() * 100.0));
                                 if let Err(e) = r {
                                     log.log(&format!("Error updating message: {}\n", e)).await;
                                 }
@@ -438,7 +453,7 @@ pub async fn the_lüüp(
                                 let index = index - 1;
                                 if index < queue.len() {
                                     let mut v = queue.remove(index);
-                                    let r = v.delete();
+                                    let r = v.delete().await;
                                     if let Err(r) = r {
                                         log.log(&format!("Error removing `{}`: {}\n", v.title, r)).await;
                                         let r =
@@ -527,7 +542,7 @@ pub async fn the_lüüp(
                                                     }
                                                 };
 
-                                                let vid = match r.get(0) {
+                                                let vid = match r.first() {
                                                     Some(v) => v,
                                                     None => {
                                                         return None;
@@ -547,7 +562,7 @@ pub async fn the_lüüp(
                                         } else if control.settings.looped {
                                             queue.push(t.clone());
                                         } else {
-                                            let r = t.delete();
+                                            let r = t.delete().await;
                                             if let Err(e) = r {
                                                 log.log(&format!("Error deleting video: {}\n", e)).await;
                                             }
@@ -618,38 +633,65 @@ pub async fn the_lüüp(
                         let calllock = control.call.try_lock();
                         if let Ok(mut clock) = calllock {
                             #[cfg(feature = "tts")]
-                            if let Some(tts) = current.ttsmsg.as_ref() {
-                                let r = tokio::time::timeout(g_timeout_time, ffmpeg(&tts.path))
-                                    .await;
+                            if let Some(tts) = current.ttsmsg.as_mut() {
+                                let check = tts.check().await;
 
-                                match r {
-                                    Ok(Ok(r)) => {
-                                        let (mut audio, handle) = create_player(r);
-                                        audio.set_volume(control.settings.volume() as f32);
-                                        clock.play(audio);
-                                        tts_handle = Some(handle);
-                                    },
-                                    Ok(Err(e)) => {
-                                        if let Ok(h) = ytdl(crate::Config::get().bumper_url.as_str()).await {
-                                            let (mut audio, handle) = create_player(h);
-                                            audio.set_volume(control.settings.volume() as f32);
-                                            clock.play(audio);
-                                            tts_handle = Some(handle);
-                                        } else {
-                                            log.log(&format!("Error playing track: {}\n", e)).await;
+                                match check {
+                                    // the good path
+                                    Ok(Some(tts)) => {
+                                        let r = tokio::time::timeout(g_timeout_time, ffmpeg(&tts.path))
+                                            .await;
+
+                                        match r {
+                                            Ok(Ok(r)) => {
+                                                let (mut audio, handle) = create_player(r);
+                                                if control.settings.read_titles {
+                                                    audio.set_volume(control.settings.volume() as f32);
+                                                } else {
+                                                    audio.set_volume(0.0);
+                                                    if let Err(e) = handle.stop() {
+                                                        log.log(&format!("Error stopping tts: {}\n", e)).await;
+                                                    }
+                                                }
+                                                clock.play(audio);
+                                                tts_handle = Some(handle);
+                                            },
+                                            Ok(Err(e)) => {
+                                                if let Ok(h) = ytdl(crate::Config::get().bumper_url.as_str()).await {
+                                                    let (mut audio, handle) = create_player(h);
+                                                    audio.set_volume(control.settings.volume() as f32);
+                                                    clock.play(audio);
+                                                    tts_handle = Some(handle);
+                                                } else {
+                                                    log.log(&format!("Error playing track: {}\n", e)).await;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                if let Ok(h) = ytdl(crate::Config::get().bumper_url.as_str()).await {
+                                                    let (mut audio, handle) = create_player(h);
+                                                    audio.set_volume(control.settings.volume() as f32);
+                                                    clock.play(audio);
+                                                    tts_handle = Some(handle);
+                                                } else {
+                                                    log.log(&format!("Timeout procced: {}\n", e)).await;
+                                                }
+                                            }
                                         }
                                     }
+                                    // the "maybe later" path
+                                    Ok(None) => {
+                                        // do nothing yet
+                                        log.log("No tts yet").await;
+                                    }
+                                    // the BAD ENDING
                                     Err(e) => {
-                                        if let Ok(h) = ytdl(crate::Config::get().bumper_url.as_str()).await {
-                                            let (mut audio, handle) = create_player(h);
-                                            audio.set_volume(control.settings.volume() as f32);
-                                            clock.play(audio);
-                                            tts_handle = Some(handle);
-                                        } else {
-                                            log.log(&format!("Timeout procced: {}\n", e)).await;
-                                        }
+                                        log.log(&format!("Error checking tts: {}\n", e)).await;
+                                        // since we errored, we want to skip playing the tts and just play the song, not entirely sure rn
                                     }
                                 }
+
+
+
                             } else {
                                 // let (mut audio, handle) = create_player(
                                 //     ytdl(crate::Config::get().bumper_url.as_str())
@@ -726,7 +768,7 @@ pub async fn the_lüüp(
                                 }
                             };
 
-                            let vid = match r.get(0) {
+                            let vid = match r.first() {
                                 Some(v) => v,
                                 None => {
                                     return None;
@@ -898,26 +940,66 @@ pub async fn the_lüüp(
                     // if control.settings.autoplay {
                     //     possible_body.log("<a:speEEEeeeEEEeeen:1108745209451397171>");
                     // }
+
+                    let mut total_duration: Option<u64> = try {
+                        let mut total = 0;
+                        if let Some(ref current) = current_track {
+                            total += current.video.get_duration()?;
+                        };
+                        for track in queue.iter() {
+                            total += track.video.get_duration()?;
+                        }
+                        total
+                    };
+
+                    // let mut total_duration = queue.iter().map(|t| t.video.get_duration()).chain(std::iter::once(current_track.as_ref().and_then(|v| v.video.get_duration()))).try_fold(0u64, |acc, d| d.map(|d| d + acc));
+
+
                     if let Some(t) = current_track.as_ref() {
                         // message.log(&format!("Playing: `{}` ", t.title));
+
+                        let mut time_left = t.video.get_duration();
                         embed
                             .fields
-                            .push(("Now Playing".to_owned(), t.title.clone(), false));
+                            .push((format!("Now Playing | {}", t.title), match time_left {
+                                Some(d) => friendly_duration(&Duration::from_secs(d)),
+                                None => "live".to_owned(),
+                            }, false));
+
+
                         if let Some(handle) = trackhandle.as_ref() {
                             let info = tokio::time::timeout(g_timeout_time, handle.get_info()).await;
 
                             match info {
                                 Ok(Ok(info)) => {
-                                    match t.video.clone() {
-                                        VideoType::Disk(v) => {
-                                            let percent_done = info.position.as_secs_f64() / v.duration;
-                                            // let bar = (percent_done * 20.0).round() as usize;
-                                            // message.log(&format!("\n`[{:20}]`", "=".repeat(bar)));
-                                            possible_body
-                                                .push_str(&format!("\n{}", get_bar(percent_done, 20)));
+                                    // match t.video.clone() {
+                                    //     VideoType::Disk(v) => {
+                                    //         let percent_done = info.position.as_secs_f64() / v.duration;
+                                    //         // let bar = (percent_done * 20.0).round() as usize;
+                                    //         // message.log(&format!("\n`[{:20}]`", "=".repeat(bar)));
+                                    //         possible_body
+                                    //             .push_str(&format!("\n{}", get_bar(percent_done, 20)));
+                                    //     }
+                                    //     VideoType::Url(v) => {
+                                    //         handle.get_length();
+                                    //         // let percent_done = info.position.as_secs_f64() / info.;
+                                    //     }
+                                    // };
+
+                                    // if let Some(dur) = handle.metadata().duration {
+                                    if let Some(ref mut dur) = time_left {
+                                        let secs_elapsed = info.position.as_secs_f64();
+                                        if let Some(ref mut length) = total_duration {
+                                            *length -= secs_elapsed as u64;
                                         }
-                                        VideoType::Url(_) => {}
-                                    };
+                                        let percent_done = secs_elapsed / *dur as f64;
+                                        *dur -= secs_elapsed as u64;
+                                        // let current_time_str = friendly_duration(&info.position);
+                                        let total_time_str = friendly_duration(&Duration::from_secs(*dur));
+
+                                        possible_body.push_str(&format!("\n{}\n[{} remaining]", get_bar(percent_done, 15), total_time_str));
+                                    }
+                                    // }
                                 }
                                 Ok(Err(e)) => {
                                     log.log(&format!(
@@ -934,6 +1016,17 @@ pub async fn the_lüüp(
                             }
                         }
 
+                        let total_length_str = match total_duration {
+                            Some(d) => format!("{} remaining", friendly_duration(&Duration::from_secs(d))),
+                            None => "One or more tracks is live".to_owned(),
+                        };
+
+                        if let Some(ref author) = t.author {
+                            embed.footer = Some((format!("Requested by {} | {}", author.name, total_length_str), Some(author.pfp_url.clone())));
+                        } else {
+                            embed.footer = Some((total_length_str, None));
+                        }
+
                         // message.push('\n');
 
                         if !queue.is_empty() {
@@ -943,7 +1036,12 @@ pub async fn the_lüüp(
                                 // message.log(&format!("{}. {}\n", i + 1, track.title));
                                 embed
                                     .fields
-                                    .push((format!("{}:", i + 1), track.title.clone(), true));
+                                    .push((format!("#{} | {}", i + 1,
+                                        track.title.clone()
+                                        ), match track.video.get_duration() {
+                                            Some(d) => friendly_duration(&Duration::from_secs(d)),
+                                            None => "live".to_owned(),
+                                        }, false));
                             }
                             // message.log("```");
                         }
@@ -955,9 +1053,21 @@ pub async fn the_lüüp(
                             // message.log(&format!("{}. {}\n", i + 1, track.title));
                             embed
                                 .fields
-                                .push((format!("{}:", i + 1), track.title.clone(), true));
+                                .push((format!("#{} | {}", i + 1,
+                                        track.title.clone()
+                                        ), match track.video.get_duration() {
+                                            Some(d) => friendly_duration(&Duration::from_secs(d)),
+                                            None => "live".to_owned(),
+                                        }, false));
                         }
                         // message.log("```");
+                        let total_length_str = match total_duration {
+                            Some(d) => format!("{} remaining", friendly_duration(&Duration::from_secs(d))),
+                            None => "One or more tracks is live".to_owned(),
+                        };
+
+                        embed.footer = Some((total_length_str, None));
+
                         embed.color = Some(Colour::from_rgb(253, 218, 22));
                     }
                     if !possible_body.is_empty() {
@@ -1067,7 +1177,7 @@ pub async fn the_lüüp(
                             }
                         }
                         Err(_) => {
-                            log.log(&format!("Call lock timed out")).await;
+                            log.log("Call lock timed out").await;
                         }
                     }
                 }
@@ -1117,7 +1227,7 @@ pub async fn the_lüüp(
     if let Some(t) = current_track.as_mut() {
         let mut tries = 10;
         tokio::time::sleep(Duration::from_millis(100)).await;
-        while t.delete().is_err() {
+        while t.delete().await.is_err() {
             tokio::time::sleep(Duration::from_millis(100)).await;
             tries -= 1;
             log.log(&format!("Failed to delete file, {} tries left", tries))
@@ -1129,7 +1239,7 @@ pub async fn the_lüüp(
         }
     }
     for video in queue.iter_mut() {
-        let r = video.delete();
+        let r = video.delete().await;
         if let Err(e) = r {
             log.log(&format!("Error deleting video: {}\n", e)).await;
         }
@@ -1154,10 +1264,10 @@ pub async fn the_lüüp(
 }
 
 fn get_bar(percent_done: f64, length: usize) -> String {
-    let emojis = vec![
-        vec!["<:LE:1038954704744480898>", "<:LC:1038954708422885386>"],
-        vec!["<:CE:1038954710184497203>", "<:CC:1038954696980824094>"],
-        vec!["<:RE:1038954703033217285>", "<:RC:1038954706841649192>"],
+    let emojis = [
+        ["<:LE:1038954704744480898>", "<:LC:1038954708422885386>"],
+        ["<:CE:1038954710184497203>", "<:CC:1038954696980824094>"],
+        ["<:RE:1038954703033217285>", "<:RC:1038954706841649192>"],
     ];
     let mut bar = String::new();
 
@@ -1209,10 +1319,10 @@ pub struct EmbedData {
     author_url: Option<String>,
     author_icon_url: Option<String>,
     color: Option<Colour>,
-    body: Option<String>,
+    pub body: Option<String>,
     fields: Vec25<(String, String, bool)>,
     thumbnail: Option<String>,
-    footer: Option<String>,
+    footer: Option<(String, Option<String>)>,
 }
 impl EmbedData {
     pub(crate) fn write_into(&self, e: &mut serenity::builder::CreateEmbed) {
@@ -1240,8 +1350,13 @@ impl EmbedData {
         if let Some(ref thumbnail) = self.thumbnail {
             e.thumbnail(thumbnail);
         }
-        if let Some(ref footer) = self.footer {
-            e.footer(|f| f.text(footer));
+        if let Some((ref footer, ref footer_img)) = self.footer {
+            e.footer(
+                |f: &mut serenity::builder::CreateEmbedFooter| match footer_img {
+                    Some(fimg) => f.text(footer).icon_url(fimg),
+                    None => f.text(footer),
+                },
+            );
         }
     }
 }
@@ -1256,7 +1371,7 @@ impl Default for EmbedData {
             body: None,
             fields: Vec25::new(),
             thumbnail: None,
-            footer: Some("Type /help for help".to_owned()),
+            footer: Some(("Type /help for help".to_owned(), None)),
         }
     }
 }
@@ -1314,7 +1429,7 @@ impl Log {
         let d = self.log.lock().await;
         // basically the same as get, except start a new string if adding the next logstring would make the current string longer than 4k
         let mut s = ChunkOfLog {
-            start: 0,
+            // start: 0,
             s: String::new(),
             end: 0,
         };
@@ -1323,10 +1438,14 @@ impl Log {
             let pretty = l.pretty() + "\n";
             if s.s.len() + pretty.len() > 4000 {
                 s.end = i;
-                s.s = s.s.trim().to_owned();
+                {
+                    let mut string = String::new();
+                    s.s.trim().clone_into(&mut string);
+                    std::mem::swap(&mut s.s, &mut string);
+                }
                 v.push(s);
                 s = ChunkOfLog {
-                    start: i + 1,
+                    // start: i + 1,
                     s: String::new(),
                     end: 0,
                 };
@@ -1348,7 +1467,7 @@ impl Log {
 }
 
 pub struct ChunkOfLog {
-    pub start: usize,
+    // pub start: usize,
     pub s: String,
     pub end: usize,
 }
@@ -1366,4 +1485,73 @@ impl LogString {
         }
         s
     }
+}
+
+fn friendly_duration(dur: &std::time::Duration) -> String {
+    // go up to centuries
+    // 1 centur(y/ies) 1 year(s) 1 day(s) 1 hour(s) 1 minute(s) 1 second(s)
+    let mut dur = dur.as_secs();
+    let mut s = String::new();
+
+    let centuries = dur / (365 * 24 * 60 * 60 * 100);
+    dur -= centuries * (365 * 24 * 60 * 60 * 100);
+    if centuries > 0 {
+        s.push_str(&format!("{} century", centuries));
+        if centuries > 1 {
+            s.push('s');
+        }
+        s.push(' ');
+    }
+
+    let years = dur / (365 * 24 * 60 * 60);
+    dur -= years * (365 * 24 * 60 * 60);
+    if years > 0 {
+        s.push_str(&format!("{} year", years));
+        if years > 1 {
+            s.push('s');
+        }
+        s.push(' ');
+    }
+
+    let days = dur / (24 * 60 * 60);
+    dur -= days * (24 * 60 * 60);
+    if days > 0 {
+        s.push_str(&format!("{} day", days));
+        if days > 1 {
+            s.push('s');
+        }
+        s.push(' ');
+    }
+
+    let hours = dur / (60 * 60);
+    dur -= hours * (60 * 60);
+
+    if hours > 0 {
+        s.push_str(&format!("{} hour", hours));
+        if hours > 1 {
+            s.push('s');
+        }
+        s.push(' ');
+    }
+
+    let minutes = dur / 60;
+    dur -= minutes * 60;
+    if minutes > 0 {
+        s.push_str(&format!("{} minute", minutes));
+        if minutes > 1 {
+            s.push('s');
+        }
+        s.push(' ');
+    }
+
+    let seconds = dur;
+    if seconds > 0 {
+        s.push_str(&format!("{} second", seconds));
+        if seconds > 1 {
+            s.push('s');
+        }
+        s.push(' ');
+    }
+
+    s.trim().to_owned()
 }

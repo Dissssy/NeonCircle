@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::commands::music::MetaVideo;
+use crate::commands::music::{LazyLoadedVideo, MetaVideo};
 #[cfg(feature = "tts")]
 use crate::{commands::music::VideoType, video::Video};
 use anyhow::Error;
@@ -7,48 +7,87 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "tts")]
 use tokio::io::AsyncWriteExt;
 
+#[cfg(all(feature = "misandry", feature = "misogyny"))]
+compile_error!("Cannot enable both misandrist and misogynist features");
+
 lazy_static::lazy_static!(
     pub static ref VOICES: Vec<TTSVoice> = {
-        let v = vec![
-            TTSVoice::new("en-AU", "en-AU-Neural2-A", "FEMALE"),
-            TTSVoice::new("en-AU", "en-AU-Neural2-B", "MALE"),
-            TTSVoice::new("en-AU", "en-AU-Neural2-C", "FEMALE"),
-            TTSVoice::new("en-AU", "en-AU-Neural2-D", "MALE"),
-            TTSVoice::new("en-IN", "en-IN-Neural2-A", "FEMALE"),
-            TTSVoice::new("en-IN", "en-IN-Neural2-B", "MALE"),
-            TTSVoice::new("en-IN", "en-IN-Neural2-C", "MALE"),
-            TTSVoice::new("en-IN", "en-IN-Neural2-D", "FEMALE"),
-            TTSVoice::new("en-GB", "en-GB-Neural2-A", "FEMALE"),
-            TTSVoice::new("en-GB", "en-GB-Neural2-B", "MALE"),
-            TTSVoice::new("en-GB", "en-GB-Neural2-C", "FEMALE"),
-            TTSVoice::new("en-GB", "en-GB-Neural2-D", "MALE"),
-            TTSVoice::new("en-GB", "en-GB-Neural2-F", "FEMALE"),
-            TTSVoice::new("en-US", "en-US-Neural2-A", "MALE"),
-            TTSVoice::new("en-US", "en-US-Neural2-C", "FEMALE"),
-            TTSVoice::new("en-US", "en-US-Neural2-D", "MALE"),
-            TTSVoice::new("en-US", "en-US-Neural2-E", "FEMALE"),
-            TTSVoice::new("en-US", "en-US-Neural2-F", "FEMALE"),
-            TTSVoice::new("en-US", "en-US-Neural2-G", "FEMALE"),
-            TTSVoice::new("en-US", "en-US-Neural2-H", "FEMALE"),
-            TTSVoice::new("en-US", "en-US-Neural2-I", "MALE"),
-            TTSVoice::new("en-US", "en-US-Neural2-J", "MALE"),
-        ];
+
+        let mut v = if cfg!(feature = "google-journey-tts") {
+            vec![
+                TTSVoice::new("en-US", "en-US-Journey-D", "MALE"),
+                TTSVoice::new("en-US", "en-US-Journey-F", "FEMALE"),
+            ]
+        } else {
+            vec![
+                TTSVoice::new("en-AU", "en-AU-Neural2-A", "FEMALE"),
+                TTSVoice::new("en-AU", "en-AU-Neural2-B", "MALE"),
+                TTSVoice::new("en-AU", "en-AU-Neural2-C", "FEMALE"),
+                TTSVoice::new("en-AU", "en-AU-Neural2-D", "MALE"),
+                TTSVoice::new("en-IN", "en-IN-Neural2-A", "FEMALE"),
+                TTSVoice::new("en-IN", "en-IN-Neural2-B", "MALE"),
+                TTSVoice::new("en-IN", "en-IN-Neural2-C", "MALE"),
+                TTSVoice::new("en-IN", "en-IN-Neural2-D", "FEMALE"),
+                TTSVoice::new("en-GB", "en-GB-Neural2-A", "FEMALE"),
+                TTSVoice::new("en-GB", "en-GB-Neural2-B", "MALE"),
+                TTSVoice::new("en-GB", "en-GB-Neural2-C", "FEMALE"),
+                TTSVoice::new("en-GB", "en-GB-Neural2-D", "MALE"),
+                TTSVoice::new("en-GB", "en-GB-Neural2-F", "FEMALE"),
+                TTSVoice::new("en-US", "en-US-Neural2-A", "MALE"),
+                TTSVoice::new("en-US", "en-US-Neural2-C", "FEMALE"),
+                TTSVoice::new("en-US", "en-US-Neural2-D", "MALE"),
+                TTSVoice::new("en-US", "en-US-Neural2-E", "FEMALE"),
+                TTSVoice::new("en-US", "en-US-Neural2-F", "FEMALE"),
+                TTSVoice::new("en-US", "en-US-Neural2-G", "FEMALE"),
+                TTSVoice::new("en-US", "en-US-Neural2-H", "FEMALE"),
+                TTSVoice::new("en-US", "en-US-Neural2-I", "MALE"),
+                TTSVoice::new("en-US", "en-US-Neural2-J", "MALE"),
+            ]
+        };
         // shuffle
-        let mut v = v;
         use rand::seq::SliceRandom;
         v.shuffle(&mut rand::thread_rng());
+
+        #[cfg(feature = "misandry")]
+        {
+            v.retain(|v| v.gender == "FEMALE");
+        }
+        #[cfg(feature = "misogyny")]
+        {
+            v.retain(|v| v.gender == "MALE");
+        }
         v
     };
     static ref SILLYVOICES: Vec<TTSVoice> = {
-        let v = vec![
-            TTSVoice::new("fil-PH", "fil-ph-Neural2-D", "MALE"),
-            TTSVoice::new("de-DE", "de-DE-Neural2-D", "MALE"),
-            TTSVoice::new("ja-JP", "ja-JP-Neural2-D", "MALE"),
-            TTSVoice::new("es-ES", "es-ES-Neural2-F", "MALE"),
-            TTSVoice::new("ko-KR", "ko-KR-Neural2-B", "FEMALE"),
-            TTSVoice::new("th-TH", "th-TH-Neural2-C", "FEMALE"),
-            TTSVoice::new("vi-VN", "vi-VN-Neural2-A", "FEMALE"),
-        ];
+        let mut v = if cfg!(feature = "google-journey-tts") {
+            vec![
+                TTSVoice::new("en-US", "en-US-Journey-D", "MALE"),
+                TTSVoice::new("en-US", "en-US-Journey-F", "FEMALE"),
+            ]
+        } else {
+            vec![
+                TTSVoice::new("fil-PH", "fil-ph-Neural2-D", "MALE"),
+                TTSVoice::new("de-DE", "de-DE-Neural2-D", "MALE"),
+                TTSVoice::new("ja-JP", "ja-JP-Neural2-D", "MALE"),
+                TTSVoice::new("es-ES", "es-ES-Neural2-F", "MALE"),
+                TTSVoice::new("ko-KR", "ko-KR-Neural2-B", "FEMALE"),
+                TTSVoice::new("th-TH", "th-TH-Neural2-C", "FEMALE"),
+                TTSVoice::new("vi-VN", "vi-VN-Neural2-A", "FEMALE"),
+            ]
+        };
+        // shuffle
+        use rand::seq::SliceRandom;
+        v.shuffle(&mut rand::thread_rng());
+
+        #[cfg(feature = "misandry")]
+        {
+            v.retain(|v| v.gender == "FEMALE");
+        }
+        #[cfg(feature = "misogyny")]
+        {
+            v.retain(|v| v.gender == "MALE");
+        }
+
         v
     };
 );
@@ -152,37 +191,70 @@ pub async fn get_recommendations(url: String, lim: usize) -> Vec<VideoInfo> {
 
 #[allow(dead_code)]
 pub async fn get_video_info(url: String) -> Result<VideoInfo, Error> {
-    let title = get_url_title(url.clone()).await;
-    if let Some(title) = title {
-        Ok(VideoInfo { title, url })
-    } else {
-        Err(anyhow::anyhow!("Could not get video info"))
-    }
+    // let title = get_url_title(url.clone()).await;
+    let info = get_url_video_info(&url).await?;
+
+    Ok(VideoInfo {
+        title: info.title,
+        url,
+        duration: info.duration,
+    })
 }
 
-pub async fn get_url_title(url: String) -> Option<String> {
-    let client = reqwest::Client::new();
-    let res = client.get(url.as_str()).header(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36",
-        ).send().await;
-    if let Ok(res) = res {
-        let text = res.text().await;
-        if let Ok(text) = text {
-            let title = text.split("<title>").nth(1);
-            if let Some(title) = title {
-                let title = title.split("</title>").next();
-                title.map(|title| title.to_owned())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    }
+pub async fn get_url_video_info(url: &str) -> Result<RawVidInfo, Error> {
+    let dl = ytd_rs::YoutubeDL::new(
+        &std::path::PathBuf::from("/dev/null"),
+        vec![ytd_rs::Arg::new_with_arg("-O", "%(.{title,duration})#j")],
+        url,
+    )?;
+    let info = dl.download()?;
+    let output = info.output();
+    Ok(serde_json::from_str(output).map_err(|e| {
+        println!("{}", output);
+        e
+    })?)
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawVidInfo {
+    pub title: String,
+    /// The duration of the video in seconds, if None the video is a live stream and could be infinite
+    #[serde(default)]
+    pub duration: Option<u64>,
+}
+
+// pub async fn get_url_title(url: String) -> Option<String> {
+//     let client = reqwest::Client::new();
+//     let res = client.get(url.as_str()).header(
+//             "User-Agent",
+//             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36",
+//         ).send().await;
+//     match res {
+//         Ok(res) => {
+//             let text = res.text().await;
+//             match text {
+//                 Ok(text) => {
+//                     let title = text.split("<title>").nth(1);
+//                     if let Some(title) = title {
+//                         let title = title.split("</title>").next();
+//                         title.map(|title| title.to_owned())
+//                     } else {
+//                         println!("Could not get title");
+//                         None
+//                     }
+//                 }
+//                 Err(e) => {
+//                     println!("Error getting text: {:?}", e);
+//                     None
+//                 }
+//             }
+//         }
+//         Err(e) => {
+//             println!("Error sending request: {:?}", e);
+//             None
+//         }
+//     }
+// }
 
 #[cfg(feature = "spotify")]
 pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
@@ -252,13 +324,14 @@ pub struct RawSpotifyArtist {
 pub struct VideoInfo {
     pub title: String,
     pub url: String,
+    pub duration: Option<u64>,
 }
 
 impl VideoInfo {
     pub async fn to_metavideo(&self) -> anyhow::Result<MetaVideo> {
         let v = crate::video::Video::get_video(self.url.clone(), true)
             .await?
-            .get(0)
+            .first()
             .ok_or(anyhow::anyhow!("Could not get video"))?
             .clone();
 
@@ -271,33 +344,40 @@ impl VideoInfo {
         };
         #[cfg(feature = "tts")]
         if let Ok(key) = key.as_ref() {
-            let t = tokio::task::spawn(crate::youtube::get_tts(title.clone(), key.clone(), None))
-                .await
-                .unwrap();
-            if let Ok(tts) = t {
-                match tts {
-                    VideoType::Disk(tts) => Ok(MetaVideo {
-                        video: v,
-                        ttsmsg: Some(tts),
-                        title,
-                    }),
-                    VideoType::Url(_) => {
-                        unreachable!("TTS should always be a disk file");
-                    }
-                }
-            } else {
-                println!("Error {:?}", t);
-                Ok(MetaVideo {
-                    video: v,
-                    ttsmsg: None,
-                    title,
-                })
-            }
+            // let t = tokio::task::spawn()
+            //     .await
+            //     .unwrap();
+            // if let Ok(tts) = t {
+            //     Ok(MetaVideo {
+            //         video: v,
+            //         ttsmsg: Some(tts),
+            //         title,
+            //     })
+            // } else {
+            //     println!("Error {:?}", t);
+            //     Ok(MetaVideo {
+            //         video: v,
+            //         ttsmsg: None,
+            //         title,
+            //     })
+            // }
+
+            Ok(MetaVideo {
+                video: v,
+                ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(
+                    title.clone(),
+                    key.clone(),
+                    None,
+                )))),
+                title,
+                author: None,
+            })
         } else {
             Ok(MetaVideo {
                 video: v,
                 ttsmsg: None,
                 title,
+                author: None,
             })
         }
         #[cfg(not(feature = "tts"))]
@@ -333,7 +413,7 @@ pub async fn get_tts(
     title: String,
     key: String,
     specificvoice: Option<TTSVoice>,
-) -> Result<VideoType, Error> {
+) -> Result<Video, Error> {
     let mut title = title;
     // return Err(anyhow::anyhow!("TTS is currently disabled"));
     // println!("key: {}", key);
@@ -405,7 +485,13 @@ pub async fn get_tts(
     let mut json: TTSResponse = res.json().await?;
 
     // we're using the no_pad decoder so we need to remove the padding google adds
-    json.audio_content = json.audio_content.trim_end_matches('=').to_owned();
+    {
+        let mut string = String::with_capacity(json.audio_content.len());
+        json.audio_content
+            .trim_end_matches('=')
+            .clone_into(&mut string);
+        std::mem::swap(&mut json.audio_content, &mut string);
+    }
 
     let data = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD_NO_PAD,
@@ -419,12 +505,13 @@ pub async fn get_tts(
     let mut file = tokio::fs::File::create(path.clone()).await?;
     file.write_all(data.as_ref()).await?;
 
-    Ok(VideoType::Disk(Video::from_path(
-        path,
-        "GTTS".to_owned(),
-        true,
-        "GTTS".to_owned(),
-    )?))
+    // Ok(VideoType::Disk(Video::from_path(
+    //     path,
+    //     "GTTS".to_owned(),
+    //     true,
+    //     "GTTS".to_owned(),
+    // )?))
+    Video::from_path(path, "GTTS".to_owned(), true, "GTTS".to_owned())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -491,15 +578,17 @@ pub async fn youtube_search(query: String) -> Result<Vec<VideoInfo>, Error> {
     let r: YTSearchResultMeta = res.json().await?;
     let mut videos = Vec::new();
     for item in r.items {
-        let video = if let Some(id) = item.id.video_id {
+        let video: VideoInfo = if let Some(id) = item.id.video_id {
             VideoInfo {
-                title: item.snippet.title,
+                title: format!("📼 {}", item.snippet.title.replace("&#39;", "\'")),
                 url: format!("https://www.youtube.com/watch?v={}", id),
+                duration: None,
             }
         } else if let Some(id) = item.id.playlist_id {
             VideoInfo {
-                title: format!("{} (playlist)", item.snippet.title),
+                title: format!("📃 {}", item.snippet.title.replace("&#39;", "\'")),
                 url: format!("https://www.youtube.com/playlist?list={}", id),
+                duration: None,
             }
         } else {
             continue;

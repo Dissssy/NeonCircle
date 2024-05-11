@@ -6,9 +6,10 @@
 
 # loop until the application has a return code of != 0
 while true; do
-    yt-dlp --update-to nightly
+    # yt-dlp --update-to nightly
+    python -m pip install --upgrade yt-dlp
     # run the application
-    cargo run --release    
+    cargo run --release --features experimental --features misogyny
 
     # save the return code
     ret=$?

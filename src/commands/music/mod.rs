@@ -23,6 +23,7 @@ use serenity::http::Http;
 use serenity::model::prelude::{ChannelId, GuildId, Member, Message, UserId};
 use serenity::model::voice::VoiceState;
 use serenity::prelude::Mutex;
+use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use std::collections::HashMap;
@@ -160,7 +161,7 @@ impl InnerVoiceData {
                         UserMetadata {
                             member: member.clone(),
                             // deaf: member.deaf,
-                            mute: member.mute,
+                            // mute: member.mute,
                         },
                     );
                 }
@@ -178,7 +179,7 @@ impl InnerVoiceData {
             Some(channel) => channel,
             None => return false,
         };
-        let channel = guild.channels.entry(channel).or_insert_with(HashMap::new);
+        let channel = guild.channels.entry(channel).or_default();
 
         for user in channel.values() {
             if !user.member.user.bot {
@@ -214,13 +215,13 @@ impl GuildVc {
             if old.channel_id != new.channel_id {
                 // we need to remove the old state
                 if let Some(channel) = old.channel_id {
-                    let channel = self.channels.entry(channel).or_insert_with(HashMap::new);
+                    let channel = self.channels.entry(channel).or_default();
                     channel.remove(&old.user_id);
                 }
             }
         }
         if let (Some(channel), Some(member)) = (new.channel_id, new.member.clone()) {
-            let channel = self.channels.entry(channel).or_insert_with(HashMap::new);
+            let channel = self.channels.entry(channel).or_default();
             channel.insert(new.user_id, UserMetadata::new(member, new));
         }
     }
@@ -241,18 +242,18 @@ impl GuildVc {
 pub struct UserMetadata {
     pub member: Member,
     // pub deaf: bool,
-    pub mute: bool,
+    // pub mute: bool,
     //     pub self_deaf: bool,
     //     pub self_mute: bool,
     //     pub suppress: bool,
 }
 
 impl UserMetadata {
-    pub fn new(member: Member, state: VoiceState) -> Self {
+    pub fn new(member: Member, _state: VoiceState) -> Self {
         Self {
             member,
             // deaf: state.deaf,
-            mute: state.mute,
+            // mute: state.mute,
             // self_deaf: state.self_deaf,
             // self_mute: state.self_mute,
             // suppress: state.suppress,
@@ -287,6 +288,7 @@ pub enum AudioPromiseCommand {
     Repeat(OrToggle),
     Shuffle(OrToggle),
     Autoplay(OrToggle),
+    ReadTitles(OrToggle),
 
     // needs impl??
     Volume(f64),
@@ -330,23 +332,104 @@ pub enum VideoType {
     Url(VideoInfo),
 }
 
+impl VideoType {
+    pub fn get_duration(&self) -> Option<u64> {
+        match self {
+            VideoType::Disk(v) => Some(v.duration.floor() as u64),
+            VideoType::Url(v) => v.duration,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LazyLoadedVideo {
+    handle: Arc<Mutex<Option<JoinHandle<anyhow::Result<Video>>>>>,
+    video: Arc<Mutex<Option<Video>>>,
+}
+
+impl LazyLoadedVideo {
+    pub fn new(handle: JoinHandle<anyhow::Result<Video>>) -> Self {
+        Self {
+            handle: Arc::new(Mutex::new(Some(handle))),
+            video: Arc::new(Mutex::new(None)),
+        }
+    }
+    pub async fn check(&mut self) -> anyhow::Result<Option<Video>> {
+        let mut lock = self.handle.lock().await;
+        if let Some(handle) = lock.take() {
+            if handle.is_finished() {
+                let video = handle.await??;
+                self.video.lock().await.replace(video.clone());
+                Ok(Some(video))
+            } else {
+                lock.replace(handle);
+                Ok(None)
+            }
+        } else {
+            Err(anyhow::anyhow!("Handle is None"))
+        }
+    }
+    pub async fn wait_for(&mut self) -> anyhow::Result<Video> {
+        let mut lock = self.handle.lock().await;
+        if let Some(handle) = lock.take() {
+            let video = handle.await??;
+            self.video.lock().await.replace(video.clone());
+            Ok(video)
+        } else {
+            Err(anyhow::anyhow!("Handle is None"))
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Author {
+    pub name: String,
+    pub pfp_url: String,
+}
+
+impl Author {
+    pub async fn from_user(
+        ctx: &serenity::client::Context,
+        user: &serenity::model::user::User,
+        guild: Option<GuildId>,
+    ) -> Option<Self> {
+        let name = match guild {
+            Some(g) => {
+                let member = g.member(ctx, user.id).await.ok()?;
+                member.display_name().to_string()
+            }
+            None => user.name.clone(),
+        };
+
+        let pfp_url = user
+            .avatar_url()
+            .unwrap_or_else(|| user.default_avatar_url());
+
+        Some(Self { name, pfp_url })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MetaVideo {
     pub video: VideoType,
     pub title: String,
+    pub author: Option<Author>,
     #[cfg(feature = "tts")]
-    pub ttsmsg: Option<Video>,
+    pub ttsmsg: Option<LazyLoadedVideo>,
 }
 
 impl MetaVideo {
-    pub fn delete(&mut self) -> Result<(), Error> {
+    pub async fn delete(&mut self) -> Result<(), Error> {
         match self.video {
             VideoType::Disk(ref mut video) => video.delete(),
             _ => Ok(()),
         }?;
         #[cfg(feature = "tts")]
         if let Some(ref mut ttsmsg) = self.ttsmsg {
-            ttsmsg.delete()?;
+            // ttsmsg.delete()?;
+            if let Ok(vid) = ttsmsg.wait_for().await {
+                vid.delete()?;
+            }
         };
         Ok(())
     }
@@ -640,34 +723,29 @@ impl MessageReference {
                     println!("Error deleting message: {:?}", e);
                 }
                 self.send_new().await?;
-            } else {
-                match message
-                    .edit(&self.http, |m| {
-                        m.content("".to_string());
-                        m.embed(move |e| {
-                            write_content.write_into(e);
-                            e
-                        });
-                        if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
-                            m.components(|f| {
-                                for ar in ars {
-                                    f.add_action_row(ar);
-                                }
-                                f
-                            })
-                        } else {
-                            m
-                        }
-                    })
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(e) => {
-                        println!("Error editing message: {:?}", e);
-                        self.send_new().await?;
+            } else if let Err(e) = message
+                .edit(&self.http, |m| {
+                    m.content("".to_string());
+                    m.embed(move |e| {
+                        write_content.write_into(e);
+                        e
+                    });
+                    if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
+                        m.components(|f| {
+                            for ar in ars {
+                                f.add_action_row(ar);
+                            }
+                            f
+                        })
+                    } else {
+                        m
                     }
-                };
-            }
+                })
+                .await
+            {
+                println!("Error editing message: {:?}", e);
+                self.send_new().await?;
+            };
 
             self.last_edit = Instant::now();
         }
@@ -765,21 +843,19 @@ impl MessageReference {
         Ok(())
     }
 
+    #[cfg(not(feature = "new-controls"))]
     fn get_ars(settings: &SettingsData) -> Vec<CreateActionRow> {
         // if let Some(settings) = self.last_settings.as_ref() {
-        // [volume] [radiovolume] [bitrate] [pause]
-        // [looped] [repeat] [shuffle] [autoplay]
+
+        // AR1 [volume, radiovolume, bitrate, log]
+        // AR2 [pause, skip, stop]
+        // AR3 [looped, shuffle, repeat]
+        // AR4 [autoplay, remove, read_titles]
 
         // volume, radiovolume, and bitrate will be grey and non-clickable (for now, maybe a modal later?)
         // pause, looped, repeat, shuffle, autoplay will be clickable toggles, red when off green when on
 
         // possibly later we can do an extra button at the bottom to submit a song url/search to the queue (but will lack feedback bc discord SUCKS)
-
-        let mut ars = Vec::new();
-
-        // AR3 (volume, radiovolume, bitrate, ?log?)
-
-        let mut ar = CreateActionRow::default();
 
         let (volumestyle, radiostyle) = if settings.something_playing {
             (
@@ -792,6 +868,18 @@ impl MessageReference {
                 serenity::model::application::component::ButtonStyle::Primary,
             )
         };
+
+        let titlestyle = if settings.read_titles {
+            serenity::model::application::component::ButtonStyle::Success
+        } else {
+            serenity::model::application::component::ButtonStyle::Danger
+        };
+
+        let mut ars = Vec::new();
+
+        // AR1 (volume, radiovolume, bitrate, log)
+
+        let mut ar = CreateActionRow::default();
 
         // volume
         ar.create_button(|b| {
@@ -870,7 +958,7 @@ impl MessageReference {
 
         ars.push(ar);
 
-        // AR1 (pause, skip, remove, stop)
+        // AR2 (pause, skip, stop)
 
         let mut ar = CreateActionRow::default();
 
@@ -895,15 +983,6 @@ impl MessageReference {
                 .disabled(!settings.something_playing)
         });
 
-        // remove
-        ar.create_button(|b| {
-            b.style(serenity::model::application::component::ButtonStyle::Danger)
-                // .emoji(ReactionType::Unicode("🗑️".to_owned()))
-                .custom_id("remove")
-                .label("🗑️")
-            // .disabled(true)
-        });
-
         // stop
         ar.create_button(|b| {
             b.style(serenity::model::application::component::ButtonStyle::Danger)
@@ -914,7 +993,7 @@ impl MessageReference {
 
         ars.push(ar);
 
-        // AR2 (looped, shuffle, repeat, autoplay)
+        // AR3 (looped, shuffle, repeat)
 
         let mut ar = CreateActionRow::default();
 
@@ -926,7 +1005,7 @@ impl MessageReference {
                 serenity::model::application::component::ButtonStyle::Secondary
             })
             // .emoji(ReactionType::Unicode("🔄️".to_owned()))
-            .label("🔄️")
+            .label("🔁")
             .custom_id("looped")
             // .disabled(true)
         });
@@ -952,10 +1031,16 @@ impl MessageReference {
                 serenity::model::application::component::ButtonStyle::Secondary
             })
             // .emoji(ReactionType::Unicode("🔁".to_owned()))
-            .label("🔁")
+            .label("🔄️")
             .custom_id("repeat")
             // .disabled(true)
         });
+
+        ars.push(ar);
+
+        // AR4 (autoplay, remove, read_titles)
+
+        let mut ar = CreateActionRow::default();
 
         // autoplay
         ar.create_button(|b| {
@@ -970,11 +1055,213 @@ impl MessageReference {
             // .disabled(true)
         });
 
+        // remove
+        ar.create_button(|b| {
+            b.style(serenity::model::application::component::ButtonStyle::Danger)
+                // .emoji(ReactionType::Unicode("🗑️".to_owned()))
+                .custom_id("remove")
+                .label("🗑️")
+            // .disabled(true)
+        });
+
+        // read titles
+        ar.create_button(|b| {
+            b.style(titlestyle)
+                // .emoji(ReactionType::Unicode("🗣️".to_owned()))
+                .custom_id("read_titles")
+                // .disabled(true)
+                .label("🗣️")
+        });
+
         ars.push(ar);
 
         ars
     }
 
+    #[cfg(feature = "new-controls")]
+    fn get_ars(settings: &SettingsData) -> Vec<CreateActionRow> {
+        // new controls are a list of things you can do as a single action row, it might look tidier?
+
+        // AR1 [List[volume, radiovolume, play, skip, stop, looped, shuffle, repeat, autoplay, remove, read_titles, bitrate, log]]
+
+        use serenity::builder::CreateSelectMenu;
+
+        let mut ars = Vec::new();
+
+        let mut ar = CreateActionRow::default();
+
+        let mut list = CreateSelectMenu::default();
+
+        list.custom_id("::controls");
+
+        list.options(|b| {
+            // option telling the user that the controls are here
+            b.create_option(|o| {
+                o.label("Bot Controls")
+                    .value("controls")
+                    .description("🎛️")
+                    .default_selection(true)
+            });
+
+            // volume
+            b.create_option(|o| {
+                o.label("Volume")
+                    .value("volume")
+                    .description(format!(
+                        "{} {:.0}%",
+                        match settings.raw_volume() {
+                            // 0%
+                            v if v == 0.0 => "🔇",
+                            // 0-33%
+                            v if v <= 0.33 => "🔈",
+                            // 33-66%
+                            v if v <= 0.66 => "🔉",
+                            // 66-100%
+                            _ => "🔊",
+                        },
+                        settings.raw_volume() * 100.0
+                    ))
+                    .default_selection(false)
+            });
+
+            // radiovolume
+            b.create_option(|o| {
+                o.label("Radio Volume")
+                    .value("radiovolume")
+                    .description(format!("📻 {:.0}%", settings.raw_radiovolume() * 100.0))
+                    .default_selection(false)
+            });
+
+            if settings.something_playing {
+                // pause
+                b.create_option(|o| {
+                    o.label(if settings.pause { "Playing" } else { "Paused" })
+                        .value("pause")
+                        .description(if settings.pause { "▶️" } else { "⏸️" })
+                        .default_selection(false)
+                });
+
+                // skip
+                b.create_option(|o| {
+                    o.label("Skip")
+                        .value("skip")
+                        .description("⏭️")
+                        .default_selection(false)
+                });
+            }
+
+            // stop
+            b.create_option(|o| {
+                o.label("Stop")
+                    .value("stop")
+                    .description("⏹️")
+                    .default_selection(false)
+            });
+
+            // looped
+            b.create_option(|o| {
+                o.label(if settings.looped {
+                    "Queue Looped"
+                } else {
+                    "Queue Not Looped"
+                })
+                .value("looped")
+                .description(if settings.looped { "🔁" } else { "⛔" })
+                .default_selection(false)
+            });
+
+            // shuffle
+            b.create_option(|o| {
+                o.label(if settings.shuffle {
+                    "Queue Shuffled"
+                } else {
+                    "Queue Not Shuffled"
+                })
+                .value("shuffle")
+                .description(if settings.shuffle { "🔀" } else { "⛔" })
+                .default_selection(false)
+            });
+
+            // repeat
+            b.create_option(|o| {
+                o.label(if settings.repeat {
+                    "Song Repeated"
+                } else {
+                    "Song Not Repeated"
+                })
+                .value("repeat")
+                .description(if settings.repeat { "🔄️" } else { "⛔" })
+                .default_selection(false)
+            });
+
+            // autoplay
+            b.create_option(|o| {
+                o.label(if settings.autoplay {
+                    "Autoplay Enabled"
+                } else {
+                    "Autoplay Disabled"
+                })
+                .value("autoplay")
+                .description(if settings.autoplay { "🎲" } else { "⛔" })
+                .default_selection(false)
+            });
+
+            // remove
+            b.create_option(|o| {
+                o.label("Remove")
+                    .value("remove")
+                    .description("🗑️")
+                    .default_selection(false)
+            });
+
+            // read titles
+            b.create_option(|o| {
+                o.label(if settings.read_titles {
+                    "Will Read Titles"
+                } else {
+                    "Will Not Read Titles"
+                })
+                .value("read_titles")
+                .description("🗣️")
+                .default_selection(false)
+            });
+
+            // bitrate
+            b.create_option(|o| {
+                o.label("Bitrate")
+                    .value("bitrate")
+                    .description(match settings.bitrate {
+                        OrAuto::Specific(i) => {
+                            if i >= 1000 {
+                                format!("{}kbps", i / 1000)
+                            } else {
+                                format!("{}bps", i)
+                            }
+                        }
+                        OrAuto::Auto => "Auto".to_owned(),
+                    })
+                    .default_selection(false)
+            });
+
+            if !settings.log_empty {
+                // log
+                b.create_option(|o| {
+                    o.label("Log")
+                        .value("log")
+                        .description("📜")
+                        .default_selection(false)
+                });
+            }
+
+            b
+        });
+
+        ar.add_select_menu(list);
+
+        ars.push(ar);
+
+        ars
+    }
     // fn is_different_enough(new: &str, old: &str, threshold: usize) -> bool {
     //     let old = Self::filter_bar_emojis(old);
     //     let new = Self::filter_bar_emojis(new);
@@ -1006,14 +1293,14 @@ impl MessageReference {
         str
     }
 }
-#[derive(Debug)]
 
+#[derive(Debug)]
 pub struct RawMessage {
-    pub author: String,
+    // pub author: String,
     pub author_id: String,
     pub channel_id: ChannelId,
     pub channel_name: Option<String>,
-    pub content: String,
+    // pub content: String,
     pub timestamp: serenity::model::timestamp::Timestamp,
     pub tts_audio_handle: Option<tokio::task::JoinHandle<Result<Video, anyhow::Error>>>,
 }
@@ -1035,12 +1322,12 @@ impl RawMessage {
     }
     pub fn announcement(msg: &Message, text: String, voice: &TTSVoice) -> Self {
         Self {
-            author: String::new(),
+            // author: String::new(),
             author_id: String::from("Announcement"),
             channel_id: msg.channel_id,
             channel_name: None,
             timestamp: msg.timestamp,
-            content: text.clone(),
+            // content: text.clone(),
             tts_audio_handle: Some(Self::audio_handle(text, voice.clone())),
         }
     }
@@ -1072,12 +1359,12 @@ impl RawMessage {
         };
 
         Ok(Self {
-            author: msg.author.name.clone(),
+            // author: msg.author.name.clone(),
             author_id: msg.author.id.to_string(),
             channel_name: Some(channelname),
             channel_id: msg.channel_id,
             timestamp: msg.timestamp,
-            content: filteredcontent.clone(),
+            // content: filteredcontent.clone(),
             tts_audio_handle: Some(Self::audio_handle(filteredcontent, voice.clone())),
         })
     }
@@ -1088,14 +1375,15 @@ impl RawMessage {
     ) -> tokio::task::JoinHandle<Result<Video, anyhow::Error>> {
         tokio::task::spawn(async move {
             let key = crate::youtube::get_access_token().await.unwrap();
-            Ok(
-                match crate::youtube::get_tts(text, key, Some(voice)).await? {
-                    VideoType::Disk(v) => v,
-                    VideoType::Url(_) => {
-                        return Err(anyhow::anyhow!("Expected Disk video, got Url video"))
-                    }
-                },
-            )
+            // Ok(
+            //     // match crate::youtube::get_tts(text, key, Some(voice)).await? {
+            //     //     VideoType::Disk(v) => v,
+            //     //     VideoType::Url(_) => {
+            //     //         return Err(anyhow::anyhow!("Expected Disk video, got Url video"))
+            //     //     }
+            //     // },
+            // )
+            crate::youtube::get_tts(text, key, Some(voice)).await
         })
     }
 }

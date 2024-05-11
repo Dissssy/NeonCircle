@@ -376,13 +376,7 @@ async fn dotheroar(
         .find(|o| o.name == "spoiler")
     {
         Some(o) => match o.value.as_ref() {
-            Some(v) => {
-                if let Some(v) = v.as_bool() {
-                    v
-                } else {
-                    false
-                }
-            }
+            Some(v) => v.as_bool().unwrap_or_default(),
             None => false,
         },
         None => false,
@@ -475,7 +469,7 @@ async fn dotheroar(
                             println!("Error deleting original interaction response: {}", e)
                         }
                     };
-                    match interaction
+                    if let Err(e) = interaction
                         .create_followup_message(&ctx.http, |m| {
                             m.add_file(file);
                             m.flags(
@@ -485,27 +479,23 @@ async fn dotheroar(
                         })
                         .await
                     {
-                        Ok(_) => {
-                        }
-                        Err(e) => {
-                            match interaction
-                                .create_followup_message(&ctx.http, |m| {
-                                    m.add_embed(
-                                        serenity::builder::CreateEmbed::default()
-                                            .title("Error")
-                                            .description(format!("{}", e))
-                                            .color(serenity::utils::Colour::RED)
-                                            .to_owned(),
-                                    ).flags(
-                                        serenity::model::prelude::InteractionApplicationCommandCallbackDataFlags::EPHEMERAL
-                                    )
-                                })
-                                .await
-                            {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    println!("Fatal error creating followup message: {}", e)
-                                }
+                        match interaction
+                            .create_followup_message(&ctx.http, |m| {
+                                m.add_embed(
+                                    serenity::builder::CreateEmbed::default()
+                                        .title("Error")
+                                        .description(format!("{}", e))
+                                        .color(serenity::utils::Colour::RED)
+                                        .to_owned(),
+                                ).flags(
+                                    serenity::model::prelude::InteractionApplicationCommandCallbackDataFlags::EPHEMERAL
+                                )
+                            })
+                            .await
+                        {
+                            Ok(_) => {}
+                            Err(e) => {
+                                println!("Fatal error creating followup message: {}", e)
                             }
                         }
                     };

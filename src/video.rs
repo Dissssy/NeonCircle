@@ -40,6 +40,7 @@ async fn get_videos(url: &str) -> Result<Vec<RawVideo>, anyhow::Error> {
             .args(["--cookies", bot_path.to_str().unwrap()])
             .args(["--default-search", "ytsearch"])
             .arg("--dump-json")
+            .arg("--force-ipv4")
             .arg(url)
             .output()
             .await?
@@ -47,6 +48,7 @@ async fn get_videos(url: &str) -> Result<Vec<RawVideo>, anyhow::Error> {
         tokio::process::Command::new("yt-dlp")
             .args(["--default-search", "ytsearch"])
             .arg("--dump-json")
+            .arg("--force-ipv4")
             .arg(url)
             .output()
             .await?
@@ -86,7 +88,9 @@ impl Video {
         // audio_only: bool,
         allow_playlist: bool,
     ) -> Result<Vec<VideoType>, anyhow::Error> {
+        let now = std::time::Instant::now();
         let mut v = get_videos(url.clone().as_str()).await?;
+        println!("Took {}ms to get videos", now.elapsed().as_millis());
         if v.is_empty() {
             return Err(anyhow::anyhow!("No videos found"));
         }
@@ -98,6 +102,7 @@ impl Video {
                 VideoType::Url(VideoInfo {
                     title: v.title.clone(),
                     url: v.url.clone(),
+                    duration: Some(v.duration as u64),
                 })
             })
             .collect::<Vec<VideoType>>())
@@ -109,7 +114,7 @@ impl Video {
         max_filesize: &str,
     ) -> Result<VideoType, anyhow::Error> {
         let v = Self::get_video(url.clone(), false).await?;
-        let v = v.get(0).ok_or(anyhow::anyhow!("No videos found"))?;
+        let v = v.first().ok_or(anyhow::anyhow!("No videos found"))?;
         // convert to downloaded video type
         match v {
             VideoType::Disk(_) => Err(anyhow::anyhow!("Video already downloaded")),
@@ -207,7 +212,7 @@ impl Video {
                         .iter()
                         .map(|v| VideoType::Disk(v.clone()))
                         .collect::<Vec<VideoType>>()
-                        .get(0)
+                        .first()
                         .cloned()
                         .ok_or(anyhow::anyhow!("No videos found"))?)
                 }

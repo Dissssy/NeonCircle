@@ -16,12 +16,13 @@ pub struct SettingsData {
     pub repeat: bool,
     pub shuffle: bool,
     pub pause: bool,
+    pub read_titles: bool,
 }
 
 impl SettingsData {
     pub fn volume(&mut self) -> f64 {
         self.something_playing = true;
-        self.volume
+        self.volume * 0.5
     }
     pub fn set_volume(&mut self, v: f64) {
         self.volume = v;
@@ -31,7 +32,7 @@ impl SettingsData {
     }
     pub fn radiovolume(&mut self) -> f64 {
         self.something_playing = false;
-        self.radiovolume
+        self.radiovolume * 0.5
     }
     pub fn set_radiovolume(&mut self, v: f64) {
         self.radiovolume = v;
@@ -54,6 +55,7 @@ impl Default for SettingsData {
             pause: false,
             bitrate: OrAuto::Auto,
             log_empty: true,
+            read_titles: cfg!(feature = "read-titles-by-default"),
         }
     }
 }

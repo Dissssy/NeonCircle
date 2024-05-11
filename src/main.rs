@@ -1,6 +1,7 @@
 // clippy deny unwraps and expects
 // #![deny(clippy::unwrap_used)]
 // #![deny(clippy::implicit_return)]
+#![feature(try_blocks)]
 
 mod commands;
 
@@ -56,7 +57,7 @@ impl Handler {
 // }
 
 lazy_static::lazy_static! {
-    static ref WHITELIST: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(serde_json::from_reader(std::fs::File::open(Config::get().whitelist_path).unwrap()).unwrap()));
+    static ref WHITELIST: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(serde_json::from_reader(std::fs::File::open(Config::get().whitelist_path).expect("Failed to open whitelist path file")).expect("Failed to parse whitelist path file")));
 }
 // lazy_static::lazy_static! {
 //     static ref WEBHOOKS: Arc<Mutex<HashMap<u64, Webhook>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -113,10 +114,29 @@ impl EventHandler for Handler {
             Interaction::Ping(p) => {
                 println!("Ping: {:?}", p);
             }
-            Interaction::MessageComponent(mci) => match mci.data.custom_id.clone().as_str() {
+            Interaction::MessageComponent(mci) => {
+                let mut cmd = mci.data.custom_id.as_str();
+
+                if cmd == "::controls" {
+                    cmd = mci.data.values[0].as_str();
+                }
+
+                if cmd == "controls" {
+                    // this was a placeholder option, so we can acknowledge the button press and do nothing
+                    if let Err(e) = mci.create_interaction_response(&ctx.http, |r| {
+                        r.kind(
+                            serenity::model::application::interaction::InteractionResponseType::DeferredUpdateMessage,
+                        )
+                    }).await {
+                        eprintln!("Failed to send response: {}", e);
+                    };
+                    return;
+                }
+                
+                match cmd {
                 original_command
                     if [
-                        "pause", "skip", "stop", "looped", "shuffle", "repeat", "autoplay",
+                        "pause", "skip", "stop", "looped", "shuffle", "repeat", "autoplay", "read_titles"
                     ]
                     .iter()
                     .any(|a| *a == original_command) =>
@@ -124,7 +144,7 @@ impl EventHandler for Handler {
                     let guild_id = match mci.guild_id {
                         Some(id) => id,
                         None => {
-                            mci.create_interaction_response(&ctx.http, |r| {
+                            if let Err(e) = mci.create_interaction_response(&ctx.http, |r| {
                                 r.kind(
                                     serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
                                 )
@@ -133,8 +153,9 @@ impl EventHandler for Handler {
                                     d
                                 })
                             })
-                            .await
-                            .unwrap();
+                            .await {
+                                eprintln!("Failed to send response: {}", e);
+                            }
                             return;
                         }
                     };
@@ -160,7 +181,7 @@ impl EventHandler for Handler {
                             if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
                                 let (rtx, rrx) =
                                     serenity::futures::channel::oneshot::channel::<String>();
-                                tx.unbounded_send((
+                                if let Err(e) = tx.unbounded_send((
                                     rtx,
                                     match original_command {
                                         "pause" => AudioPromiseCommand::Paused(OrToggle::Toggle),
@@ -172,13 +193,28 @@ impl EventHandler for Handler {
                                         "autoplay" => {
                                             AudioPromiseCommand::Autoplay(OrToggle::Toggle)
                                         }
+                                        "read_titles" => {
+                                            AudioPromiseCommand::ReadTitles(OrToggle::Toggle)
+                                        }
                                         uh => {
                                             println!("Unknown command: {}", uh);
                                             return;
                                         }
                                     },
-                                ))
-                                .unwrap();
+                                )) {
+                                    if let Err(e) = mci.create_interaction_response(&ctx.http, |r| {
+                                        r.kind(
+                                            serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
+                                        )
+                                        .interaction_response_data(|d| {
+                                            d.content(format!("Failed to issue command for {} ERR {}", original_command, e)).ephemeral(true);
+                                            d
+                                        })
+                                    }).await {
+                                        eprintln!("Failed to send response: {}", e);
+                                    }
+                                    return;
+                                }
 
                                 let timeout =
                                     tokio::time::timeout(std::time::Duration::from_secs(10), rrx)
@@ -186,13 +222,14 @@ impl EventHandler for Handler {
 
                                 match timeout {
                                     Ok(Ok(_msg)) => {
-                                        mci.create_interaction_response(&ctx.http, |r| {
+                                        if let Err(e) = mci.create_interaction_response(&ctx.http, |r| {
                                             r.kind(
                                                 serenity::model::application::interaction::InteractionResponseType::DeferredUpdateMessage,
                                             )
                                         })
-                                        .await
-                                        .unwrap();
+                                        .await {
+                                            eprintln!("Failed to send response: {}", e);
+                                        }
                                         return;
                                     }
                                     Ok(Err(e)) => {
@@ -548,7 +585,6 @@ impl EventHandler for Handler {
                     }
                 }
                 p => {
-                    println!("You missed one, idiot: {:?}", p);
                     mci.create_interaction_response(&ctx.http, |r| {
                     r.kind(
                         serenity::model::application::interaction::InteractionResponseType::Modal,
@@ -576,7 +612,7 @@ impl EventHandler for Handler {
                 .await
                 .unwrap();
                 }
-            },
+            }},
             Interaction::ModalSubmit(p) => match p.data.custom_id.as_str() {
                 "feedback" => {
                     let i = match p.data.components[0].components[0].clone() {
@@ -885,7 +921,7 @@ impl EventHandler for Handler {
                                             serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource,
                                         )
                                         .interaction_response_data(|d| {
-                                            d.content(format!("Failed to issue command for bitrate")).ephemeral(true);
+                                            d.content("Failed to issue command for bitrate".to_string()).ephemeral(true);
                                             d
                                         })
                                     })
@@ -1032,12 +1068,12 @@ impl EventHandler for Handler {
         // enable when need to update commands
         println!("Register commands? (y/n)");
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input).unwrap();
+        std::io::stdin().read_line(&mut input).expect("Failed to read input");
         if input.trim() == "y" {
             for command in self.commands.iter() {
                 println!("Register command: {}? (y/n)", command.name());
                 let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
+                std::io::stdin().read_line(&mut input).expect("Failed to read input");
                 if input.trim() != "y" {
                     continue;
                 }
@@ -1094,7 +1130,9 @@ impl EventHandler for Handler {
 
         if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
             let (rtx, rrx) = serenity::futures::channel::oneshot::channel::<String>();
-            tx.unbounded_send((rtx, AudioPromiseCommand::Stop)).unwrap();
+            if let Err(e) = tx.unbounded_send((rtx, AudioPromiseCommand::Stop)) {
+                eprintln!("Failed to send stop command: {}", e);
+            };
 
             let timeout =
                 tokio::time::timeout(std::time::Duration::from_secs(10), rrx).await;
@@ -1442,7 +1480,7 @@ async fn main() {
         let mut next = chrono::Local::now()
             .date_naive()
             .and_hms_opt(8, 0, 0)
-            .unwrap()
+            .expect("Failed to get next 8 am, wtf? did time end?")
             .and_utc();
         if next < now {
             next += chrono::Duration::days(1);
@@ -1566,7 +1604,7 @@ impl Config {
             } else {
                 Self::safe_read("\nPlease enter your application name:")
             };
-            let mut data_path = config_path.parent().unwrap().to_path_buf();
+            let mut data_path = config_path.parent().expect("Failed to get parent, this should never happen.").to_path_buf();
             data_path.push(app_name.clone());
             Config {
                 token: if let Some(token) = rec.token {
@@ -1626,7 +1664,7 @@ impl Config {
             println!("It appears that this may be the first time you are running the bot.");
             println!("I will take you through a short onboarding process to get you started.");
             let app_name: String = Self::safe_read("\nPlease enter your application name:");
-            let mut data_path = config_path.parent().unwrap().to_path_buf();
+            let mut data_path = config_path.parent().expect("Failed to get parent, this should never happen.").to_path_buf();
             data_path.push(app_name.clone());
             Config {
                 token: Self::safe_read("\nPlease enter your bot token:"),
