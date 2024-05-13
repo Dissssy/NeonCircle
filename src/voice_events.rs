@@ -474,42 +474,108 @@ async fn wait_for_transcription(reqwest: reqwest::Client, url: String, key: Stri
 // }
 
 fn filter_input(s: &str) -> String {
-    s.to_lowercase().chars().filter(|c| c.is_alphabetic() || c.is_whitespace()).collect::<String>().split_whitespace().filter(|w| !w.is_empty()).collect::<Vec<&str>>().join(" ")
+    s.to_lowercase().chars().filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect::<String>().split_whitespace().filter(|w| !w.is_empty()).collect::<Vec<&str>>().join(" ")
 }
 
-const ALERT_PHRASES: &[&str] = &["neon circle"];
+lazy_static::lazy_static!(
+    pub static ref ALERT_PHRASES: Alerts = {
+        // load it in from a file
+        let file = crate::Config::get().alert_phrases_path;
+        let text = std::fs::read_to_string(file).expect("Error reading alert phrases file");
+        serde_json::from_str(&text).expect("Error deserializing alert phrases")
+    };
+);
+
+#[derive(Debug, serde::Deserialize)]
+pub struct Alerts {
+    phrases: Vec<Alert>,
+}
+
+impl std::fmt::Display for Alerts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for alert in &self.phrases {
+            writeln!(f, "{}", alert)?;
+        }
+        Ok(())
+    }
+}
+
+impl Alerts {
+    fn filter(&self, s: String) -> String {
+        let mut s = s;
+        for alert in &self.phrases {
+            for alias in &alert.aliases {
+                s = s.replace(alias, &alert.main);
+            }
+        }
+        s
+    }
+
+    fn get_alert(&'static self, s: &str) -> Option<&'static Alert> {
+        self.phrases.iter().find(|a| s.contains(&a.main))
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct Alert {
+    main: String,
+    aliases: Vec<String>,
+}
+
+impl std::fmt::Display for Alert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: [{}]", self.main, self.aliases.join(", "))
+    }
+}
+
+// const ALERT_PHRASES: &[(&str, &[&str])] = &[("neon circle", &["beyond circle", "neoncircle", "me uncircled", "me on circle"]), ("jarvis", &[]), ("jeeves", &["jeebs"])];
 
 async fn parse_commands(s: String, u: UserId, http: Arc<serenity::http::Http>) -> (String, UserId, ParsedCommand) {
+    if s.is_empty() {
+        return (s, u, ParsedCommand::None);
+    }
     let filtered = filter_input(&s);
+    if filtered.is_empty() {
+        return (s, u, ParsedCommand::None);
+    }
     if filtered.contains("i do not consent to being recorded") {
         return (s, u, ParsedCommand::MetaCommand(Command::NoConsent));
     }
 
+    // println!("Filtered: {}", filtered);
+
+    let with_aliases = ALERT_PHRASES.filter(filtered);
+
+    // println!("With aliases: {}", with_aliases);
+
     // if PREFIXES.contains(&(words.next(), words.next())) {
     //     if let Some(command) = words.next() {
-    let (command, args): (String, Vec<&str>) = {
+    let (command, args): (&str, Vec<&str>) = {
         // if the string contains any of the alert phrases, split on it and return the next word as the command, the rest of the words as the arguments
-        if let Some(alert) = ALERT_PHRASES.iter().find(|a| s.contains(**a)) {
-            let mut split = s.split(alert);
-            split.next(); // discard the first part
+        if let Some(alert) = ALERT_PHRASES.get_alert(&with_aliases) {
+            // println!("Found alert: {}", alert);
+            let mut split = with_aliases.split(&alert.main);
+            // println!("Discarding: {}", split.next().unwrap_or("")); // discard the first part
+            let rest = split.next().unwrap_or("");
+            // println!("Rest: {}", rest);
+            let mut split = rest.split_whitespace();
             let command = match split.next() {
                 Some(command) => command,
                 None => return (s, u, ParsedCommand::None),
             };
-            let args = match split.next() {
-                Some(args) => args.split_whitespace().collect::<Vec<&str>>(),
-                None => return (s, u, ParsedCommand::None),
-            };
-            (command.to_string(), args)
+            // println!("Command: {}", command);
+            let args: Vec<&str> = split.next().map(|s| s.split_whitespace().collect()).unwrap_or_default();
+            // println!("Args: {}", args.join(" | "));
+            (command, args)
         } else {
             return (s, u, ParsedCommand::None);
         }
     };
 
-    println!("Command: {}, Args: {:?}", command, args);
+    // println!("Full command: {} {:?}", command, args);
 
-    match command.as_str() {
-        t if ["play", "add", "queue"].contains(&t) => {
+    match command {
+        t if ["play", "add", "queue", "played"].contains(&t) => {
             let query = args.join(" ");
             let vids = crate::video::Video::get_video(&query, true, true).await;
             match vids {
@@ -537,7 +603,7 @@ async fn parse_commands(s: String, u: UserId, http: Arc<serenity::http::Http>) -
                             //         unreachable!("TTS should always be a disk file");
                             //     }
                             // }
-                            println!("Getting tts for {}", title);
+                            // println!("Getting tts for {}", title);
                             truevideos.push(crate::commands::music::MetaVideo {
                                 video: v,
                                 ttsmsg: Some(crate::commands::music::LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(title.clone(), key.clone(), None)))),
@@ -585,18 +651,16 @@ async fn parse_commands(s: String, u: UserId, http: Arc<serenity::http::Http>) -
         }
         t if ["volume", "vol"].contains(&t) => {
             if let Some(vol) = attempt_to_parse_number(&args) {
-                if vol <= 100 {
-                    return (s, u, ParsedCommand::Command(AudioPromiseCommand::Volume(vol as f64)));
-                }
+                return (s, u, ParsedCommand::Command(AudioPromiseCommand::Volume(vol.clamp(0, 100) as f64 / 100.0)));
             }
         }
         t if ["remove", "delete"].contains(&t) => {
             if let Some(index) = attempt_to_parse_number(&args) {
-                return (s, u, ParsedCommand::Command(AudioPromiseCommand::Remove(index as usize)));
+                return (s, u, ParsedCommand::Command(AudioPromiseCommand::Remove(index)));
             }
         }
         _ => {
-            println!("Unrecognized command: {}", command);
+            // println!("Unrecognized command: {}", command);
         }
     }
 
@@ -616,7 +680,7 @@ enum Command {
     NoConsent,
 }
 
-fn attempt_to_parse_number(args: &[&str]) -> Option<u8> {
+fn attempt_to_parse_number(args: &[&str]) -> Option<usize> {
     // attempt to parse the numerical value from the phrase, ie one hundred -> 100. one -> 1
     let mut num = 0;
     for word in args {
@@ -649,8 +713,14 @@ fn attempt_to_parse_number(args: &[&str]) -> Option<u8> {
             "eighty" => num += 80,
             "ninety" => num += 90,
             "hundred" => num *= 100,
+            "thousand" => num *= 1000,
+            "million" => num *= 1000000,
+            "billion" => num *= 1000000000,
+            "trillion" => num *= 1000000000000,
+            "quadrillion" => num *= 1000000000000000,
+            "quintillion" => num *= 1000000000000000000,
             // n if n.parse::<u8>().is_ok() => num += n.parse::<u8>(),
-            n if let Ok(n) = n.parse::<u8>() => num += n,
+            n if let Ok(n) = n.parse::<usize>() => num += n,
             _ => {
                 // invalid word detected
                 return None;

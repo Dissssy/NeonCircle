@@ -1294,6 +1294,8 @@ struct Timed<T> {
 async fn main() {
     env_logger::init();
 
+    // println!("{}", *voice_events::ALERT_PHRASES);
+
     // test video speed
     // let v = crate::video::Video::get_video("the blasting company for hire full album", true).await;
     // println!("{:#?}", v);
@@ -1462,6 +1464,8 @@ struct Config {
     transcribe_url: String,
     #[cfg(feature = "transcribe")]
     transcribe_token: String,
+    #[cfg(feature = "transcribe")]
+    alert_phrases_path: PathBuf,
 }
 
 impl Config {
@@ -1495,14 +1499,16 @@ impl Config {
                 idle_url: if let Some(idle_audio) = rec.idle_url { idle_audio } else { Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH)\nif you wish to use a file on disk, set this to something as a fallback, and name the file override.mp3 inside the bot directory)\n(appdata/local/ for windows users and ~/.local/share/ for linux users):") },
                 api_url: rec.api_url,
                 bumper_url: if let Some(bumper_url) = rec.bumper_url { bumper_url } else { Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):") },
-                data_path,
-                shitgpt_path: Self::safe_read("\nPlease enter your shitgpt path:"),
-                whitelist_path: Self::safe_read("\nPlease enter your whitelist path:"),
-                string_api_token: Some(Self::safe_read("\nPlease enter your string api token:")),
+                data_path: if let Some(data_path) = rec.data_path { data_path } else { data_path },
+                shitgpt_path: if let Some(shitgpt_path) = rec.shitgpt_path { shitgpt_path } else { Self::safe_read("\nPlease enter your shitgpt path:") },
+                whitelist_path: if let Some(whitelist_path) = rec.whitelist_path { whitelist_path } else { Self::safe_read("\nPlease enter your whitelist path:") },
+                string_api_token: if let Some(string_api_token) = rec.string_api_token { Some(string_api_token) } else { Some(Self::safe_read("\nPlease enter your string api token:")) },
                 #[cfg(feature = "transcribe")]
-                transcribe_url: Self::safe_read("\nPlease enter your transcribe url:"),
+                transcribe_url: if let Some(transcribe_url) = rec.transcribe_url { transcribe_url } else { Self::safe_read("\nPlease enter your transcribe url:") },
                 #[cfg(feature = "transcribe")]
-                transcribe_token: Self::safe_read("\nPlease enter your transcribe token:"),
+                transcribe_token: if let Some(transcribe_token) = rec.transcribe_token { transcribe_token } else { Self::safe_read("\nPlease enter your transcribe token:") },
+                #[cfg(feature = "transcribe")]
+                alert_phrases_path: if let Some(alert_phrase_path) = rec.alert_phrase_path { alert_phrase_path } else { Self::safe_read("\nPlease enter your alert phrase path:") },
             }
         } else {
             println!("Welcome to my shitty Rust Music Bot!");
@@ -1533,6 +1539,7 @@ impl Config {
                 string_api_token: Some(Self::safe_read("\nPlease enter your string api token:")),
                 transcribe_token: Self::safe_read("\nPlease enter your transcribe token:"),
                 transcribe_url: Self::safe_read("\nPlease enter your transcribe url:"),
+                alert_phrases_path: Self::safe_read("\nPlease enter your alert phrase path:"),
             }
         };
         std::fs::write(config_path.clone(), serde_json::to_string_pretty(&config).unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path))).expect("Failed to write config.json");
@@ -1594,9 +1601,14 @@ struct RecoverConfig {
     spotify_api_key: Option<String>,
     idle_url: Option<String>,
     api_url: Option<String>,
+    shitgpt_path: Option<PathBuf>,
+    whitelist_path: Option<PathBuf>,
+    string_api_token: Option<String>,
     bumper_url: Option<String>,
     #[cfg(feature = "transcribe")]
     transcribe_url: Option<String>,
     #[cfg(feature = "transcribe")]
     transcribe_token: Option<String>,
+    #[cfg(feature = "transcribe")]
+    alert_phrase_path: Option<PathBuf>,
 }
