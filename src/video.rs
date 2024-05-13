@@ -24,35 +24,41 @@ pub struct Video {
 }
 
 #[derive(Deserialize, Debug)]
-struct RawVideo {
+pub struct RawVideo {
     #[serde(rename = "webpage_url")]
-    url: String,
-    title: String,
-    duration: u32,
+    pub url: String,
+    pub title: String,
+    pub duration: u32,
 }
 
-async fn get_videos(url: &str) -> Result<Vec<RawVideo>, anyhow::Error> {
+async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>, anyhow::Error> {
     let mut bot_path = crate::Config::get().data_path.clone();
     bot_path.push("cookies.txt");
+    let url = if !(url.starts_with("http://") || url.starts_with("https://")) {
+        if !allow_search {
+            return Err(anyhow::anyhow!("Invalid URL found"));
+        }
+        let vids = crate::youtube::youtube_search(url, 1).await?;
 
-    let output = if bot_path.exists() {
-        tokio::process::Command::new("yt-dlp")
-            .args(["--cookies", bot_path.to_str().unwrap()])
-            .args(["--default-search", "ytsearch"])
-            .arg("--dump-json")
-            .arg("--force-ipv4")
-            .arg(url)
-            .output()
-            .await?
+        if vids.is_empty() {
+            return Err(anyhow::anyhow!("No videos found"));
+        }
+
+        match vids.first().map(|v| (v.to_raw(), v)) {
+            Some((Some(v), _)) => return Ok(vec![v]),
+            Some((None, v)) => v.url.to_string(),
+            None => return Err(anyhow::anyhow!("No videos found")),
+        }
     } else {
-        tokio::process::Command::new("yt-dlp")
-            .args(["--default-search", "ytsearch"])
-            .arg("--dump-json")
-            .arg("--force-ipv4")
-            .arg(url)
-            .output()
-            .await?
+        url.to_string()
     };
+
+    println!("URL: {}", url);
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(anyhow::anyhow!("Invalid URL found after search query"));
+    }
+
+    let output = if bot_path.exists() { tokio::process::Command::new("yt-dlp").args(["--cookies", bot_path.to_str().expect("No path")]).arg("--flat-playlist").arg("--dump-json").arg("--force-ipv4").arg(url).output().await? } else { tokio::process::Command::new("yt-dlp").arg("--flat-playlist").arg("--dump-json").arg("--force-ipv4").arg(url).output().await? };
 
     // let output = tokio::process::Command::new("yt-dlp")
     //     .arg("--dump-json")
@@ -84,12 +90,13 @@ async fn get_videos(url: &str) -> Result<Vec<RawVideo>, anyhow::Error> {
 
 impl Video {
     pub async fn get_video(
-        url: String,
+        url: &str,
         // audio_only: bool,
         allow_playlist: bool,
+        allow_search: bool,
     ) -> Result<Vec<VideoType>, anyhow::Error> {
         let now = std::time::Instant::now();
-        let mut v = get_videos(url.clone().as_str()).await?;
+        let mut v = get_videos(url, allow_search).await?;
         println!("Took {}ms to get videos", now.elapsed().as_millis());
         if v.is_empty() {
             return Err(anyhow::anyhow!("No videos found"));
@@ -97,33 +104,16 @@ impl Video {
         if !allow_playlist {
             v = vec![v.remove(0)];
         }
-        Ok(v.iter()
-            .map(|v| {
-                VideoType::Url(VideoInfo {
-                    title: v.title.clone(),
-                    url: v.url.clone(),
-                    duration: Some(v.duration as u64),
-                })
-            })
-            .collect::<Vec<VideoType>>())
+        Ok(v.iter().map(|v| VideoType::Url(VideoInfo { title: v.title.clone(), url: v.url.clone(), duration: Some(v.duration as u64) })).collect::<Vec<VideoType>>())
     }
-    pub async fn download_video(
-        url: String,
-        audio_only: bool,
-        spoiler: bool,
-        max_filesize: &str,
-    ) -> Result<VideoType, anyhow::Error> {
-        let v = Self::get_video(url.clone(), false).await?;
+    pub async fn download_video(url: &str, audio_only: bool, spoiler: bool, max_filesize: &str) -> Result<VideoType, anyhow::Error> {
+        let v = Self::get_video(url, false, false).await?;
         let v = v.first().ok_or(anyhow::anyhow!("No videos found"))?;
         // convert to downloaded video type
         match v {
             VideoType::Disk(_) => Err(anyhow::anyhow!("Video already downloaded")),
             VideoType::Url(_) => {
-                let id = format!(
-                    "{}{}",
-                    if spoiler { "SPOILER_" } else { "" },
-                    nanoid::nanoid!(10)
-                );
+                let id = format!("{}{}", if spoiler { "SPOILER_" } else { "" }, nanoid::nanoid!(10));
                 let mut path = crate::Config::get().data_path.clone();
                 path.push("tmp");
                 std::fs::create_dir_all(&path)?;
@@ -131,10 +121,7 @@ impl Video {
                     Arg::new("--no-playlist"),
                     Arg::new("--quiet"),
                     // Arg::new_with_arg("--max-filesize", max_filesize),
-                    Arg::new_with_arg(
-                        "--output",
-                        format!("{}_%(playlist_index)s.%(ext)s", id).as_str(),
-                    ),
+                    Arg::new_with_arg("--output", format!("{}_%(playlist_index)s.%(ext)s", id).as_str()),
                     Arg::new("--embed-metadata"),
                 ];
 
@@ -142,7 +129,7 @@ impl Video {
                 let mut bot_path = crate::Config::get().data_path.clone();
                 bot_path.push("cookies.txt");
                 if bot_path.exists() {
-                    args.push(Arg::new_with_arg("--cookies", bot_path.to_str().unwrap()));
+                    args.push(Arg::new_with_arg("--cookies", bot_path.to_str().expect("No path")));
                 }
                 // println!("{:?}", args);
                 // println!("{:?}", bot_path);
@@ -159,20 +146,13 @@ impl Video {
                     args.push(Arg::new_with_arg("--recode", "mp4"));
                 }
 
-                let ytd = ytd_rs::YoutubeDL::new(&path, args.clone(), url.as_str())?;
+                let ytd = ytd_rs::YoutubeDL::new(&path, args.clone(), url)?;
                 let response = match tokio::task::spawn_blocking(move || ytd.download()).await? {
                     Ok(r) => r,
                     Err(_) => {
                         if !audio_only {
-                            args.retain(|a| {
-                                a.to_string()
-                                    != Arg::new_with_arg(
-                                        "-f",
-                                        format!("best[filesize<={}]", max_filesize).as_str(),
-                                    )
-                                    .to_string()
-                            });
-                            let ytd = ytd_rs::YoutubeDL::new(&path, args, url.as_str())?;
+                            args.retain(|a| a.to_string() != Arg::new_with_arg("-f", format!("best[filesize<={}]", max_filesize).as_str()).to_string());
+                            let ytd = ytd_rs::YoutubeDL::new(&path, args, url)?;
                             tokio::task::spawn_blocking(move || ytd.download()).await??
                         } else {
                             return Err(anyhow::anyhow!("Failed to download audio"));
@@ -187,20 +167,11 @@ impl Video {
                     let entry = entry?;
                     let path = entry.path();
                     if path.is_file() {
-                        let file_name = path
-                            .file_name()
-                            .ok_or(anyhow::anyhow!("No Path"))?
-                            .to_str()
-                            .ok_or(anyhow::anyhow!("No Path"))?;
+                        let file_name = path.file_name().ok_or(anyhow::anyhow!("No Path"))?.to_str().ok_or(anyhow::anyhow!("No Path"))?;
                         if file_name.starts_with(id.as_str()) {
                             run_preprocessor(&path).await?;
 
-                            videos.push(Self::from_path(
-                                path,
-                                url.clone(),
-                                audio_only,
-                                id.clone(),
-                            )?);
+                            videos.push(Self::from_path(path, url.to_owned(), audio_only, id.clone())?);
                         }
                     }
                 }
@@ -208,13 +179,7 @@ impl Video {
                     Err(anyhow::anyhow!("No videos found"))
                 } else {
                     videos.sort_by(|a, b| a.playlist_index.cmp(&b.playlist_index));
-                    Ok(videos
-                        .iter()
-                        .map(|v| VideoType::Disk(v.clone()))
-                        .collect::<Vec<VideoType>>()
-                        .first()
-                        .cloned()
-                        .ok_or(anyhow::anyhow!("No videos found"))?)
+                    Ok(videos.iter().map(|v| VideoType::Disk(v.clone())).collect::<Vec<VideoType>>().first().cloned().ok_or(anyhow::anyhow!("No videos found"))?)
                 }
             }
         }
@@ -299,58 +264,25 @@ impl Video {
         std::fs::remove_file(self.path.clone())?;
         Ok(())
     }
-    pub fn from_path(
-        path: PathBuf,
-        url: String,
-        audio_only: bool,
-        id: String,
-    ) -> Result<Self, Error> {
-        let file_name = path.file_name().unwrap().to_str().unwrap();
-        let tag = audiotags::Tag::new().read_from_path(&path);
-        let title = if let Ok(tag) = tag.as_ref() {
-            tag.title().unwrap_or(&id)
-        } else {
-            &id
+    pub fn from_path(path: PathBuf, url: String, audio_only: bool, id: String) -> Result<Self, Error> {
+        let file_name = match path.file_name().and_then(|f| f.to_str()) {
+            Some(f) => f,
+            None => return Err(anyhow::anyhow!("No file name")),
         };
+        let tag = audiotags::Tag::new().read_from_path(&path);
+        let title = if let Ok(tag) = tag.as_ref() { tag.title().unwrap_or(&id) } else { &id };
         let s = ffprobe::ffprobe(&path)?;
-        let duration = s.streams[0]
-            .duration
-            .as_ref()
-            .unwrap()
-            .parse::<f64>()
-            .unwrap();
+        let duration = s.streams[0].duration.as_ref().and_then(|d| d.parse::<f64>().ok()).unwrap_or(0.0);
         let video = !audio_only;
 
-        let playlist_index = file_name
-            .split('_')
-            .nth(1)
-            .unwrap()
-            .split('.')
-            .next()
-            .unwrap()
-            .parse::<usize>()
-            .unwrap_or(0);
-        Ok(Self {
-            url,
-            path: path.clone(),
-            title: title.to_string(),
-            duration,
-            video,
-            playlist_index,
-        })
+        let playlist_index = file_name.split('_').nth(1).and_then(|s| s.split('.').next().and_then(|s| s.parse::<usize>().ok())).unwrap_or(0);
+        Ok(Self { url, path: path.clone(), title: title.to_string(), duration, video, playlist_index })
     }
 }
 
 #[cfg(feature = "spotify")]
 pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>, Error> {
-    let id = url
-        .split('/')
-        .last()
-        .ok_or_else(|| anyhow::anyhow!("Invalid spotify URL"))?
-        .split('?')
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Invalid spotify URL"))?
-        .to_string();
+    let id = url.split('/').last().ok_or_else(|| anyhow::anyhow!("Invalid spotify URL"))?.split('?').next().ok_or_else(|| anyhow::anyhow!("Invalid spotify URL"))?.to_string();
     let videos = get_spotify_song_title(id).await?;
     if videos.is_empty() {
         Err(anyhow::anyhow!("No videos found"))
@@ -358,18 +290,12 @@ pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>, Error> {
         // iterate over the videos, and search youtube for them
         let mut vids = Vec::new();
         for video in videos {
-            let vid = youtube_search(video).await?;
+            let vid = youtube_search(&video, 1).await?;
             // get the first video
             if vid.is_empty() {
                 continue;
             } else {
-                vids.push(
-                    Video::get_video(vid[0].clone().url, false)
-                        .await?
-                        .first()
-                        .ok_or_else(|| anyhow::anyhow!("No videos found"))?
-                        .clone(),
-                );
+                vids.push(Video::get_video(&vid[0].url, false, true).await?.first().ok_or_else(|| anyhow::anyhow!("No videos found"))?.clone());
             }
         }
         Ok(vids)

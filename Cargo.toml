@@ -33,6 +33,8 @@ human_format = "1.0.3"
 chrono = "0.4.31"
 linkify = "0.10.0"
 env_logger = "0.10.0"
+urlencoding = "2.1.3"
+regex = "1.10.4"
 
 # windows only
 [target.'cfg(windows)'.dependencies]
@@ -46,7 +48,8 @@ powershell_script = "1.0.4"
 
 [features]
 default = ["all"]
-all = ["spotify", "youtube-search", "tts", "read-titles-by-default", "new-controls"]
+all = ["spotify", "youtube-search", "tts", "read-titles-by-default", "new-controls", "transcribe"]
+transcribe = []
 download = []
 spotify = []
 youtube-search = []

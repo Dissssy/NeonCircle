@@ -4,6 +4,7 @@ use serenity::futures::{SinkExt, StreamExt};
 use serenity::prelude::Mutex;
 use serenity::utils::Colour;
 use songbird::input::Restartable;
+use songbird::model::id::UserId;
 use songbird::tracks::{LoopState, TrackHandle};
 use songbird::{create_player, Call};
 
@@ -18,9 +19,7 @@ use std::time::Duration;
 
 use serenity::futures::channel::mpsc;
 
-use crate::commands::music::{
-    AudioPromiseCommand, MetaVideo, RawMessage, SpecificVolume, VideoType,
-};
+use crate::commands::music::{AudioPromiseCommand, MetaVideo, RawMessage, SpecificVolume, VideoType};
 use crate::radio::AzuraCast;
 
 use super::settingsdata::SettingsData;
@@ -29,10 +28,7 @@ use super::{MessageReference, OrAuto};
 
 pub struct ControlData {
     pub call: Arc<Mutex<Call>>,
-    pub rx: mpsc::UnboundedReceiver<(
-        serenity::futures::channel::oneshot::Sender<String>,
-        AudioPromiseCommand,
-    )>,
+    pub rx: mpsc::UnboundedReceiver<(serenity::futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>,
     pub msg: MessageReference,
     pub nothing_uri: Option<PathBuf>,
     pub transcribe: Arc<Mutex<TranscribeChannelHandler>>,
@@ -40,48 +36,39 @@ pub struct ControlData {
     pub brk: bool,
 }
 
-pub async fn the_lüüp(
-    rawcall: Arc<Mutex<Call>>,
-    rawrx: mpsc::UnboundedReceiver<(
-        serenity::futures::channel::oneshot::Sender<String>,
-        AudioPromiseCommand,
-    )>,
-    rawmsg: MessageReference,
-    rawlooptime: u64,
-    rawnothing_uri: Option<PathBuf>,
-    rawtranscribe: Arc<Mutex<TranscribeChannelHandler>>,
-) {
+#[allow(clippy::too_many_arguments)]
+pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceiver<(serenity::futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>, rawtx: mpsc::UnboundedSender<(serenity::futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>, rawmsg: MessageReference, rawlooptime: u64, rawnothing_uri: Option<PathBuf>, rawtranscribe: Arc<Mutex<TranscribeChannelHandler>>, http: Arc<serenity::http::Http>) {
+    let (transcription_thread, kill_transcription_thread, mut recv_new_transcription) = {
+        let transcribe = crate::voice_events::VoiceDataManager::new(Arc::clone(&rawcall), Arc::clone(&http), rawtx).await;
+        let (killtranscribe, transcribereturn) = tokio::sync::mpsc::channel::<()>(1);
+        let (transsender, transcribed) = mpsc::unbounded::<(String, UserId)>();
+        let trans = tokio::task::spawn(crate::voice_events::transcription_thread(transcribe, transcribereturn, transsender));
+
+        (trans, killtranscribe, transcribed)
+    };
+
     let log = Log::new();
 
     log.log("Starting loop").await;
 
     log.log("Creating control data").await;
-    let mut control = ControlData {
-        call: rawcall,
-        rx: rawrx,
-        msg: rawmsg,
-        nothing_uri: rawnothing_uri,
-        transcribe: rawtranscribe,
-        settings: SettingsData::default(),
-        brk: false,
-    };
+    let mut control = ControlData { call: rawcall, rx: rawrx, msg: rawmsg, nothing_uri: rawnothing_uri, transcribe: rawtranscribe, settings: SettingsData::default(), brk: false };
     {
         log.log("Locking call").await;
         let mut cl = control.call.lock().await;
-        // cl.set_bitrate(Bitrate::BitsPerSecond(6_000));
 
         log.log("Setting bitrate").await;
         cl.set_bitrate(songbird::driver::Bitrate::Auto);
-        log.log("Deafening").await;
-        match cl.deafen(true).await {
-            Ok(_) => {}
-            Err(e) => {
-                log.log(&format!("Error deafening: {:?}", e)).await;
-            }
-        };
+        // log.log("Deafening").await; // no longer good, we have audio commands
+        // match cl.deafen(true).await {
+        //     Ok(_) => {}
+        //     Err(e) => {
+        //         log.log(&format!("Error deafening: {:?}", e)).await;
+        //     }
+        // };
     }
-    let (mut msg_updater, update_msg) =
-        serenity::futures::channel::mpsc::channel::<(SettingsData, EmbedData)>(8);
+    let (mut msg_updater, update_msg) = serenity::futures::channel::mpsc::channel::<(SettingsData, EmbedData)>(8);
+    let (mut manually_send, send_msg) = mpsc::unbounded::<(String, UserId)>();
     let (killmsg, killrx) = tokio::sync::oneshot::channel::<()>();
 
     log.log("Spawning message updater").await;
@@ -92,6 +79,7 @@ pub async fn the_lüüp(
             let mut msg = msg;
             let mut killrx = killrx;
             let mut update_msg = update_msg;
+            let mut send_msg = send_msg;
             loop {
                 tokio::select! {
                     _ = &mut killrx => {
@@ -114,10 +102,17 @@ pub async fn the_lüüp(
                             break;
                         }
                     }
+                    manmsg = send_msg.next() => {
+                        if let Some((manmsg, user)) = manmsg {
+                            if let Err(e) = msg.send_manually(manmsg, serenity::model::id::UserId::from(user.0)).await {
+                                logger.log(&format!("Error sending message: {}", e)).await;
+                            }
+                        }
+                    }
                 }
             }
-            if let Err(e) = msg.delete().await {
-                logger.log(&format!("Error deleting message: {}", e)).await;
+            if let Err(e) = msg.final_cleanup().await {
+                logger.log(&format!("Error cleaning up message: {}", e)).await;
             }
         })
     };
@@ -133,6 +128,7 @@ pub async fn the_lüüp(
     // let mut shuffled = false;
     let mut nothing_handle: Option<TrackHandle> = None;
     let mut tts_handle: Option<TrackHandle> = None;
+    let mut skipmarker = false;
     // let mut volume = 1.0;
     // let mut radiovolume = 0.33;
     let g_timeout_time = Duration::from_millis(100);
@@ -167,9 +163,7 @@ pub async fn the_lüüp(
 
     // spawn thread for handling tts with ttshandler, listening for messages, sending them in, etc. provide a "kill" oneshot for shutting down the thread and stopping the ttshandler, the oneshot will contain a oneshot that can be used to return the RawMessage Sender back to us to deregister it
 
-    let (killsubthread, bekilled) = tokio::sync::oneshot::channel::<
-        tokio::sync::oneshot::Sender<serenity::futures::channel::mpsc::Receiver<RawMessage>>,
-    >();
+    let (killsubthread, bekilled) = tokio::sync::oneshot::channel::<tokio::sync::oneshot::Sender<serenity::futures::channel::mpsc::Receiver<RawMessage>>>();
 
     log.log("Spawning tts thread").await;
     let subthread = {
@@ -410,8 +404,22 @@ pub async fn the_lüüp(
                                         if let Err(e) = r2 {
                                             log.log(&format!("Error sending skip: {}\n", e)).await;
                                         }
+                                        skipmarker = true;
                                     }
+                                } else if let Some(tts_handle) = tts_handle.as_mut() {
+                                    // stop tts, skipmarker to true
+                                    let r = tts_handle.stop();
 
+                                    if let Err(e) = r {
+                                        log.log(&format!("Error skipping tts: {}\n", e)).await;
+
+                                    } else {
+                                        let r2 = snd.send(String::from("Skipped"));
+                                        if let Err(e) = r2 {
+                                            log.log(&format!("Error sending skip: {}\n", e)).await;
+                                        }
+                                        skipmarker = true;
+                                    }
                                 } else {
                                     let r = snd.send(String::from("Nothing is playing"));
                                     if let Err(e) = r {
@@ -512,6 +520,16 @@ pub async fn the_lüüp(
                 }
             }
             _ = run_dur.tick() => {
+
+                while let Ok(Some((msg, user))) = recv_new_transcription.try_next() {
+                    if msg.trim().is_empty() {
+                        continue;
+                    }
+                    if let Err(e) = manually_send.send((msg, user)).await {
+                        log.log(&format!("Error sending transcription: {}\n", e)).await;
+                    }
+                }
+
                 // log.log(&format!("REALLY LONG STRING FOR TESTING PURPOSES IN THE LOG {}", testint)).await;
                 // testint += 1;
                 if let Some(current) = current_track.as_mut() {
@@ -557,7 +575,7 @@ pub async fn the_lüüp(
                                     let mut t = None;
                                     mem::swap(&mut current_track, &mut t);
                                     if let Some(t) = t.as_mut() {
-                                        if control.settings.repeat {
+                                        if control.settings.repeat && !skipmarker {
                                             queue.insert(0, t.clone());
                                         } else if control.settings.looped {
                                             queue.push(t.clone());
@@ -568,6 +586,7 @@ pub async fn the_lüüp(
                                             }
                                         }
                                     }
+                                    skipmarker = false;
                                     current_track = None;
                                     trackhandle = None;
                                     tts_handle = None;
@@ -578,7 +597,12 @@ pub async fn the_lüüp(
                             Err(e) => {
                                 log.log(&format!("Error getting track info, Timeout: {}\n", e)).await;
                             }
-                            _ => {}
+                            Ok(_) => {
+                                if skipmarker {
+                                    // the skip marker has been set, stop the current track, ignoring the result
+                                    let _ = thandle.stop();
+                                }
+                            }
                         }
                     } else if let Some(tts) = tts_handle.as_mut() {
                         let r = tokio::time::timeout(g_timeout_time, tts.get_info()).await;
@@ -681,12 +705,47 @@ pub async fn the_lüüp(
                                     // the "maybe later" path
                                     Ok(None) => {
                                         // do nothing yet
-                                        log.log("No tts yet").await;
+                                        // log.log("No tts yet").await;
                                     }
                                     // the BAD ENDING
                                     Err(e) => {
-                                        log.log(&format!("Error checking tts: {}\n", e)).await;
+                                        let err = format!("Error checking tts: {}\n", e);
+                                        if !err.contains("None") {
+                                            log.log(&format!("Error checking tts: {}\n", e)).await;
+                                        }
                                         // since we errored, we want to skip playing the tts and just play the song, not entirely sure rn
+                                        let r = match current.video.clone() {
+                                            VideoType::Disk(v) => {
+                                                tokio::time::timeout(
+                                                    Duration::from_secs(30),
+                                                    ffmpeg(&v.path),
+                                                )
+                                                .await
+                                            }
+                                            VideoType::Url(v) => {
+                                                tokio::time::timeout(Duration::from_secs(30), ytdl(&v.url))
+                                                    .await
+                                            }
+                                        };
+
+                                        match r {
+                                            Ok(Ok(src)) => {
+                                                let (mut audio, handle) = create_player(src);
+                                                audio.set_volume(control.settings.volume() as f32);
+                                                clock.play(audio);
+                                                trackhandle = Some(handle);
+                                            },
+                                            Ok(Err(e)) => {
+                                                log.log(&format!(
+                                                    "Error playing track: {}\n",
+                                                    e
+                                                )).await;
+                                            }
+                                            Err(e) => {
+                                                log.log(&format!("Timeout procced: {}\n", e)).await;
+
+                                            }
+                                        }
                                     }
                                 }
 
@@ -1190,8 +1249,7 @@ pub async fn the_lüüp(
     log.log("SHUTTING DOWN").await;
     // transcribe_handler.stop().await;
 
-    let (returner, gimme) =
-        tokio::sync::oneshot::channel::<serenity::futures::channel::mpsc::Receiver<RawMessage>>();
+    let (returner, gimme) = tokio::sync::oneshot::channel::<serenity::futures::channel::mpsc::Receiver<RawMessage>>();
     if killsubthread.send(returner).is_err() {
         log.log("Error sending killsubthread").await;
     }
@@ -1203,8 +1261,7 @@ pub async fn the_lüüp(
     match gimme.await {
         Ok(gimme) => {
             if let Err(e) = control.transcribe.lock().await.unlock(gimme).await {
-                log.log(&format!("Error unlocking transcribe: {}\n", e))
-                    .await;
+                log.log(&format!("Error unlocking transcribe: {}\n", e)).await;
             }
         }
         Err(e) => {
@@ -1215,8 +1272,7 @@ pub async fn the_lüüp(
     control.rx.close();
     calllock.stop();
     if let Err(e) = calllock.leave().await {
-        log.log(&format!("Error leaving voice channel: {}\n", e))
-            .await;
+        log.log(&format!("Error leaving voice channel: {}\n", e)).await;
     }
     if let Some(t) = trackhandle.as_mut() {
         let r = t.stop();
@@ -1230,8 +1286,7 @@ pub async fn the_lüüp(
         while t.delete().await.is_err() {
             tokio::time::sleep(Duration::from_millis(100)).await;
             tries -= 1;
-            log.log(&format!("Failed to delete file, {} tries left", tries))
-                .await;
+            log.log(&format!("Failed to delete file, {} tries left", tries)).await;
             if tries == 0 {
                 log.log("Failed to delete file, giving up").await;
                 break;
@@ -1246,14 +1301,19 @@ pub async fn the_lüüp(
     }
     let r = calllock.leave().await;
     if let Err(e) = r {
-        log.log(&format!("Error leaving voice channel: {}\n", e))
-            .await;
+        log.log(&format!("Error leaving voice channel: {}\n", e)).await;
     }
 
     if killmsg.send(()).is_err() {
         log.log("Error sending killmsg").await;
     } else if let Err(e) = msghandler.await {
         log.log(&format!("Error joining msghandler: {}\n", e)).await;
+    }
+
+    if kill_transcription_thread.send(()).await.is_err() {
+        log.log("Error sending kill_transcription_thread").await;
+    } else if let Err(e) = transcription_thread.await {
+        log.log(&format!("Error joining transcription_thread: {}\n", e)).await;
     }
 
     log.log("Gracefully exited").await;
@@ -1264,11 +1324,7 @@ pub async fn the_lüüp(
 }
 
 fn get_bar(percent_done: f64, length: usize) -> String {
-    let emojis = [
-        ["<:LE:1038954704744480898>", "<:LC:1038954708422885386>"],
-        ["<:CE:1038954710184497203>", "<:CC:1038954696980824094>"],
-        ["<:RE:1038954703033217285>", "<:RC:1038954706841649192>"],
-    ];
+    let emojis = [["<:LE:1038954704744480898>", "<:LC:1038954708422885386>"], ["<:CE:1038954710184497203>", "<:CC:1038954696980824094>"], ["<:RE:1038954703033217285>", "<:RC:1038954706841649192>"]];
     let mut bar = String::new();
 
     // subtract 1/length from percent_done to make sure the bar is always full
@@ -1351,12 +1407,10 @@ impl EmbedData {
             e.thumbnail(thumbnail);
         }
         if let Some((ref footer, ref footer_img)) = self.footer {
-            e.footer(
-                |f: &mut serenity::builder::CreateEmbedFooter| match footer_img {
-                    Some(fimg) => f.text(footer).icon_url(fimg),
-                    None => f.text(footer),
-                },
-            );
+            e.footer(|f: &mut serenity::builder::CreateEmbedFooter| match footer_img {
+                Some(fimg) => f.text(footer).icon_url(fimg),
+                None => f.text(footer),
+            });
         }
     }
 }
@@ -1397,24 +1451,16 @@ pub struct Log {
 
 impl Log {
     pub fn new() -> Self {
-        Self {
-            log: Arc::new(Mutex::new((Vec::new(), Instant::now()))),
-        }
+        Self { log: Arc::new(Mutex::new((Vec::new(), Instant::now()))) }
     }
     pub async fn log(&self, s: &str) {
         let mut d = self.log.lock().await;
         let t = d.1.elapsed();
-        d.0.push(LogString {
-            s: s.to_owned(),
-            time: t,
-        });
+        d.0.push(LogString { s: s.to_owned(), time: t });
     }
     pub async fn get(&self) -> String {
         let d = self.log.lock().await;
-        d.0.iter()
-            .map(|l| l.pretty())
-            .collect::<Vec<String>>()
-            .join("\n")
+        d.0.iter().map(|l| l.pretty()).collect::<Vec<String>>().join("\n")
     }
     pub async fn clear_until(&self, rm: usize) {
         let mut d = self.log.lock().await;

@@ -25,43 +25,19 @@ pub struct Video;
 
 #[serenity::async_trait]
 impl crate::CommandTrait for Video {
-    async fn run(
-        &self,
-        ctx: &Context,
-        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
-    ) {
+    async fn run(&self, ctx: &Context, interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction) {
         dotheroar(ctx, interaction, false).await;
     }
 
     fn register(&self, command: &mut CreateApplicationCommand) {
-        command
-            .name(self.name())
-            .description("Embed a video using ytdl")
-            .create_option(|option| {
-                option
-                    .name("video_url")
-                    .description("The url of the video to embed")
-                    .kind(CommandOptionType::String)
-                    .required(true)
-            })
-            .create_option(|option| {
-                option
-                    .name("spoiler")
-                    .description("Whether to spoiler the video")
-                    .kind(CommandOptionType::Boolean)
-                    .required(false)
-            });
+        command.name(self.name()).description("Embed a video using ytdl").create_option(|option| option.name("video_url").description("The url of the video to embed").kind(CommandOptionType::String).required(true)).create_option(|option| option.name("spoiler").description("Whether to spoiler the video").kind(CommandOptionType::Boolean).required(false));
     }
 
     fn name(&self) -> &str {
         "embed_video"
     }
 
-    async fn autocomplete(
-        &self,
-        _ctx: &Context,
-        _auto: &AutocompleteInteraction,
-    ) -> Result<(), Error> {
+    async fn autocomplete(&self, _ctx: &Context, _auto: &AutocompleteInteraction) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -71,35 +47,18 @@ pub struct Audio;
 
 #[serenity::async_trait]
 impl crate::CommandTrait for Audio {
-    async fn run(
-        &self,
-        ctx: &Context,
-        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
-    ) {
+    async fn run(&self, ctx: &Context, interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction) {
         dotheroar(ctx, interaction, true).await;
     }
 
     fn register(&self, command: &mut CreateApplicationCommand) {
-        command
-            .name(self.name())
-            .description("Embed some audio using ytdl")
-            .create_option(|option| {
-                option
-                    .name("audio_url")
-                    .description("The url of the audio to embed")
-                    .kind(CommandOptionType::String)
-                    .required(true)
-            });
+        command.name(self.name()).description("Embed some audio using ytdl").create_option(|option| option.name("audio_url").description("The url of the audio to embed").kind(CommandOptionType::String).required(true));
     }
 
     fn name(&self) -> &str {
         "embed_audio"
     }
-    async fn autocomplete(
-        &self,
-        _ctx: &Context,
-        _auto: &AutocompleteInteraction,
-    ) -> Result<(), Error> {
+    async fn autocomplete(&self, _ctx: &Context, _auto: &AutocompleteInteraction) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -110,46 +69,27 @@ pub struct John;
 #[serenity::async_trait]
 impl CommandTrait for John {
     fn register(&self, command: &mut CreateApplicationCommand) {
-        command
-            .name(self.name())
-            .description("John")
-            .create_option(|option| {
-                option
-                    .name("image")
-                    .description("Image")
-                    .kind(CommandOptionType::Attachment)
-                    .required(true)
-            });
+        command.name(self.name()).description("John").create_option(|option| option.name("image").description("Image").kind(CommandOptionType::Attachment).required(true));
     }
     fn name(&self) -> &str {
         "john"
     }
-    async fn run(
-        &self,
-        ctx: &Context,
-        interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
-    ) {
+    async fn run(&self, ctx: &Context, interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction) {
         // let interaction = interaction.application_command().unwrap();
-        interaction
-            .create_interaction_response(&ctx.http, |response| {
-                response.kind(InteractionResponseType::DeferredChannelMessageWithSource)
-            })
-            .await
-            .unwrap();
+        if let Err(e) = interaction.create_interaction_response(&ctx.http, |response| response.kind(InteractionResponseType::DeferredChannelMessageWithSource)).await {
+            println!("Error deferring: {}", e);
+        }
         let options = interaction.data.options.clone();
         // deserialize the attachment
-        let attachment = match options[0].resolved.as_ref().unwrap() {
-            serenity::model::prelude::interaction::application_command::CommandDataOptionValue::Attachment(a) => a,
-            _ => unreachable!(),
+        let attachment = match options[0].resolved.as_ref() {
+            Some(serenity::model::prelude::interaction::application_command::CommandDataOptionValue::Attachment(a)) => a,
+            _ => unreachable!("Attachment not found"),
         };
         let f = match attachment.download().await {
             Err(e) => {
-                interaction
-                    .edit_original_interaction_response(&ctx.http, |response| {
-                        response.content(format!("Error: {}", e))
-                    })
-                    .await
-                    .unwrap();
+                if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error: {}", e))).await {
+                    println!("Error editing original interaction response: {}", e);
+                }
                 return;
             }
             Ok(f) => f,
@@ -159,13 +99,8 @@ impl CommandTrait for John {
 
         match john {
             Ok(john) => {
-                let file = serenity::model::channel::AttachmentType::Bytes {
-                    data: john.into(),
-                    filename: format!("john_{}", filename),
-                };
-                let _ = interaction
-                    .delete_original_interaction_response(&ctx.http)
-                    .await;
+                let file = serenity::model::channel::AttachmentType::Bytes { data: john.into(), filename: format!("john_{}", filename) };
+                let _ = interaction.delete_original_interaction_response(&ctx.http).await;
                 let _ = interaction
                     .create_followup_message(&ctx.http, |m| {
                         m.add_file(file);
@@ -174,20 +109,13 @@ impl CommandTrait for John {
                     .await;
             }
             Err(e) => {
-                interaction
-                    .edit_original_interaction_response(&ctx.http, |response| {
-                        response.content(format!("Error: {}", e))
-                    })
-                    .await
-                    .unwrap();
+                if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error: {}", e))).await {
+                    println!("Error editing original interaction response: {}", e);
+                }
             }
         }
     }
-    async fn autocomplete(
-        &self,
-        _ctx: &Context,
-        _auto: &AutocompleteInteraction,
-    ) -> Result<(), Error> {
+    async fn autocomplete(&self, _ctx: &Context, _auto: &AutocompleteInteraction) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -241,12 +169,7 @@ fn john(image: Vec<u8>, filename: &str) -> Result<Vec<u8>, Error> {
             let dynamic_image = DynamicImage::ImageRgba8(buffer.clone());
 
             let johned_image = john_the_image(dynamic_image)?;
-            let johned_frame = Frame::from_parts(
-                johned_image.to_rgba8(),
-                frame.left(),
-                frame.top(),
-                frame.delay(),
-            );
+            let johned_frame = Frame::from_parts(johned_image.to_rgba8(), frame.left(), frame.top(), frame.delay());
 
             frames_output.push(johned_frame);
         }
@@ -268,9 +191,7 @@ fn john(image: Vec<u8>, filename: &str) -> Result<Vec<u8>, Error> {
 }
 
 #[allow(dead_code)]
-fn get_command_data_option_name(
-    option: &serenity::model::application::interaction::application_command::CommandDataOptionValue,
-) -> String {
+fn get_command_data_option_name(option: &serenity::model::application::interaction::application_command::CommandDataOptionValue) -> String {
     match option {
         serenity::model::application::interaction::application_command::CommandDataOptionValue::Attachment(_) => "attachment",
         serenity::model::application::interaction::application_command::CommandDataOptionValue::Boolean(_) => "boolean",
@@ -281,14 +202,11 @@ fn get_command_data_option_name(
         serenity::model::application::interaction::application_command::CommandDataOptionValue::String(_) => "string",
         serenity::model::application::interaction::application_command::CommandDataOptionValue::User(..) => "user",
         _ => "unknown",
-    }.to_owned()
+    }
+    .to_owned()
 }
 
-async fn dotheroar(
-    ctx: &Context,
-    interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction,
-    audio_only: bool,
-) {
+async fn dotheroar(ctx: &Context, interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction, audio_only: bool) {
     // let interaction = interaction.application_command().expect("Not a command");
     match interaction.defer_ephemeral(&ctx.http).await {
         Ok(_) => {}
@@ -328,53 +246,34 @@ async fn dotheroar(
     //     }
     // }
 
-    let option = match interaction
-        .data
-        .options
-        .iter()
-        .find(|o| o.name == "video_url" || o.name == "audio_url")
-    {
+    let option = match interaction.data.options.iter().find(|o| o.name == "video_url" || o.name == "audio_url") {
         Some(o) => match o.value.as_ref() {
             Some(v) => {
                 if let Some(v) = v.as_str() {
                     v
                 } else {
-                    interaction
-                        .edit_original_interaction_response(&ctx.http, |response| {
-                            response.content("This command requires an option")
-                        })
-                        .await
-                        .unwrap();
+                    if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("This command requires an option")).await {
+                        println!("Error editing original interaction response: {}", e);
+                    }
                     return;
                 }
             }
             None => {
-                interaction
-                    .edit_original_interaction_response(&ctx.http, |response| {
-                        response.content("This command requires an option")
-                    })
-                    .await
-                    .unwrap();
+                if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("This command requires an option")).await {
+                    println!("Error editing original interaction response: {}", e);
+                }
                 return;
             }
         },
         None => {
-            interaction
-                .edit_original_interaction_response(&ctx.http, |response| {
-                    response.content("This command requires an option")
-                })
-                .await
-                .unwrap();
+            if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("This command requires an option")).await {
+                println!("Error editing original interaction response: {}", e);
+            }
             return;
         }
     };
 
-    let spoiler = match interaction
-        .data
-        .options
-        .iter()
-        .find(|o| o.name == "spoiler")
-    {
+    let spoiler = match interaction.data.options.iter().find(|o| o.name == "spoiler") {
         Some(o) => match o.value.as_ref() {
             Some(v) => v.as_bool().unwrap_or_default(),
             None => false,
@@ -432,38 +331,20 @@ async fn dotheroar(
     //     Err(e) => Err(e),
     // };
 
-    match crate::video::Video::download_video(option.to_owned(), audio_only, spoiler, max_size)
-        .await
-    {
-        Err(e) => {
-            match interaction
-                .edit_original_interaction_response(&ctx.http, |response| {
-                    response.add_embed(
-                        serenity::builder::CreateEmbed::default()
-                            .title("Error")
-                            .description(format!("{}", e))
-                            .color(serenity::utils::Colour::RED)
-                            .to_owned(),
-                    )
-                })
-                .await
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    println!("Fatal error creating followup message: {}", e)
-                }
+    match crate::video::Video::download_video(option, audio_only, spoiler, max_size).await {
+        Err(e) => match interaction.edit_original_interaction_response(&ctx.http, |response| response.add_embed(serenity::builder::CreateEmbed::default().title("Error").description(format!("{}", e)).color(serenity::utils::Colour::RED).to_owned())).await {
+            Ok(_) => {}
+            Err(e) => {
+                println!("Fatal error creating followup message: {}", e)
             }
-        }
+        },
         Ok(video) => {
             // match video {
             // Some(video) =>
             match video {
                 VideoType::Disk(video) => {
                     let file = serenity::model::channel::AttachmentType::Path(&video.path);
-                    match interaction
-                        .delete_original_interaction_response(&ctx.http)
-                        .await
-                    {
+                    match interaction.delete_original_interaction_response(&ctx.http).await {
                         Ok(_) => {}
                         Err(e) => {
                             println!("Error deleting original interaction response: {}", e)
@@ -472,27 +353,12 @@ async fn dotheroar(
                     if let Err(e) = interaction
                         .create_followup_message(&ctx.http, |m| {
                             m.add_file(file);
-                            m.flags(
-                                serenity::model::prelude::InteractionApplicationCommandCallbackDataFlags::empty(),
-                            );
+                            m.flags(serenity::model::prelude::InteractionApplicationCommandCallbackDataFlags::empty());
                             m
                         })
                         .await
                     {
-                        match interaction
-                            .create_followup_message(&ctx.http, |m| {
-                                m.add_embed(
-                                    serenity::builder::CreateEmbed::default()
-                                        .title("Error")
-                                        .description(format!("{}", e))
-                                        .color(serenity::utils::Colour::RED)
-                                        .to_owned(),
-                                ).flags(
-                                    serenity::model::prelude::InteractionApplicationCommandCallbackDataFlags::EPHEMERAL
-                                )
-                            })
-                            .await
-                        {
+                        match interaction.create_followup_message(&ctx.http, |m| m.add_embed(serenity::builder::CreateEmbed::default().title("Error").description(format!("{}", e)).color(serenity::utils::Colour::RED).to_owned()).flags(serenity::model::prelude::InteractionApplicationCommandCallbackDataFlags::EPHEMERAL)).await {
                             Ok(_) => {}
                             Err(e) => {
                                 println!("Fatal error creating followup message: {}", e)

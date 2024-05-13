@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use crate::commands::music::{LazyLoadedVideo, MetaVideo};
+use crate::video::RawVideo;
 #[cfg(feature = "tts")]
 use crate::{commands::music::VideoType, video::Video};
 use anyhow::Error;
@@ -99,35 +100,20 @@ pub async fn search(query: String, lim: usize) -> Vec<VideoInfo> {
 
 async fn videos_from_raw_youtube_url(url: String, lim: usize) -> Vec<VideoInfo> {
     let client = reqwest::Client::new();
-    let res = client
-        .get(url.as_str())
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36",
-        )
-        .send()
-        .await;
+    let res = client.get(url.as_str()).header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36").send().await;
     let mut videos = Vec::new();
     if let Ok(res) = res {
         let text = res.text().await;
 
         if let Ok(text) = text {
-            let original_id = if url.contains("watch?v=") {
-                url.split("watch?v=").nth(1).map(|s| s.to_string())
-            } else {
-                None
-            };
+            let original_id = if url.contains("watch?v=") { url.split("watch?v=").nth(1).map(|s| s.to_string()) } else { None };
             videos = get_ids_from_html(text, lim, original_id).await;
         }
     }
     videos
 }
 
-async fn get_ids_from_html(
-    text: String,
-    lim: usize,
-    original_id: Option<String>,
-) -> Vec<VideoInfo> {
+async fn get_ids_from_html(text: String, lim: usize, original_id: Option<String>) -> Vec<VideoInfo> {
     let mut ids = text
         .split("/watch?v=")
         .skip(1)
@@ -179,11 +165,7 @@ async fn get_ids_from_html(
 }
 
 pub async fn get_recommendations(url: String, lim: usize) -> Vec<VideoInfo> {
-    if url
-        .split("https://www.youtube.com/watch?v=")
-        .nth(1)
-        .is_none()
-    {
+    if url.split("https://www.youtube.com/watch?v=").nth(1).is_none() {
         return Vec::new();
     }
     videos_from_raw_youtube_url(url, lim).await
@@ -194,19 +176,11 @@ pub async fn get_video_info(url: String) -> Result<VideoInfo, Error> {
     // let title = get_url_title(url.clone()).await;
     let info = get_url_video_info(&url).await?;
 
-    Ok(VideoInfo {
-        title: info.title,
-        url,
-        duration: info.duration,
-    })
+    Ok(VideoInfo { title: info.title, url, duration: info.duration })
 }
 
 pub async fn get_url_video_info(url: &str) -> Result<RawVidInfo, Error> {
-    let dl = ytd_rs::YoutubeDL::new(
-        &std::path::PathBuf::from("/dev/null"),
-        vec![ytd_rs::Arg::new_with_arg("-O", "%(.{title,duration})#j")],
-        url,
-    )?;
+    let dl = ytd_rs::YoutubeDL::new(&std::path::PathBuf::from("/dev/null"), vec![ytd_rs::Arg::new_with_arg("-O", "%(.{title,duration})#j")], url)?;
     let info = dl.download()?;
     let output = info.output();
     Ok(serde_json::from_str(output).map_err(|e| {
@@ -262,36 +236,20 @@ pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
     let token = crate::Config::get().spotify_api_key;
     let url = format!("https://api.spotify.com/v1/tracks/{}", id);
     let client = reqwest::Client::new();
-    let res = client
-        .get(url.as_str())
-        .header("Authorization", format!("Bearer {}", token.clone()))
-        .send()
-        .await?;
+    let res = client.get(url.as_str()).header("Authorization", format!("Bearer {}", token.clone())).send().await?;
     let spoofydata = res.json::<RawSpotifyTrack>().await;
     if let Ok(spoofy) = spoofydata {
-        Ok(vec![format!(
-            "{} - {}",
-            spoofy.name, spoofy.artists[0].name
-        )])
+        Ok(vec![format!("{} - {}", spoofy.name, spoofy.artists[0].name)])
     } else {
         // attempt to get the album
         let url = format!("https://api.spotify.com/v1/albums/{}", id);
         let client = reqwest::Client::new();
-        let res = client
-            .get(url.as_str())
-            .header("Authorization", format!("Bearer {}", token.clone()))
-            .send()
-            .await?;
+        let res = client.get(url.as_str()).header("Authorization", format!("Bearer {}", token.clone())).send().await?;
         // println!("res: {:?}", res.text().await);
         // return Ok(Vec::new());
         let spoofydata = res.json::<RawSpotifyAlbum>().await;
         if let Ok(spoofy) = spoofydata {
-            Ok(spoofy
-                .tracks
-                .items
-                .iter()
-                .map(|t| format!("{} - {}", t.name, t.artists[0].name))
-                .collect())
+            Ok(spoofy.tracks.items.iter().map(|t| format!("{} - {}", t.name, t.artists[0].name)).collect())
         } else {
             println!("spoofydata: {:?}", spoofydata);
             Err(anyhow::anyhow!("Could not get spotify song title"))
@@ -329,11 +287,7 @@ pub struct VideoInfo {
 
 impl VideoInfo {
     pub async fn to_metavideo(&self) -> anyhow::Result<MetaVideo> {
-        let v = crate::video::Video::get_video(self.url.clone(), true)
-            .await?
-            .first()
-            .ok_or(anyhow::anyhow!("Could not get video"))?
-            .clone();
+        let v = crate::video::Video::get_video(&self.url, true, false).await?.first().ok_or(anyhow::anyhow!("Could not get video"))?.clone();
 
         #[cfg(feature = "tts")]
         let key = crate::youtube::get_access_token().await;
@@ -362,34 +316,20 @@ impl VideoInfo {
             //     })
             // }
 
-            Ok(MetaVideo {
-                video: v,
-                ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(
-                    title.clone(),
-                    key.clone(),
-                    None,
-                )))),
-                title,
-                author: None,
-            })
+            Ok(MetaVideo { video: v, ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(title.clone(), key.clone(), None)))), title, author: None })
         } else {
-            Ok(MetaVideo {
-                video: v,
-                ttsmsg: None,
-                title,
-                author: None,
-            })
+            Ok(MetaVideo { video: v, ttsmsg: None, title, author: None })
         }
         #[cfg(not(feature = "tts"))]
         return Ok(MetaVideo { video: v, title });
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 pub struct TTSVoice {
-    pub language_code: String,
-    pub name: String,
-    pub gender: String,
+    pub language_code: &'static str,
+    pub name: &'static str,
+    pub gender: &'static str,
 }
 
 impl Default for TTSVoice {
@@ -399,21 +339,13 @@ impl Default for TTSVoice {
 }
 
 impl TTSVoice {
-    pub fn new(language_code: impl ToString, name: impl ToString, gender: impl ToString) -> Self {
-        Self {
-            language_code: language_code.to_string(),
-            name: name.to_string(),
-            gender: gender.to_string(),
-        }
+    pub fn new(language_code: &'static str, name: &'static str, gender: &'static str) -> Self {
+        Self { language_code, name, gender }
     }
 }
 
 #[cfg(feature = "tts")]
-pub async fn get_tts(
-    title: String,
-    key: String,
-    specificvoice: Option<TTSVoice>,
-) -> Result<Video, Error> {
+pub async fn get_tts(title: String, key: String, specificvoice: Option<TTSVoice>) -> Result<Video, Error> {
     let mut title = title;
     // return Err(anyhow::anyhow!("TTS is currently disabled"));
     // println!("key: {}", key);
@@ -436,9 +368,7 @@ pub async fn get_tts(
     //             .clone()
     //     }
     // };
-    let voice = specificvoice
-        .clone()
-        .unwrap_or_else(|| SILLYVOICES.choose(&mut rand::thread_rng()).unwrap().clone());
+    let voice = specificvoice.unwrap_or_else(|| *SILLYVOICES.choose(&mut rand::thread_rng()).expect("NO SILLY VOICES AVAILABLE"));
 
     // body["voice"] = serde_json::json!(
     //     {
@@ -469,14 +399,7 @@ pub async fn get_tts(
     );
 
     let client = reqwest::Client::new();
-    let res = client
-        .post("https://texttospeech.googleapis.com/v1/text:synthesize")
-        .header("Content-Type", "application/json; charset=utf-8")
-        .header("X-Goog-User-Project", "97417849124")
-        .header("Authorization", format!("Bearer {}", key.trim()))
-        .body(body.to_string())
-        .send()
-        .await?;
+    let res = client.post("https://texttospeech.googleapis.com/v1/text:synthesize").header("Content-Type", "application/json; charset=utf-8").header("X-Goog-User-Project", "97417849124").header("Authorization", format!("Bearer {}", key.trim())).body(body.to_string()).send().await?;
 
     // let res = res?;
     // let text = res.text().await?;
@@ -487,16 +410,11 @@ pub async fn get_tts(
     // we're using the no_pad decoder so we need to remove the padding google adds
     {
         let mut string = String::with_capacity(json.audio_content.len());
-        json.audio_content
-            .trim_end_matches('=')
-            .clone_into(&mut string);
+        json.audio_content.trim_end_matches('=').clone_into(&mut string);
         std::mem::swap(&mut json.audio_content, &mut string);
     }
 
-    let data = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD_NO_PAD,
-        json.audio_content,
-    )?;
+    let data = base64::Engine::decode(&base64::engine::general_purpose::STANDARD_NO_PAD, json.audio_content)?;
 
     let id = nanoid::nanoid!(10);
     let mut path = crate::Config::get().data_path;
@@ -523,12 +441,7 @@ pub struct TTSResponse {
 #[cfg(feature = "tts")]
 pub async fn get_access_token() -> Result<String, Error> {
     #[cfg(target_family = "windows")]
-    match powershell_script::PsScriptBuilder::new()
-        .non_interactive(true)
-        .hidden(true)
-        .build()
-        .run(crate::Config::get().gcloud_script.as_str())
-    {
+    match powershell_script::PsScriptBuilder::new().non_interactive(true).hidden(true).build().run(crate::Config::get().gcloud_script.as_str()) {
         Ok(token) => {
             let t = format!("{}", token).trim().to_string();
             if t.contains(' ') {
@@ -541,11 +454,7 @@ pub async fn get_access_token() -> Result<String, Error> {
     }
     #[cfg(target_family = "unix")]
     {
-        let output = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(crate::Config::get().gcloud_script.as_str())
-            .output()
-            .await?;
+        let output = tokio::process::Command::new("sh").arg("-c").arg(crate::Config::get().gcloud_script.as_str()).output().await?;
 
         let t = String::from_utf8(output.stdout)? + &String::from_utf8(output.stderr)?;
         if t.contains(' ') {
@@ -558,44 +467,107 @@ pub async fn get_access_token() -> Result<String, Error> {
 }
 
 #[cfg(feature = "youtube-search")]
-pub async fn youtube_search(query: String) -> Result<Vec<VideoInfo>, Error> {
-    let client = reqwest::Client::new();
-    let res = client
-        .get("https://www.googleapis.com/youtube/v3/search")
-        .header("Content-Type", "application/json; charset=utf-8")
-        .query(&[
-            ("key", crate::Config::get().youtube_api_key.as_str()),
-            ("part", "snippet"),
-            // ("type", "video"),
-            ("q", query.as_str()),
-        ])
-        .send()
-        .await?;
-    // println!("res: {:?}", res.json().await?);
-    // write res.text().await? to youtube.json
-    // tokio::fs::write("youtube.json", res.text().await?).await?;
-    // Ok(vec![])
-    let r: YTSearchResultMeta = res.json().await?;
-    let mut videos = Vec::new();
-    for item in r.items {
-        let video: VideoInfo = if let Some(id) = item.id.video_id {
-            VideoInfo {
-                title: format!("📼 {}", item.snippet.title.replace("&#39;", "\'")),
-                url: format!("https://www.youtube.com/watch?v={}", id),
-                duration: None,
+// pub async fn youtube_search(query: String) -> Result<Vec<VideoInfo>, Error> {
+//     let client = reqwest::Client::new();
+//     let res = client
+//         .get("https://www.googleapis.com/youtube/v3/search")
+//         .header("Content-Type", "application/json; charset=utf-8")
+//         .query(&[
+//             ("key", crate::Config::get().youtube_api_key.as_str()),
+//             ("part", "snippet"),
+//             // ("type", "video"),
+//             ("q", query.as_str()),
+//         ])
+//         .send()
+//         .await?;
+//     // println!("res: {:?}", res.json().await?);
+//     // write res.text().await? to youtube.json
+//     // tokio::fs::write("youtube.json", res.text().await?).await?;
+//     // Ok(vec![])
+//     let r: YTSearchResultMeta = res.json().await?;
+//     let mut videos = Vec::new();
+//     for item in r.items {
+//         let video: VideoInfo = if let Some(id) = item.id.video_id {
+//             VideoInfo {
+//                 title: format!("📼 {}", item.snippet.title.replace("&#39;", "\'")),
+//                 url: format!("https://www.youtube.com/watch?v={}", id),
+//                 duration: None,
+//             }
+//         } else if let Some(id) = item.id.playlist_id {
+//             VideoInfo {
+//                 title: format!("📃 {}", item.snippet.title.replace("&#39;", "\'")),
+//                 url: format!("https://www.youtube.com/playlist?list={}", id),
+//                 duration: None,
+//             }
+//         } else {
+//             continue;
+//         };
+//         videos.push(video);
+//     }
+//     Ok(videos)
+// }
+pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>, Error> {
+    let url = format!("https://www.youtube.com/results?search_query={}", urlencoding::encode(url));
+    let lim = lim.to_string();
+
+    let mut bot_path = crate::Config::get().data_path.clone();
+    bot_path.push("cookies.txt");
+
+    let output = if bot_path.exists() {
+        tokio::process::Command::new("yt-dlp")
+            .args(["--cookies", bot_path.to_str().expect("Could not convert path to str")])
+            .args(["--default-search", "ytsearch"])
+            // .arg("--dump-json")
+            .args(["-O", "%(.{webpage_url,title,duration,uploader})j"])
+            .arg("--flat-playlist")
+            // .args(["-I", "1"])
+            .args(["--playlist-end", lim.as_str()])
+            .arg("--force-ipv4")
+            .arg(url)
+            .output()
+            .await?
+    } else {
+        tokio::process::Command::new("yt-dlp")
+            .args(["--default-search", "ytsearch"])
+            .args(["-O", "%(.{webpage_url,title,duration,uploader})j"])
+            // .arg("--dump-json")
+            .arg("--flat-playlist")
+            // .args(["-I", "1"])
+            .args(["--playlist-end", lim.as_str()])
+            .arg("--force-ipv4")
+            .arg(url)
+            .output()
+            .await?
+    };
+
+    let output = String::from_utf8(output.stdout)?;
+
+    Ok(output
+        .split('\n')
+        .flat_map(|line| match serde_json::from_str::<YoutubeMedia>(line) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                if !line.trim().is_empty() {
+                    println!("Error: {}", e);
+                }
+                None
             }
-        } else if let Some(id) = item.id.playlist_id {
-            VideoInfo {
-                title: format!("📃 {}", item.snippet.title.replace("&#39;", "\'")),
-                url: format!("https://www.youtube.com/playlist?list={}", id),
-                duration: None,
-            }
-        } else {
-            continue;
-        };
-        videos.push(video);
+        })
+        .collect::<Vec<YoutubeMedia>>())
+}
+
+#[derive(Deserialize, Debug)]
+pub struct YoutubeMedia {
+    #[serde(rename = "webpage_url")]
+    pub url: String,
+    pub title: String,
+    pub duration: Option<f64>,
+    pub uploader: Option<String>,
+}
+impl YoutubeMedia {
+    pub fn to_raw(&self) -> Option<RawVideo> {
+        self.duration.map(|duration| RawVideo { url: self.url.clone(), title: self.title.clone(), duration: duration.floor() as u32 })
     }
-    Ok(videos)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
