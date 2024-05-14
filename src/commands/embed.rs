@@ -21,7 +21,22 @@ impl crate::CommandTrait for Video {
     }
 
     fn register(&self) -> CreateCommand {
-        CreateCommand::new(self.name()).description("Embed a video using ytdl").set_options(vec![CreateCommandOption::new(CommandOptionType::String, "video_url", "The url of the video to embed").required(true), CreateCommandOption::new(CommandOptionType::Boolean, "spoiler", "Whether to spoiler the video").required(false)])
+        CreateCommand::new(self.name())
+            .description("Embed a video using ytdl")
+            .set_options(vec![
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "video_url",
+                    "The url of the video to embed",
+                )
+                .required(true),
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "spoiler",
+                    "Whether to spoiler the video",
+                )
+                .required(false),
+            ])
     }
 
     fn name(&self) -> &str {
@@ -43,7 +58,14 @@ impl crate::CommandTrait for Audio {
     }
 
     fn register(&self) -> CreateCommand {
-        CreateCommand::new(self.name()).description("Embed some audio using ytdl").set_options(vec![CreateCommandOption::new(CommandOptionType::String, "audio_url", "The url of the audio to embed").required(true)])
+        CreateCommand::new(self.name())
+            .description("Embed some audio using ytdl")
+            .set_options(vec![CreateCommandOption::new(
+                CommandOptionType::String,
+                "audio_url",
+                "The url of the audio to embed",
+            )
+            .required(true)])
     }
 
     fn name(&self) -> &str {
@@ -60,13 +82,26 @@ pub struct John;
 #[async_trait]
 impl CommandTrait for John {
     fn register(&self) -> CreateCommand {
-        CreateCommand::new(self.name()).description("John").set_options(vec![CreateCommandOption::new(CommandOptionType::Attachment, "image", "Image").required(true)])
+        CreateCommand::new(self.name())
+            .description("John")
+            .set_options(vec![CreateCommandOption::new(
+                CommandOptionType::Attachment,
+                "image",
+                "Image",
+            )
+            .required(true)])
     }
     fn name(&self) -> &str {
         "john"
     }
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
-        if let Err(e) = interaction.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new())).await {
+        if let Err(e) = interaction
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new()),
+            )
+            .await
+        {
             println!("Error deferring: {}", e);
         }
         let options = interaction.data.options();
@@ -74,7 +109,14 @@ impl CommandTrait for John {
         let attachment = match options.iter().find(|o| o.name == "image").map(|c| &c.value) {
             Some(ResolvedValue::Attachment(a)) => a,
             _ => {
-                if let Err(e) = interaction.edit_response(&ctx.http, EditInteractionResponse::new().content("this command requires an attachment")).await {
+                if let Err(e) = interaction
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content("this command requires an attachment"),
+                    )
+                    .await
+                {
                     println!("Error editing original interaction response: {}", e);
                 }
                 return;
@@ -82,7 +124,13 @@ impl CommandTrait for John {
         };
         let f = match attachment.download().await {
             Err(e) => {
-                if let Err(e) = interaction.edit_response(&ctx.http, EditInteractionResponse::new().content(format!("Error: {}", e))).await {
+                if let Err(e) = interaction
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await
+                {
                     println!("Error editing original interaction response: {}", e);
                 }
                 return;
@@ -96,10 +144,21 @@ impl CommandTrait for John {
             Ok(john) => {
                 let file = CreateAttachment::bytes(john, format!("john_{}", filename));
                 let _ = interaction.delete_response(&ctx.http).await;
-                let _ = interaction.create_followup(&ctx.http, CreateInteractionResponseFollowup::new().add_file(file)).await;
+                let _ = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new().add_file(file),
+                    )
+                    .await;
             }
             Err(e) => {
-                if let Err(e) = interaction.edit_response(&ctx.http, EditInteractionResponse::new().content(format!("Error: {}", e))).await {
+                if let Err(e) = interaction
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await
+                {
                     println!("Error editing original interaction response: {}", e);
                 }
             }
@@ -159,7 +218,12 @@ fn john(image: Vec<u8>, filename: &str) -> Result<Vec<u8>, Error> {
             let dynamic_image = DynamicImage::ImageRgba8(buffer.clone());
 
             let johned_image = john_the_image(dynamic_image)?;
-            let johned_frame = Frame::from_parts(johned_image.to_rgba8(), frame.left(), frame.top(), frame.delay());
+            let johned_frame = Frame::from_parts(
+                johned_image.to_rgba8(),
+                frame.left(),
+                frame.top(),
+                frame.delay(),
+            );
 
             frames_output.push(johned_frame);
         }
@@ -212,7 +276,19 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
     }) {
         Some((ResolvedValue::String(s), kind)) => (s, kind),
         _ => {
-            if let Err(e) = interaction.edit_response(&ctx.http, EditInteractionResponse::new().content("this command requires a string")).await {
+            if let Err(e) = interaction
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new().add_embed(
+                        builder::CreateEmbed::default()
+                            .title("Error")
+                            .description("This command requires a video url")
+                            .color(Color::RED)
+                            .to_owned(),
+                    ),
+                )
+                .await
+            {
                 println!("Error editing original interaction response: {}", e);
             }
             return;
@@ -245,7 +321,19 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
     }
 
     match crate::video::Video::download_video(option, media_type, spoiler, max_size).await {
-        Err(e) => match interaction.edit_response(&ctx.http, EditInteractionResponse::new().content(format!("Error: {}", e))).await {
+        Err(e) => match interaction
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new().add_embed(
+                    builder::CreateEmbed::default()
+                        .title("Error")
+                        .description(format!("{}", e))
+                        .color(Color::RED)
+                        .to_owned(),
+                ),
+            )
+            .await
+        {
             Ok(_) => {}
             Err(e) => {
                 println!("Fatal error creating followup message: {}", e)
@@ -257,7 +345,21 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                     let file = match CreateAttachment::path(&video.path).await {
                         Ok(f) => f,
                         Err(e) => {
-                            match interaction.create_followup(&ctx.http, CreateInteractionResponseFollowup::new().add_embed(builder::CreateEmbed::default().title("Error").description(format!("{}", e)).color(Colour::RED).to_owned()).ephemeral(true)).await {
+                            match interaction
+                                .create_followup(
+                                    &ctx.http,
+                                    CreateInteractionResponseFollowup::new()
+                                        .add_embed(
+                                            builder::CreateEmbed::default()
+                                                .title("Error")
+                                                .description(format!("{}", e))
+                                                .color(Color::RED)
+                                                .to_owned(),
+                                        )
+                                        .ephemeral(true),
+                                )
+                                .await
+                            {
                                 Ok(_) => {}
                                 Err(e) => {
                                     println!("Fatal error creating followup message: {}", e)
@@ -272,8 +374,28 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                             println!("Error deleting original interaction response: {}", e)
                         }
                     };
-                    if let Err(e) = interaction.create_followup(&ctx.http, CreateInteractionResponseFollowup::new().add_file(file)).await {
-                        match interaction.create_followup(&ctx.http, CreateInteractionResponseFollowup::new().add_embed(builder::CreateEmbed::default().title("Error").description(format!("{}", e)).color(Colour::RED).to_owned()).ephemeral(true)).await {
+                    if let Err(e) = interaction
+                        .create_followup(
+                            &ctx.http,
+                            CreateInteractionResponseFollowup::new().add_file(file),
+                        )
+                        .await
+                    {
+                        match interaction
+                            .create_followup(
+                                &ctx.http,
+                                CreateInteractionResponseFollowup::new()
+                                    .add_embed(
+                                        builder::CreateEmbed::default()
+                                            .title("Error")
+                                            .description(format!("{}", e))
+                                            .color(Color::RED)
+                                            .to_owned(),
+                                    )
+                                    .ephemeral(true),
+                            )
+                            .await
+                        {
                             Ok(_) => {}
                             Err(e) => {
                                 println!("Fatal error creating followup message: {}", e)

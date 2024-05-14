@@ -3,10 +3,16 @@ use anyhow::Result;
 
 pub fn get_speech(text: &str) -> Result<Video> {
     let config = crate::Config::get();
-    let output = std::process::Command::new("node").arg(config.sam_path).arg(text).output()?;
+    let output = std::process::Command::new("node")
+        .arg(config.sam_path)
+        .arg(text)
+        .output()?;
 
     if !output.status.success() {
-        return Err(anyhow::anyhow!("Failed to run command: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(anyhow::anyhow!(
+            "Failed to run command: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let mut path = config.data_path.clone();

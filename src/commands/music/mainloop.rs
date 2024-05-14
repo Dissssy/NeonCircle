@@ -963,7 +963,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                     // } else {
                     //     log.log(&format!("Error updating message: {}\n", r)).await;
                     // }
-                    embed.color = Some(Colour::from_rgb(184, 29, 19));
+                    embed.color = Some(Color::from_rgb(184, 29, 19));
                 } else {
                     if let Some(ref data) = data {
                         embed.author = Some(format!(
@@ -1106,7 +1106,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                             }
                             // message.log("```");
                         }
-                        embed.color = Some(Colour::from_rgb(0, 132, 80));
+                        embed.color = Some(Color::from_rgb(0, 132, 80));
                     } else {
                         // message.log("Queue:\n");
                         // message.log("```\n");
@@ -1129,7 +1129,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
 
                         embed.footer = Some((total_length_str, None));
 
-                        embed.color = Some(Colour::from_rgb(253, 218, 22));
+                        embed.color = Some(Color::from_rgb(253, 218, 22));
                     }
                     if !possible_body.is_empty() {
                         embed.body = Some(possible_body);
@@ -1376,7 +1376,7 @@ pub struct EmbedData {
     author: Option<String>,
     author_url: Option<String>,
     author_icon_url: Option<String>,
-    color: Option<Colour>,
+    color: Option<Color>,
     pub body: Option<String>,
     fields: Vec25<(String, String, bool)>,
     thumbnail: Option<String>,
@@ -1440,7 +1440,7 @@ impl Default for EmbedData {
             author: Some("Invite me to your server!".to_owned()),
             author_url: Some("https://discord.com/oauth2/authorize?client_id=1035364346471133194&permissions=274881349696&scope=bot".to_owned()),
             author_icon_url: None,
-            color: Some(Colour::from_rgb(0, 0, 0)),
+            color: Some(Color::from_rgb(0, 0, 0)),
             body: None,
             fields: Vec25::new(),
             thumbnail: None,

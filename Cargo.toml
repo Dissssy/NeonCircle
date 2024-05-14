@@ -48,16 +48,16 @@ powershell_script = "1.0.4"
 
 [features]
 default = ["all"]
-all = ["spotify", "youtube-search", "tts", "read-titles-by-default", "new-controls", "transcribe"]
+all = ["spotify", "youtube-search", "tts", "read-titles-by-default", "transcribe"]
 transcribe = []
 download = []
 spotify = []
 youtube-search = []
 tts = []
 read-titles-by-default = []
-new-controls = []
 
-experimental = ["google-journey-tts"]
+experimental = ["google-journey-tts", "new-controls"]
+new-controls = []
 google-journey-tts = ["tts"]
 
 # funny

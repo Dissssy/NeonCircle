@@ -50,7 +50,11 @@ where
     fn register(&self) -> CreateCommand;
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction);
     fn name(&self) -> &str;
-    async fn autocomplete(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), Error>;
+    async fn autocomplete(
+        &self,
+        ctx: &Context,
+        interaction: &CommandInteraction,
+    ) -> Result<(), Error>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,13 +91,15 @@ impl EventHandler for Handler {
             Interaction::Component(mci) => {
                 let cmd = match mci.data.kind {
                     ComponentInteractionDataKind::Button => mci.data.custom_id.as_str(),
-                    ComponentInteractionDataKind::StringSelect { ref values } => match values.first() {
-                        Some(v) => v.as_str(),
-                        None => {
-                            println!("No values in select");
-                            return;
+                    ComponentInteractionDataKind::StringSelect { ref values } => {
+                        match values.first() {
+                            Some(v) => v.as_str(),
+                            None => {
+                                println!("No values in select");
+                                return;
+                            }
                         }
-                    },
+                    }
                     _ => {
                         println!("Unknown component type");
                         return;
@@ -101,7 +107,15 @@ impl EventHandler for Handler {
                 };
 
                 if cmd == "controls" {
-                    if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await {
+                    if let Err(e) = mci
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Defer(
+                                CreateInteractionResponseMessage::new().ephemeral(true),
+                            ),
+                        )
+                        .await
+                    {
                         eprintln!("Failed to send response: {}", e);
                     };
                     return;
@@ -338,7 +352,12 @@ impl EventHandler for Handler {
             }
             Interaction::Modal(p) => match p.data.custom_id.as_str() {
                 "feedback" => {
-                    let i = match p.data.components.first().and_then(|ar| ar.components.first()) {
+                    let i = match p
+                        .data
+                        .components
+                        .first()
+                        .and_then(|ar| ar.components.first())
+                    {
                         Some(ActionRowComponent::InputText(feedback)) => feedback,
                         Some(_) => {
                             eprintln!("Invalid components in feedback modal");
@@ -364,7 +383,10 @@ impl EventHandler for Handler {
                     );
                     match ctx.http.get_user(UserId::new(156533151198478336)).await {
                         Ok(user) => {
-                            if let Err(e) = user.dm(&ctx.http, CreateMessage::default().content(&feedback)).await {
+                            if let Err(e) = user
+                                .dm(&ctx.http, CreateMessage::default().content(&feedback))
+                                .await
+                            {
                                 println!("Failed to send feedback: {}", e);
                                 content = format!("{}{}\n{}\n{}\n{}", content, "Unfortunately, I failed to send your feedback to the developer.", "If you're able to, be sure to send it to him yourself!", "He's <@156533151198478336> (monkey_d._issy)\n\nHere's a copy if you need it.", feedback);
                             }
@@ -375,12 +397,27 @@ impl EventHandler for Handler {
                         }
                     }
 
-                    if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(content).ephemeral(true))).await {
+                    if let Err(e) = p
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content(content)
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await
+                    {
                         eprintln!("Failed to send response: {}", e);
                     }
                 }
                 raw if ["volume", "radiovolume"].iter().any(|a| *a == raw) => {
-                    let val = match p.data.components.first().and_then(|ar| ar.components.first()) {
+                    let val = match p
+                        .data
+                        .components
+                        .first()
+                        .and_then(|ar| ar.components.first())
+                    {
                         Some(ActionRowComponent::InputText(volume)) => match volume.value {
                             Some(ref v) => v,
                             None => {
@@ -403,7 +440,17 @@ impl EventHandler for Handler {
                         Err(e) => {
                             println!("Failed to parse volume: {}", e);
 
-                            if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("`{}` is not a valid number", val)).ephemeral(true))).await {
+                            if let Err(e) = p
+                                .create_response(
+                                    &ctx.http,
+                                    CreateInteractionResponse::Message(
+                                        CreateInteractionResponseMessage::new()
+                                            .content(format!("`{}` is not a valid number", val))
+                                            .ephemeral(true),
+                                    ),
+                                )
+                                .await
+                            {
                                 eprintln!("Failed to send response: {}", e);
                             }
                             return;
@@ -411,7 +458,17 @@ impl EventHandler for Handler {
                     };
 
                     if !(0.0..=100.0).contains(&val) {
-                        if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("`{}` is outside 0-100", val)).ephemeral(true))).await {
+                        if let Err(e) = p
+                            .create_response(
+                                &ctx.http,
+                                CreateInteractionResponse::Message(
+                                    CreateInteractionResponseMessage::new()
+                                        .content(format!("`{}` is outside 0-100", val))
+                                        .ephemeral(true),
+                                ),
+                            )
+                            .await
+                        {
                             eprintln!("Failed to send response: {}", e);
                         }
                         return;
@@ -420,7 +477,17 @@ impl EventHandler for Handler {
                     let guild_id = match p.guild_id {
                         Some(id) => id,
                         None => {
-                            if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("This can only be used in a server").ephemeral(true))).await {
+                            if let Err(e) = p
+                                .create_response(
+                                    &ctx.http,
+                                    CreateInteractionResponse::Message(
+                                        CreateInteractionResponseMessage::new()
+                                            .content("This can only be used in a server")
+                                            .ephemeral(true),
+                                    ),
+                                )
+                                .await
+                            {
                                 eprintln!("Failed to send response: {}", e);
                                 return;
                             }
@@ -428,12 +495,21 @@ impl EventHandler for Handler {
                         }
                     };
 
-                    if let (Some(v), Some(member)) = (ctx.data.read().await.get::<VoiceData>().cloned(), p.member.as_ref()) {
+                    if let (Some(v), Some(member)) = (
+                        ctx.data.read().await.get::<VoiceData>().cloned(),
+                        p.member.as_ref(),
+                    ) {
                         let mut v = v.lock().await;
                         let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
 
                         if let VoiceAction::InSame(_c) = next_step {
-                            let audio_command_handler = ctx.data.read().await.get::<AudioCommandHandler>().expect("Expected AudioCommandHandler in TypeMap").clone();
+                            let audio_command_handler = ctx
+                                .data
+                                .read()
+                                .await
+                                .get::<AudioCommandHandler>()
+                                .expect("Expected AudioCommandHandler in TypeMap")
+                                .clone();
 
                             let mut audio_command_handler = audio_command_handler.lock().await;
 
@@ -442,25 +518,53 @@ impl EventHandler for Handler {
                                 if let Err(e) = tx.send((
                                     rtx,
                                     match raw {
-                                        "volume" => AudioPromiseCommand::SpecificVolume(SpecificVolume::Volume(val / 100.0)),
-                                        "radiovolume" => AudioPromiseCommand::SpecificVolume(SpecificVolume::RadioVolume(val / 100.0)),
+                                        "volume" => AudioPromiseCommand::SpecificVolume(
+                                            SpecificVolume::Volume(val / 100.0),
+                                        ),
+                                        "radiovolume" => AudioPromiseCommand::SpecificVolume(
+                                            SpecificVolume::RadioVolume(val / 100.0),
+                                        ),
                                         uh => {
                                             println!("Unknown volume to set: {}", uh);
                                             return;
                                         }
                                     },
                                 )) {
-                                    if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for {} ERR {}", raw, e)).ephemeral(true))).await {
+                                    if let Err(e) = p
+                                        .create_response(
+                                            &ctx.http,
+                                            CreateInteractionResponse::Message(
+                                                CreateInteractionResponseMessage::new()
+                                                    .content(format!(
+                                                        "Failed to issue command for {} ERR {}",
+                                                        raw, e
+                                                    ))
+                                                    .ephemeral(true),
+                                            ),
+                                        )
+                                        .await
+                                    {
                                         eprintln!("Failed to send response: {}", e);
                                     }
                                     return;
                                 }
 
-                                let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rrx).await;
+                                let timeout =
+                                    tokio::time::timeout(std::time::Duration::from_secs(10), rrx)
+                                        .await;
 
                                 match timeout {
                                     Ok(Ok(_msg)) => {
-                                        if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await {
+                                        if let Err(e) = p
+                                            .create_response(
+                                                &ctx.http,
+                                                CreateInteractionResponse::Defer(
+                                                    CreateInteractionResponseMessage::new()
+                                                        .ephemeral(true),
+                                                ),
+                                            )
+                                            .await
+                                        {
                                             eprintln!("Failed to send response: {}", e);
                                         }
                                         return;
@@ -473,7 +577,20 @@ impl EventHandler for Handler {
                                     }
                                 }
 
-                                if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for {}", raw)).ephemeral(true))).await {
+                                if let Err(e) = p
+                                    .create_response(
+                                        &ctx.http,
+                                        CreateInteractionResponse::Message(
+                                            CreateInteractionResponseMessage::new()
+                                                .content(format!(
+                                                    "Failed to issue command for {}",
+                                                    raw
+                                                ))
+                                                .ephemeral(true),
+                                        ),
+                                    )
+                                    .await
+                                {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
@@ -489,7 +606,12 @@ impl EventHandler for Handler {
                     }
                 }
                 "bitrate" => {
-                    let val = match p.data.components.first().and_then(|ar| ar.components.first()) {
+                    let val = match p
+                        .data
+                        .components
+                        .first()
+                        .and_then(|ar| ar.components.first())
+                    {
                         Some(ActionRowComponent::InputText(bitrate)) => match bitrate.value {
                             Some(ref v) => v,
                             None => {
@@ -516,14 +638,37 @@ impl EventHandler for Handler {
                                 Err(e) => {
                                     println!("Failed to parse bitrate: {}", e);
 
-                                    if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("`{}` is not a valid number", val)).ephemeral(true))).await {
+                                    if let Err(e) = p
+                                        .create_response(
+                                            &ctx.http,
+                                            CreateInteractionResponse::Message(
+                                                CreateInteractionResponseMessage::new()
+                                                    .content(format!(
+                                                        "`{}` is not a valid number",
+                                                        val
+                                                    ))
+                                                    .ephemeral(true),
+                                            ),
+                                        )
+                                        .await
+                                    {
                                         eprintln!("Failed to send response: {}", e);
                                     }
                                     return;
                                 }
                             };
                             if !(512..=512000).contains(&val) {
-                                if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("`{}` is outside 512-512000", val)).ephemeral(true))).await {
+                                if let Err(e) = p
+                                    .create_response(
+                                        &ctx.http,
+                                        CreateInteractionResponse::Message(
+                                            CreateInteractionResponseMessage::new()
+                                                .content(format!("`{}` is outside 512-512000", val))
+                                                .ephemeral(true),
+                                        ),
+                                    )
+                                    .await
+                                {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
@@ -536,7 +681,17 @@ impl EventHandler for Handler {
                     let guild_id = match p.guild_id {
                         Some(id) => id,
                         None => {
-                            if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("This can only be used in a server").ephemeral(true))).await {
+                            if let Err(e) = p
+                                .create_response(
+                                    &ctx.http,
+                                    CreateInteractionResponse::Message(
+                                        CreateInteractionResponseMessage::new()
+                                            .content("This can only be used in a server")
+                                            .ephemeral(true),
+                                    ),
+                                )
+                                .await
+                            {
                                 eprintln!("Failed to send response: {}", e);
                                 return;
                             }
@@ -544,29 +699,50 @@ impl EventHandler for Handler {
                         }
                     };
 
-                    if let (Some(v), Some(member)) = (ctx.data.read().await.get::<VoiceData>().cloned(), p.member.as_ref()) {
+                    if let (Some(v), Some(member)) = (
+                        ctx.data.read().await.get::<VoiceData>().cloned(),
+                        p.member.as_ref(),
+                    ) {
                         let mut v = v.lock().await;
                         let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
 
                         if let VoiceAction::InSame(_c) = next_step {
-                            let audio_command_handler = ctx.data.read().await.get::<AudioCommandHandler>().expect("Expected AudioCommandHandler in TypeMap").clone();
+                            let audio_command_handler = ctx
+                                .data
+                                .read()
+                                .await
+                                .get::<AudioCommandHandler>()
+                                .expect("Expected AudioCommandHandler in TypeMap")
+                                .clone();
 
                             let mut audio_command_handler = audio_command_handler.lock().await;
 
                             if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
                                 let (rtx, rrx) = oneshot::channel::<String>();
-                                if let Err(e) = tx.send((rtx, AudioPromiseCommand::SetBitrate(val))) {
+                                if let Err(e) = tx.send((rtx, AudioPromiseCommand::SetBitrate(val)))
+                                {
                                     if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for bitrate ERR {}", e)).ephemeral(true))).await {
                                         eprintln!("Failed to send response: {}", e);
                                     }
                                     return;
                                 }
 
-                                let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rrx).await;
+                                let timeout =
+                                    tokio::time::timeout(std::time::Duration::from_secs(10), rrx)
+                                        .await;
 
                                 match timeout {
                                     Ok(Ok(_msg)) => {
-                                        if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await {
+                                        if let Err(e) = p
+                                            .create_response(
+                                                &ctx.http,
+                                                CreateInteractionResponse::Defer(
+                                                    CreateInteractionResponseMessage::new()
+                                                        .ephemeral(true),
+                                                ),
+                                            )
+                                            .await
+                                        {
                                             eprintln!("Failed to send response: {}", e);
                                         }
                                         return;
@@ -579,7 +755,17 @@ impl EventHandler for Handler {
                                     }
                                 }
 
-                                if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Failed to issue command for bitrate").ephemeral(true))).await {
+                                if let Err(e) = p
+                                    .create_response(
+                                        &ctx.http,
+                                        CreateInteractionResponse::Message(
+                                            CreateInteractionResponseMessage::new()
+                                                .content("Failed to issue command for bitrate")
+                                                .ephemeral(true),
+                                        ),
+                                    )
+                                    .await
+                                {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
@@ -595,7 +781,15 @@ impl EventHandler for Handler {
                     }
                 }
                 "log" => {
-                    if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new())).await {
+                    if let Err(e) = p
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Defer(
+                                CreateInteractionResponseMessage::new(),
+                            ),
+                        )
+                        .await
+                    {
                         eprintln!("Failed to send response: {}", e);
                     }
                 }
@@ -613,7 +807,13 @@ impl EventHandler for Handler {
         println!("{} is connected!", ready.user.name);
         let mut users = Vec::new();
 
-        let voicedata = ctx.data.read().await.get::<VoiceData>().expect("Expected VoiceData in TypeMap.").clone();
+        let voicedata = ctx
+            .data
+            .read()
+            .await
+            .get::<VoiceData>()
+            .expect("Expected VoiceData in TypeMap.")
+            .clone();
 
         let mut voicedata = voicedata.lock().await;
 
@@ -648,7 +848,9 @@ impl EventHandler for Handler {
             finalusers.push(UserSafe { id });
         }
 
-        let mut req = reqwest::Client::new().post("http://localhost:16834/api/set/user").json(&finalusers);
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16834/api/set/user")
+            .json(&finalusers);
         if let Some(token) = Config::get().string_api_token {
             req = req.bearer_auth(token);
         }
@@ -656,7 +858,9 @@ impl EventHandler for Handler {
             println!("Failed to send users to api {e}. Users might be out of date");
         }
 
-        let mut req = reqwest::Client::new().post("http://localhost:16835/api/set/user").json(&finalusers);
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16835/api/set/user")
+            .json(&finalusers);
         if let Some(token) = Config::get().string_api_token {
             req = req.bearer_auth(token);
         }
@@ -665,7 +869,15 @@ impl EventHandler for Handler {
         }
 
         println!("Registering commands");
-        if let Err(e) = Command::set_global_commands(&ctx.http, self.commands.iter().map(|command| command.register()).collect()).await {
+        if let Err(e) = Command::set_global_commands(
+            &ctx.http,
+            self.commands
+                .iter()
+                .map(|command| command.register())
+                .collect(),
+        )
+        .await
+        {
             eprintln!("Failed to register commands: {}", e);
         }
     }
@@ -673,7 +885,9 @@ impl EventHandler for Handler {
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
         let data = {
             let uh = ctx.data.read().await;
-            uh.get::<VoiceData>().expect("Expected VoiceData in TypeMap.").clone()
+            uh.get::<VoiceData>()
+                .expect("Expected VoiceData in TypeMap.")
+                .clone()
         };
         {
             let mut data = data.lock().await;
@@ -695,7 +909,13 @@ impl EventHandler for Handler {
             return;
         }
 
-        let audio_command_handler = ctx.data.read().await.get::<AudioCommandHandler>().expect("Expected AudioCommandHandler in TypeMap").clone();
+        let audio_command_handler = ctx
+            .data
+            .read()
+            .await
+            .get::<AudioCommandHandler>()
+            .expect("Expected AudioCommandHandler in TypeMap")
+            .clone();
 
         let mut audio_command_handler = audio_command_handler.lock().await;
 
@@ -730,7 +950,16 @@ impl EventHandler for Handler {
             Some(guild) => guild,
             None => return,
         };
-        let em = match ctx.data.write().await.get_mut::<TranscribeData>().expect("Expected TranscribeData in TypeMap.").lock().await.entry(guild_id) {
+        let em = match ctx
+            .data
+            .write()
+            .await
+            .get_mut::<TranscribeData>()
+            .expect("Expected TranscribeData in TypeMap.")
+            .lock()
+            .await
+            .entry(guild_id)
+        {
             std::collections::hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
             std::collections::hash_map::Entry::Vacant(e) => {
                 let uh = TranscribeChannelHandler::new();
@@ -779,7 +1008,9 @@ impl EventHandler for Handler {
             finalusers.push(UserSafe { id });
         }
 
-        let mut req = reqwest::Client::new().post("http://localhost:16834/api/set/user").json(&finalusers);
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16834/api/set/user")
+            .json(&finalusers);
         if let Some(token) = Config::get().string_api_token {
             req = req.bearer_auth(token);
         }
@@ -787,7 +1018,9 @@ impl EventHandler for Handler {
             println!("Failed to send users to api {e}. Users might be out of date");
         }
 
-        let mut req = reqwest::Client::new().post("http://localhost:16835/api/set/user").json(&finalusers);
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16835/api/set/user")
+            .json(&finalusers);
         if let Some(token) = Config::get().string_api_token {
             req = req.bearer_auth(token);
         }
@@ -799,7 +1032,9 @@ impl EventHandler for Handler {
     async fn guild_member_addition(&self, _ctx: Context, new_member: Member) {
         let id = new_member.user.id.get().to_string();
 
-        let mut req = reqwest::Client::new().post("http://localhost:16834/api/add/user").json(&UserSafe { id: id.clone() });
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16834/api/add/user")
+            .json(&UserSafe { id: id.clone() });
         if let Some(token) = Config::get().string_api_token {
             req = req.bearer_auth(token);
         }
@@ -807,7 +1042,9 @@ impl EventHandler for Handler {
             println!("Failed to add user to api {e}. Users might be out of date");
         }
 
-        let mut req = reqwest::Client::new().post("http://localhost:16835/api/add/user").json(&UserSafe { id });
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16835/api/add/user")
+            .json(&UserSafe { id });
         if let Some(token) = Config::get().string_api_token {
             req = req.bearer_auth(token);
         }
@@ -816,10 +1053,18 @@ impl EventHandler for Handler {
         }
     }
 
-    async fn guild_member_removal(&self, _ctx: Context, _guild_id: GuildId, user: User, _member_data_if_available: Option<Member>) {
+    async fn guild_member_removal(
+        &self,
+        _ctx: Context,
+        _guild_id: GuildId,
+        user: User,
+        _member_data_if_available: Option<Member>,
+    ) {
         let id = user.id.get().to_string();
 
-        let mut req = reqwest::Client::new().post("http://localhost:16834/api/remove/user").json(&UserSafe { id: id.clone() });
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16834/api/remove/user")
+            .json(&UserSafe { id: id.clone() });
         if let Some(token) = Config::get().string_api_token {
             req = req.bearer_auth(token);
         }
@@ -827,7 +1072,9 @@ impl EventHandler for Handler {
             println!("Failed to remove user from api {e}. Users might be out of date");
         }
 
-        let mut req = reqwest::Client::new().post("http://localhost:16835/api/remove/user").json(&UserSafe { id });
+        let mut req = reqwest::Client::new()
+            .post("http://localhost:16835/api/remove/user")
+            .json(&UserSafe { id });
         if let Some(token) = Config::get().string_api_token {
             req = req.bearer_auth(token);
         }
@@ -880,20 +1127,35 @@ async fn main() {
         Box::new(commands::embed::John),
     ]);
 
-    let config = songbird::Config::default().preallocated_tracks(2).decode_mode(songbird::driver::DecodeMode::Decode).crypto_mode(songbird::driver::CryptoMode::Lite);
+    let config = songbird::Config::default()
+        .preallocated_tracks(2)
+        .decode_mode(songbird::driver::DecodeMode::Decode)
+        .crypto_mode(songbird::driver::CryptoMode::Lite);
 
-    let mut client = Client::builder(token, GatewayIntents::all()).register_songbird_from_config(config).event_handler(handler).await.expect("Error creating client");
+    let mut client = Client::builder(token, GatewayIntents::all())
+        .register_songbird_from_config(config)
+        .event_handler(handler)
+        .await
+        .expect("Error creating client");
     {
         let mut data = client.data.write().await;
         data.insert::<commands::music::AudioHandler>(Arc::new(Mutex::new(HashMap::new())));
         data.insert::<commands::music::AudioCommandHandler>(Arc::new(Mutex::new(HashMap::new())));
-        data.insert::<commands::music::VoiceData>(Arc::new(Mutex::new(commands::music::InnerVoiceData::new(client.cache.current_user().id))));
-        data.insert::<commands::music::transcribe::TranscribeData>(Arc::new(Mutex::new(HashMap::new())));
+        data.insert::<commands::music::VoiceData>(Arc::new(Mutex::new(
+            commands::music::InnerVoiceData::new(client.cache.current_user().id),
+        )));
+        data.insert::<commands::music::transcribe::TranscribeData>(Arc::new(Mutex::new(
+            HashMap::new(),
+        )));
     }
 
     let mut tick = tokio::time::interval({
         let now = chrono::Local::now();
-        let mut next = chrono::Local::now().date_naive().and_hms_opt(8, 0, 0).expect("Failed to get next 8 am, wtf? did time end?").and_utc();
+        let mut next = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(8, 0, 0)
+            .expect("Failed to get next 8 am, wtf? did time end?")
+            .and_utc();
         if next < now {
             next += chrono::Duration::days(1);
         }
@@ -958,7 +1220,10 @@ async fn main() {
         }
     }
 
-    if let Some(v) = dw.get::<commands::music::transcribe::TranscribeData>().take() {
+    if let Some(v) = dw
+        .get::<commands::music::transcribe::TranscribeData>()
+        .take()
+    {
         v.lock().await.clear();
     }
 
@@ -1000,7 +1265,11 @@ struct Config {
 impl Config {
     pub fn get() -> Self {
         let path = dirs::data_dir();
-        let mut path = if let Some(path) = path { path } else { PathBuf::from(".") };
+        let mut path = if let Some(path) = path {
+            path
+        } else {
+            PathBuf::from(".")
+        };
         path.push("RmbConfig.json");
         Self::get_from_path(path)
     }
@@ -1009,44 +1278,122 @@ impl Config {
             println!("Welcome back to my shitty Rust Music Bot!");
             println!("It appears that you have run the bot before, but the config got biffed up.");
             println!("I will take you through a short onboarding process to get you back up and running.");
-            let app_name = if let Some(app_name) = rec.app_name { app_name } else { Self::safe_read("\nPlease enter your application name:") };
-            let mut data_path = config_path.parent().expect("Failed to get parent, this should never happen.").to_path_buf();
+            let app_name = if let Some(app_name) = rec.app_name {
+                app_name
+            } else {
+                Self::safe_read("\nPlease enter your application name:")
+            };
+            let mut data_path = config_path
+                .parent()
+                .expect("Failed to get parent, this should never happen.")
+                .to_path_buf();
             data_path.push(app_name.clone());
             Config {
-                token: if let Some(token) = rec.token { token } else { Self::safe_read("\nPlease enter your bot token:") },
-                guild_id: if let Some(guild_id) = rec.guild_id { guild_id } else { Self::safe_read("\nPlease enter your guild id:") },
+                token: if let Some(token) = rec.token {
+                    token
+                } else {
+                    Self::safe_read("\nPlease enter your bot token:")
+                },
+                guild_id: if let Some(guild_id) = rec.guild_id {
+                    guild_id
+                } else {
+                    Self::safe_read("\nPlease enter your guild id:")
+                },
                 app_name,
-                looptime: if let Some(looptime) = rec.looptime { looptime } else { Self::safe_read("\nPlease enter your loop time in ms\nlower time means faster response but potentially higher cpu utilization (50 is a good compromise):") },
+                looptime: if let Some(looptime) = rec.looptime {
+                    looptime
+                } else {
+                    Self::safe_read("\nPlease enter your loop time in ms\nlower time means faster response but potentially higher cpu utilization (50 is a good compromise):")
+                },
                 #[cfg(feature = "tts")]
-                gcloud_script: if let Some(gcloud_script) = rec.gcloud_script { gcloud_script } else { Self::safe_read("\nPlease enter your gcloud script location:") },
+                gcloud_script: if let Some(gcloud_script) = rec.gcloud_script {
+                    gcloud_script
+                } else {
+                    Self::safe_read("\nPlease enter your gcloud script location:")
+                },
                 #[cfg(feature = "youtube-search")]
-                youtube_api_key: if let Some(youtube_api_key) = rec.youtube_api_key { youtube_api_key } else { Self::safe_read("\nPlease enter your youtube api key:") },
+                youtube_api_key: if let Some(youtube_api_key) = rec.youtube_api_key {
+                    youtube_api_key
+                } else {
+                    Self::safe_read("\nPlease enter your youtube api key:")
+                },
                 #[cfg(feature = "youtube-search")]
-                autocomplete_limit: if let Some(autocomplete_limit) = rec.autocomplete_limit { autocomplete_limit } else { Self::safe_read("\nPlease enter your youtube autocomplete limit:") },
+                autocomplete_limit: if let Some(autocomplete_limit) = rec.autocomplete_limit {
+                    autocomplete_limit
+                } else {
+                    Self::safe_read("\nPlease enter your youtube autocomplete limit:")
+                },
                 #[cfg(feature = "spotify")]
-                spotify_api_key: if let Some(spotify_api_key) = rec.spotify_api_key { spotify_api_key } else { Self::safe_read("\nPlease enter your spotify api key:") },
-                idle_url: if let Some(idle_audio) = rec.idle_url { idle_audio } else { Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH)\nif you wish to use a file on disk, set this to something as a fallback, and name the file override.mp3 inside the bot directory)\n(appdata/local/ for windows users and ~/.local/share/ for linux users):") },
+                spotify_api_key: if let Some(spotify_api_key) = rec.spotify_api_key {
+                    spotify_api_key
+                } else {
+                    Self::safe_read("\nPlease enter your spotify api key:")
+                },
+                idle_url: if let Some(idle_audio) = rec.idle_url {
+                    idle_audio
+                } else {
+                    Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH)\nif you wish to use a file on disk, set this to something as a fallback, and name the file override.mp3 inside the bot directory)\n(appdata/local/ for windows users and ~/.local/share/ for linux users):")
+                },
                 api_url: rec.api_url,
-                bumper_url: if let Some(bumper_url) = rec.bumper_url { bumper_url } else { Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):") },
-                data_path: if let Some(data_path) = rec.data_path { data_path } else { data_path },
-                shitgpt_path: if let Some(shitgpt_path) = rec.shitgpt_path { shitgpt_path } else { Self::safe_read("\nPlease enter your shitgpt path:") },
-                whitelist_path: if let Some(whitelist_path) = rec.whitelist_path { whitelist_path } else { Self::safe_read("\nPlease enter your whitelist path:") },
-                string_api_token: if let Some(string_api_token) = rec.string_api_token { Some(string_api_token) } else { Some(Self::safe_read("\nPlease enter your string api token:")) },
+                bumper_url: if let Some(bumper_url) = rec.bumper_url {
+                    bumper_url
+                } else {
+                    Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):")
+                },
+                data_path: if let Some(data_path) = rec.data_path {
+                    data_path
+                } else {
+                    data_path
+                },
+                shitgpt_path: if let Some(shitgpt_path) = rec.shitgpt_path {
+                    shitgpt_path
+                } else {
+                    Self::safe_read("\nPlease enter your shitgpt path:")
+                },
+                whitelist_path: if let Some(whitelist_path) = rec.whitelist_path {
+                    whitelist_path
+                } else {
+                    Self::safe_read("\nPlease enter your whitelist path:")
+                },
+                string_api_token: if let Some(string_api_token) = rec.string_api_token {
+                    Some(string_api_token)
+                } else {
+                    Some(Self::safe_read("\nPlease enter your string api token:"))
+                },
                 #[cfg(feature = "transcribe")]
-                transcribe_url: if let Some(transcribe_url) = rec.transcribe_url { transcribe_url } else { Self::safe_read("\nPlease enter your transcribe url:") },
+                transcribe_url: if let Some(transcribe_url) = rec.transcribe_url {
+                    transcribe_url
+                } else {
+                    Self::safe_read("\nPlease enter your transcribe url:")
+                },
                 #[cfg(feature = "transcribe")]
-                transcribe_token: if let Some(transcribe_token) = rec.transcribe_token { transcribe_token } else { Self::safe_read("\nPlease enter your transcribe token:") },
+                transcribe_token: if let Some(transcribe_token) = rec.transcribe_token {
+                    transcribe_token
+                } else {
+                    Self::safe_read("\nPlease enter your transcribe token:")
+                },
                 #[cfg(feature = "transcribe")]
-                alert_phrases_path: if let Some(alert_phrase_path) = rec.alert_phrase_path { alert_phrase_path } else { Self::safe_read("\nPlease enter your alert phrase path:") },
+                alert_phrases_path: if let Some(alert_phrase_path) = rec.alert_phrase_path {
+                    alert_phrase_path
+                } else {
+                    Self::safe_read("\nPlease enter your alert phrase path:")
+                },
                 #[cfg(feature = "transcribe")]
-                sam_path: if let Some(sam_path) = rec.sam_path { sam_path } else { Self::safe_read("\nPlease enter your sam path:") },
+                sam_path: if let Some(sam_path) = rec.sam_path {
+                    sam_path
+                } else {
+                    Self::safe_read("\nPlease enter your sam path:")
+                },
             }
         } else {
             println!("Welcome to my shitty Rust Music Bot!");
             println!("It appears that this may be the first time you are running the bot.");
             println!("I will take you through a short onboarding process to get you started.");
             let app_name: String = Self::safe_read("\nPlease enter your application name:");
-            let mut data_path = config_path.parent().expect("Failed to get parent, this should never happen.").to_path_buf();
+            let mut data_path = config_path
+                .parent()
+                .expect("Failed to get parent, this should never happen.")
+                .to_path_buf();
             data_path.push(app_name.clone());
             Config {
                 token: Self::safe_read("\nPlease enter your bot token:"),
@@ -1074,14 +1421,21 @@ impl Config {
                 sam_path: Self::safe_read("\nPlease enter your sam path:"),
             }
         };
-        std::fs::write(config_path.clone(), serde_json::to_string_pretty(&config).unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path))).expect("Failed to write config.json");
+        std::fs::write(
+            config_path.clone(),
+            serde_json::to_string_pretty(&config)
+                .unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path)),
+        )
+        .expect("Failed to write config.json");
         println!("Config written to {:?}", config_path);
     }
     fn safe_read<T: std::str::FromStr>(prompt: &str) -> T {
         loop {
             println!("{}", prompt);
             let mut input = String::new();
-            std::io::stdin().read_line(&mut input).expect("Failed to read line");
+            std::io::stdin()
+                .read_line(&mut input)
+                .expect("Failed to read line");
             let input = input.trim();
             match input.parse::<T>() {
                 Ok(input) => return input,

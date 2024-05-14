@@ -44,7 +44,11 @@ impl TypeMapKey for AudioHandler {
 pub struct AudioCommandHandler;
 
 impl TypeMapKey for AudioCommandHandler {
-    type Value = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<(oneshot::Sender<String>, AudioPromiseCommand)>>>>;
+    type Value = Arc<
+        Mutex<
+            HashMap<String, mpsc::UnboundedSender<(oneshot::Sender<String>, AudioPromiseCommand)>>,
+        >,
+    >;
 }
 
 pub struct VoiceData;
@@ -60,7 +64,10 @@ pub struct InnerVoiceData {
 
 impl InnerVoiceData {
     pub fn new(bot_id: UserId) -> Self {
-        Self { guilds: HashMap::new(), bot_id }
+        Self {
+            guilds: HashMap::new(),
+            bot_id,
+        }
     }
     pub fn update(&mut self, old: Option<VoiceState>, new: VoiceState) {
         if let Some(guild_id) = new.guild_id {
@@ -71,7 +78,12 @@ impl InnerVoiceData {
             }
         }
     }
-    pub fn mutual_channel(&mut self, ctx: &Context, guild: &GuildId, member: &UserId) -> VoiceAction {
+    pub fn mutual_channel(
+        &mut self,
+        ctx: &Context,
+        guild: &GuildId,
+        member: &UserId,
+    ) -> VoiceAction {
         let bot_id = ctx.cache.current_user().id;
         if bot_id != self.bot_id {
             self.bot_id = bot_id;
@@ -96,7 +108,13 @@ impl InnerVoiceData {
     pub async fn refresh_guild(&mut self, ctx: &Context, guild_id: GuildId) -> Result<(), Error> {
         let mut new = GuildVc::new();
 
-        for (_i, channel) in ctx.http.get_guild(guild_id).await?.channels(&ctx.http).await? {
+        for (_i, channel) in ctx
+            .http
+            .get_guild(guild_id)
+            .await?
+            .channels(&ctx.http)
+            .await?
+        {
             if channel.kind == ChannelType::Voice {
                 let mut newchannel = HashMap::new();
                 for member in match ctx.http.get_channel(channel.id).await {
@@ -108,7 +126,12 @@ impl InnerVoiceData {
                 }
                 .members(&ctx.cache)?
                 {
-                    newchannel.insert(member.user.id, UserMetadata { member: member.clone() });
+                    newchannel.insert(
+                        member.user.id,
+                        UserMetadata {
+                            member: member.clone(),
+                        },
+                    );
                 }
                 new.replace_channel(channel.id, newchannel);
             }
@@ -148,7 +171,10 @@ pub struct GuildVc {
 
 impl GuildVc {
     pub fn new() -> Self {
-        Self { channels: HashMap::new(), bot_connected: false }
+        Self {
+            channels: HashMap::new(),
+            bot_connected: false,
+        }
     }
     pub fn update(&mut self, old: Option<VoiceState>, new: VoiceState) {
         if let Some(old) = old {
@@ -208,7 +234,7 @@ pub enum AudioPromiseCommand {
     Play(Vec<MetaVideo>),
 
     Paused(OrToggle),
-    // contains an optional delay to wait before leaving the channel
+
     Stop(Option<tokio::time::Duration>),
     Loop(OrToggle),
     Repeat(OrToggle),
@@ -283,7 +309,10 @@ pub struct LazyLoadedVideo {
 
 impl LazyLoadedVideo {
     pub fn new(handle: JoinHandle<anyhow::Result<Video>>) -> Self {
-        Self { handle: Arc::new(Mutex::new(Some(handle))), video: Arc::new(Mutex::new(None)) }
+        Self {
+            handle: Arc::new(Mutex::new(Some(handle))),
+            video: Arc::new(Mutex::new(None)),
+        }
     }
     pub async fn check(&mut self) -> anyhow::Result<Option<Video>> {
         let mut lock = self.handle.lock().await;
@@ -328,7 +357,9 @@ impl Author {
             None => user.name.clone(),
         };
 
-        let pfp_url = user.avatar_url().unwrap_or_else(|| user.default_avatar_url());
+        let pfp_url = user
+            .avatar_url()
+            .unwrap_or_else(|| user.default_avatar_url());
 
         Some(Self { name, pfp_url })
     }
@@ -399,7 +430,13 @@ impl<T> OptionOrFailed<T> {
 
 #[allow(dead_code)]
 impl MessageReference {
-    fn new(http: Arc<Http>, cache: Arc<Cache>, guild_id: GuildId, channel_id: ChannelId, message: Message) -> Self {
+    fn new(
+        http: Arc<Http>,
+        cache: Arc<Cache>,
+        guild_id: GuildId,
+        channel_id: ChannelId,
+        message: Message,
+    ) -> Self {
         Self {
             http,
             cache,
@@ -424,7 +461,16 @@ impl MessageReference {
 
         let webhook = match self.channel_id.webhooks(&self.http).await?.first() {
             Some(webhook) => webhook.clone(),
-            None => self.channel_id.create_webhook(&self.http, CreateWebhook::new("Music Bot").audit_log_reason("Webhook for logging things said during a voice session")).await?,
+            None => {
+                self.channel_id
+                    .create_webhook(
+                        &self.http,
+                        CreateWebhook::new("Music Bot").audit_log_reason(
+                            "Webhook for logging things said during a voice session",
+                        ),
+                    )
+                    .await?
+            }
         };
 
         let thread_id = match self.transcription_thread {
@@ -433,7 +479,17 @@ impl MessageReference {
                 return Ok(());
             }
             OptionOrFailed::None => {
-                let thread = self.channel_id.create_thread(&self.http, CreateThread::new(chrono::Local::now().format("CLOSED CAPTIONS FOR %b %-d, %Y at %-I:%M%p").to_string())).await;
+                let thread = self
+                    .channel_id
+                    .create_thread(
+                        &self.http,
+                        CreateThread::new(
+                            chrono::Local::now()
+                                .format("CLOSED CAPTIONS FOR %b %-d, %Y at %-I:%M%p")
+                                .to_string(),
+                        ),
+                    )
+                    .await;
 
                 if thread.is_err() {
                     self.transcription_thread = OptionOrFailed::Failed;
@@ -492,8 +548,16 @@ impl MessageReference {
         };
 
         let mut messages = match message.channel(&self.http).await? {
-            Channel::Guild(channel) => channel.messages(&self.http, GetMessages::new().after(message.id).limit(1)).await?,
-            Channel::Private(channel) => channel.messages(&self.http, GetMessages::new().after(message.id).limit(1)).await?,
+            Channel::Guild(channel) => {
+                channel
+                    .messages(&self.http, GetMessages::new().after(message.id).limit(1))
+                    .await?
+            }
+            Channel::Private(channel) => {
+                channel
+                    .messages(&self.http, GetMessages::new().after(message.id).limit(1))
+                    .await?
+            }
             _ => Vec::new(),
         };
         messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
@@ -504,7 +568,9 @@ impl MessageReference {
             }
         }
 
-        if (diff && ((self.last_edit.elapsed().as_millis() > self.edit_delay) || self.first_time)) || forcediff {
+        if (diff && ((self.last_edit.elapsed().as_millis() > self.edit_delay) || self.first_time))
+            || forcediff
+        {
             self.first_time = false;
             let write_content = content.clone();
             self.last_content = Some(content);
@@ -518,7 +584,9 @@ impl MessageReference {
                 self.send_new().await?;
             } else if let Err(e) = message
                 .edit(&self.http, {
-                    let mut m = EditMessage::new().embed(write_content.into_serenity()).flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
+                    let mut m = EditMessage::new()
+                        .embed(write_content.into_serenity())
+                        .flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
                     if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
                         m = m.components(ars);
                     }
@@ -543,7 +611,9 @@ impl MessageReference {
                 let message = self
                     .channel_id
                     .send_message(&self.http, {
-                        let mut m = CreateMessage::new().content(content).flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
+                        let mut m = CreateMessage::new()
+                            .content(content)
+                            .flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
                         if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
                             m = m.components(ars);
                         }
@@ -560,7 +630,9 @@ impl MessageReference {
                 let message = self
                     .channel_id
                     .send_message(&self.http, {
-                        let mut m = CreateMessage::new().embed(write_content.into_serenity()).flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
+                        let mut m = CreateMessage::new()
+                            .embed(write_content.into_serenity())
+                            .flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
                         if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
                             m = m.components(ars);
                         }
@@ -591,100 +663,12 @@ impl MessageReference {
 
     #[cfg(not(feature = "new-controls"))]
     fn get_ars(settings: &SettingsData) -> Vec<CreateActionRow> {
-        let (volumestyle, radiostyle) = if settings.something_playing { (ButtonStyle::Primary, ButtonStyle::Secondary) } else { (ButtonStyle::Secondary, ButtonStyle::Primary) };
-
-        let titlestyle = if settings.read_titles { ButtonStyle::Success } else { ButtonStyle::Danger };
-
-        let mut ars = Vec::new();
-
-        let mut ar = CreateActionRow::default();
-
-        ar.create_button(|b| {
-            b.style(volumestyle).custom_id("volume").label(format!(
-                "{} {}%",
-                match settings.raw_volume() {
-                    v if v == 0.0 => "🔇",
-
-                    v if v <= 0.33 => "🔈",
-
-                    v if v <= 0.66 => "🔉",
-
-                    _ => "🔊",
-                },
-                settings.raw_volume() * 100.0
-            ))
-        });
-
-        ar.create_button(|b| b.style(radiostyle).custom_id("radiovolume").label(format!("📻 {}%", settings.raw_radiovolume() * 100.0)));
-
-        ar.create_button(|b| {
-            b.style(ButtonStyle::Secondary).custom_id("bitrate").label(match settings.bitrate {
-                OrAuto::Specific(i) => {
-                    if i >= 1000 {
-                        format!("{}kbps", i / 1000)
-                    } else {
-                        format!("{}bps", i)
-                    }
-                }
-                OrAuto::Auto => "Auto".to_owned(),
-            })
-        });
-
-        ar.create_button(|b| b.style(if settings.log_empty { ButtonStyle::Secondary } else { ButtonStyle::Danger }).custom_id("log").label("📜").disabled(settings.log_empty));
-
-        ars.push(ar);
-
-        let mut ar = CreateActionRow::default();
-
-        ar.create_button(|b| b.style(if settings.pause { ButtonStyle::Success } else { ButtonStyle::Danger }).label(if settings.pause { "▶️" } else { "⏸️" }.to_owned()).custom_id("pause").disabled(!settings.something_playing));
-
-        ar.create_button(|b| b.style(ButtonStyle::Primary).label("⏭️").custom_id("skip").disabled(!settings.something_playing));
-
-        ar.create_button(|b| b.style(ButtonStyle::Danger).custom_id("stop").label("⏹️"));
-
-        ars.push(ar);
-
-        let mut ar = CreateActionRow::default();
-
-        ar.create_button(|b| b.style(if settings.looped { ButtonStyle::Primary } else { ButtonStyle::Secondary }).label("🔁").custom_id("looped"));
-
-        ar.create_button(|b| b.style(if settings.shuffle { ButtonStyle::Primary } else { ButtonStyle::Secondary }).custom_id("shuffle").label("🔀"));
-
-        ar.create_button(|b| b.style(if settings.repeat { ButtonStyle::Primary } else { ButtonStyle::Secondary }).label("🔄️").custom_id("repeat"));
-
-        ars.push(ar);
-
-        let mut ar = CreateActionRow::default();
-
-        ar.create_button(|b| b.style(if settings.autoplay { ButtonStyle::Primary } else { ButtonStyle::Secondary }).custom_id("autoplay").label("🎲"));
-
-        ar.create_button(|b| b.style(ButtonStyle::Danger).custom_id("remove").label("🗑️"));
-
-        ar.create_button(|b| b.style(titlestyle).custom_id("read_titles").label("🗣️"));
-
-        ars.push(ar);
-
-        ars
-    }
-
-    #[cfg(feature = "new-controls")]
-    fn get_ars(settings: &SettingsData) -> Vec<CreateActionRow> {
-        let mut ars = Vec::new();
-
-        let mut ar = CreateActionRow::default();
-
-        let mut list = CreateSelectMenu::default();
-
-        list.custom_id("::controls");
-
-        list.options(|b| {
-            b.create_option(|o| o.label("Bot Controls").value("controls").description("🎛️").default_selection(true));
-
-            b.create_option(|o| {
-                o.label("Volume")
-                    .value("volume")
-                    .description(format!(
-                        "{} {:.0}%",
+        vec![
+            CreateActionRow::Buttons(vec![
+                CreateButton::new("volume")
+                    .style(ButtonStyle::Primary)
+                    .label(format!(
+                        "{} {}%",
                         match settings.raw_volume() {
                             v if v == 0.0 => "🔇",
 
@@ -695,36 +679,13 @@ impl MessageReference {
                             _ => "🔊",
                         },
                         settings.raw_volume() * 100.0
-                    ))
-                    .default_selection(false)
-            });
-
-            b.create_option(|o| o.label("Radio Volume").value("radiovolume").description(format!("📻 {:.0}%", settings.raw_radiovolume() * 100.0)).default_selection(false));
-
-            if settings.something_playing {
-                b.create_option(|o| o.label(if settings.pause { "Playing" } else { "Paused" }).value("pause").description(if settings.pause { "▶️" } else { "⏸️" }).default_selection(false));
-
-                b.create_option(|o| o.label("Skip").value("skip").description("⏭️").default_selection(false));
-            }
-
-            b.create_option(|o| o.label("Stop").value("stop").description("⏹️").default_selection(false));
-
-            b.create_option(|o| o.label(if settings.looped { "Queue Looped" } else { "Queue Not Looped" }).value("looped").description(if settings.looped { "🔁" } else { "⛔" }).default_selection(false));
-
-            b.create_option(|o| o.label(if settings.shuffle { "Queue Shuffled" } else { "Queue Not Shuffled" }).value("shuffle").description(if settings.shuffle { "🔀" } else { "⛔" }).default_selection(false));
-
-            b.create_option(|o| o.label(if settings.repeat { "Song Repeated" } else { "Song Not Repeated" }).value("repeat").description(if settings.repeat { "🔄️" } else { "⛔" }).default_selection(false));
-
-            b.create_option(|o| o.label(if settings.autoplay { "Autoplay Enabled" } else { "Autoplay Disabled" }).value("autoplay").description(if settings.autoplay { "🎲" } else { "⛔" }).default_selection(false));
-
-            b.create_option(|o| o.label("Remove").value("remove").description("🗑️").default_selection(false));
-
-            b.create_option(|o| o.label(if settings.read_titles { "Will Read Titles" } else { "Will Not Read Titles" }).value("read_titles").description("🗣️").default_selection(false));
-
-            b.create_option(|o| {
-                o.label("Bitrate")
-                    .value("bitrate")
-                    .description(match settings.bitrate {
+                    )),
+                CreateButton::new("radiovolume")
+                    .style(ButtonStyle::Secondary)
+                    .label(format!("📻 {}%", settings.raw_radiovolume() * 100.0)),
+                CreateButton::new("bitrate")
+                    .style(ButtonStyle::Secondary)
+                    .label(match settings.bitrate {
                         OrAuto::Specific(i) => {
                             if i >= 1000 {
                                 format!("{}kbps", i / 1000)
@@ -733,27 +694,187 @@ impl MessageReference {
                             }
                         }
                         OrAuto::Auto => "Auto".to_owned(),
+                    }),
+                CreateButton::new("log")
+                    .style(if settings.log_empty {
+                        ButtonStyle::Secondary
+                    } else {
+                        ButtonStyle::Danger
                     })
-                    .default_selection(false)
-            });
+                    .label("📜")
+                    .disabled(settings.log_empty),
+            ]),
+            CreateActionRow::Buttons(vec![
+                CreateButton::new("pause")
+                    .style(if settings.pause {
+                        ButtonStyle::Success
+                    } else {
+                        ButtonStyle::Danger
+                    })
+                    .label(if settings.pause { "▶️" } else { "⏸️" }),
+                CreateButton::new("skip")
+                    .style(ButtonStyle::Primary)
+                    .label("⏭️"),
+                CreateButton::new("stop")
+                    .style(ButtonStyle::Danger)
+                    .label("⏹️"),
+            ]),
+            CreateActionRow::Buttons(vec![
+                CreateButton::new("looped")
+                    .style(if settings.looped {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Secondary
+                    })
+                    .label("🔁"),
+                CreateButton::new("shuffle")
+                    .style(if settings.shuffle {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Secondary
+                    })
+                    .label("🔀"),
+                CreateButton::new("repeat")
+                    .style(if settings.repeat {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Secondary
+                    })
+                    .label("🔄️"),
+            ]),
+            CreateActionRow::Buttons(vec![
+                CreateButton::new("autoplay")
+                    .style(if settings.autoplay {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Secondary
+                    })
+                    .label("🎲"),
+                CreateButton::new("remove")
+                    .style(ButtonStyle::Danger)
+                    .label("🗑️"),
+                CreateButton::new("read_titles")
+                    .style(if settings.read_titles {
+                        ButtonStyle::Success
+                    } else {
+                        ButtonStyle::Danger
+                    })
+                    .label("🗣️"),
+            ]),
+        ]
+    }
 
-            if !settings.log_empty {
-                b.create_option(|o| o.label("Log").value("log").description("📜").default_selection(false));
-            }
+    #[cfg(feature = "new-controls")]
+    fn get_ars(settings: &SettingsData) -> Vec<CreateActionRow> {
+        let mut options = vec![
+            CreateSelectMenuOption::new("Bot Controls", "controls")
+                .description("🎛️")
+                .default_selection(true),
+            CreateSelectMenuOption::new("Volume", "volume").description(format!(
+                "{} {:.0}%",
+                match settings.raw_volume() {
+                    v if v == 0.0 => "🔇",
 
-            b
-        });
+                    v if v <= 0.33 => "🔈",
 
-        ar.add_select_menu(list);
+                    v if v <= 0.66 => "🔉",
 
-        ars.push(ar);
+                    _ => "🔊",
+                },
+                settings.raw_volume() * 100.0
+            )),
+            CreateSelectMenuOption::new("Radio Volume", "radiovolume")
+                .description(format!("📻 {:.0}%", settings.raw_radiovolume() * 100.0)),
+            CreateSelectMenuOption::new(
+                if settings.something_playing {
+                    "Playing"
+                } else {
+                    "Paused"
+                },
+                "pause",
+            )
+            .description(if settings.pause { "▶️" } else { "⏸️" }),
+            CreateSelectMenuOption::new("Skip", "skip").description("⏭️"),
+            CreateSelectMenuOption::new("Stop", "stop").description("⏹️"),
+            CreateSelectMenuOption::new(
+                if settings.looped {
+                    "Queue Looped"
+                } else {
+                    "Queue Not Looped"
+                },
+                "looped",
+            )
+            .description(if settings.looped { "🔁" } else { "⛔" }),
+            CreateSelectMenuOption::new(
+                if settings.shuffle {
+                    "Queue Shuffled"
+                } else {
+                    "Queue Not Shuffled"
+                },
+                "shuffle",
+            )
+            .description(if settings.shuffle { "🔀" } else { "⛔" }),
+            CreateSelectMenuOption::new(
+                if settings.repeat {
+                    "Song Repeated"
+                } else {
+                    "Song Not Repeated"
+                },
+                "repeat",
+            )
+            .description(if settings.repeat { "🔄️" } else { "⛔" }),
+            CreateSelectMenuOption::new(
+                if settings.autoplay {
+                    "Autoplay Enabled"
+                } else {
+                    "Autoplay Disabled"
+                },
+                "autoplay",
+            )
+            .description(if settings.autoplay { "🎲" } else { "⛔" }),
+            CreateSelectMenuOption::new("Remove", "remove").description("🗑️"),
+            CreateSelectMenuOption::new(
+                if settings.read_titles {
+                    "Will Read Titles"
+                } else {
+                    "Will Not Read Titles"
+                },
+                "read_titles",
+            )
+            .description("🗣️"),
+            CreateSelectMenuOption::new("Bitrate", "bitrate").description(match settings.bitrate {
+                OrAuto::Specific(i) => {
+                    if i >= 1000 {
+                        format!("{}kbps", i / 1000)
+                    } else {
+                        format!("{}bps", i)
+                    }
+                }
+                OrAuto::Auto => "Auto".to_owned(),
+            }),
+        ];
 
-        ars
+        if !settings.log_empty {
+            options.push(CreateSelectMenuOption::new("Log", "log").description("📜"));
+        }
+
+        vec![CreateActionRow::SelectMenu(
+            CreateSelectMenu::new("::controls", CreateSelectMenuKind::String { options })
+                .max_values(1)
+                .min_values(1),
+        )]
     }
 
     fn filter_bar_emojis(string: &str) -> String {
         let mut str = string.to_owned();
-        let bar_emojis = vec!["<:LE:1038954704744480898>", "<:LC:1038954708422885386>", "<:CE:1038954710184497203>", "<:CC:1038954696980824094>", "<:RE:1038954703033217285>", "<:RC:1038954706841649192>"];
+        let bar_emojis = vec![
+            "<:LE:1038954704744480898>",
+            "<:LC:1038954708422885386>",
+            "<:CE:1038954710184497203>",
+            "<:CC:1038954696980824094>",
+            "<:RE:1038954703033217285>",
+            "<:RC:1038954706841649192>",
+        ];
         for emoji in bar_emojis {
             str = str.replace(emoji, "");
         }
@@ -772,7 +893,9 @@ pub struct RawMessage {
 }
 
 impl RawMessage {
-    pub async fn check_tts(&mut self) -> Result<Option<Result<Video, anyhow::Error>>, anyhow::Error> {
+    pub async fn check_tts(
+        &mut self,
+    ) -> Result<Option<Result<Video, anyhow::Error>>, anyhow::Error> {
         if let Some(handle) = self.tts_audio_handle.take() {
             if handle.is_finished() {
                 Ok(Some(handle.await?))
@@ -785,7 +908,13 @@ impl RawMessage {
         }
     }
     pub fn announcement(msg: &Message, text: String, voice: &TTSVoice) -> Self {
-        Self { author_id: String::from("Announcement"), channel_id: msg.channel_id, channel_name: None, timestamp: msg.timestamp, tts_audio_handle: Some(Self::audio_handle(text, *voice)) }
+        Self {
+            author_id: String::from("Announcement"),
+            channel_id: msg.channel_id,
+            channel_name: None,
+            timestamp: msg.timestamp,
+            tts_audio_handle: Some(Self::audio_handle(text, *voice)),
+        }
     }
     pub async fn message(ctx: &Context, msg: &Message, voice: &TTSVoice) -> Result<Self, Error> {
         let safecontent = msg.content_safe(&ctx.cache);
@@ -835,7 +964,10 @@ impl RawMessage {
         })
     }
 
-    pub fn audio_handle(text: String, voice: TTSVoice) -> tokio::task::JoinHandle<Result<Video, anyhow::Error>> {
+    pub fn audio_handle(
+        text: String,
+        voice: TTSVoice,
+    ) -> tokio::task::JoinHandle<Result<Video, anyhow::Error>> {
         tokio::task::spawn(async move {
             let key = match crate::youtube::get_access_token().await {
                 Ok(key) => key,
@@ -863,7 +995,10 @@ fn detect_emojis(safecontent: &str) -> Vec<EmojiData> {
             Some(text) => text.as_str(),
             None => continue,
         };
-        emojis.push(EmojiData { name: name.to_string(), raw_emoji_text: raw_emoji_text.to_string() });
+        emojis.push(EmojiData {
+            name: name.to_string(),
+            raw_emoji_text: raw_emoji_text.to_string(),
+        });
     }
 
     emojis.sort_by(|a, b| a.name.cmp(&b.name));

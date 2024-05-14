@@ -16,9 +16,19 @@ pub struct AzuraCast {
 
 #[allow(dead_code)]
 impl AzuraCast {
-    pub async fn new(url: &str, log: Log, timeout: Duration) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(
+        url: &str,
+        log: Log,
+        timeout: Duration,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let data = reqwest::get(url).await?.json::<Root>().await?;
-        Ok(Self { data: Arc::new(Mutex::new(data)), last_update: Instant::now(), url: url.to_string(), log, timeout })
+        Ok(Self {
+            data: Arc::new(Mutex::new(data)),
+            last_update: Instant::now(),
+            url: url.to_string(),
+            log,
+            timeout,
+        })
     }
 
     pub async fn slow_data(&mut self) -> Result<Root, Error> {
@@ -30,15 +40,21 @@ impl AzuraCast {
                 match r {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
-                        self.log.log(&format!("Error updating azuracast data: {}", e)).await;
+                        self.log
+                            .log(&format!("Error updating azuracast data: {}", e))
+                            .await;
                     }
                     Err(e) => {
-                        self.log.log(&format!("Timeout updating azuracast data: {}", e)).await;
+                        self.log
+                            .log(&format!("Timeout updating azuracast data: {}", e))
+                            .await;
                     }
                 }
             }
             Err(e) => {
-                self.log.log(&format!("Timeout getting azuracast data: {}", e)).await;
+                self.log
+                    .log(&format!("Timeout getting azuracast data: {}", e))
+                    .await;
             }
         }
 
@@ -47,7 +63,9 @@ impl AzuraCast {
         match r {
             Ok(i) => Ok(i.clone()),
             Err(e) => {
-                self.log.log(&format!("Timeout getting azuracast data: {}", e)).await;
+                self.log
+                    .log(&format!("Timeout getting azuracast data: {}", e))
+                    .await;
                 Err(e.into())
             }
         }
@@ -68,15 +86,18 @@ impl AzuraCast {
                         match r {
                             Ok(Ok(())) => {}
                             Ok(Err(e)) => {
-                                log.log(&format!("Error updating azuracast data: {}", e)).await;
+                                log.log(&format!("Error updating azuracast data: {}", e))
+                                    .await;
                             }
                             Err(e) => {
-                                log.log(&format!("Timeout updating azuracast data: {}", e)).await;
+                                log.log(&format!("Timeout updating azuracast data: {}", e))
+                                    .await;
                             }
                         }
                     }
                     Err(e) => {
-                        log.log(&format!("Timeout getting azuracast data: {}", e)).await;
+                        log.log(&format!("Timeout getting azuracast data: {}", e))
+                            .await;
                     }
                 }
             });
@@ -88,7 +109,9 @@ impl AzuraCast {
         match r {
             Ok(i) => Ok(i.clone()),
             Err(e) => {
-                self.log.log(&format!("Timeout getting azuracast data: {}", e)).await;
+                self.log
+                    .log(&format!("Timeout getting azuracast data: {}", e))
+                    .await;
                 Err(e.into())
             }
         }
