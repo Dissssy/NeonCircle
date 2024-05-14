@@ -182,6 +182,7 @@ impl crate::CommandTrait for Join {
                                             nothing_path,
                                             em,
                                             http,
+                                            format!("{}-{}", guild_id, channel),
                                         )
                                         .await;
                                     })

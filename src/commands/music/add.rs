@@ -205,6 +205,7 @@ impl crate::CommandTrait for Add {
                                             nothing_path,
                                             em,
                                             http,
+                                            format!("{}-{}", guild_id, channel),
                                         )
                                         .await;
                                     })

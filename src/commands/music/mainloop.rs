@@ -37,6 +37,7 @@ pub async fn the_lüüp(
     rawnothing_uri: Option<PathBuf>,
     rawtranscribe: Arc<Mutex<TranscribeChannelHandler>>,
     http: Arc<http::Http>,
+    log_source: String,
 ) {
     let (transcription_thread, kill_transcription_thread, mut recv_new_transcription) = {
         let transcribe = crate::voice_events::VoiceDataManager::new(
@@ -58,7 +59,7 @@ pub async fn the_lüüp(
         };
         (trans, killtranscribe, transcribed)
     };
-    let log = Log::new();
+    let log = Log::new(log_source);
     log.log("Starting loop").await;
     log.log("Creating control data").await;
     let mut control = ControlData {
@@ -997,9 +998,9 @@ pub async fn the_lüüp(
             .await;
     }
     log.log("Gracefully exited").await;
-    if !log.is_empty().await {
-        log::info!("Final log:\n{}", log.get().await);
-    }
+    // if !log.is_empty().await {
+    //     // log::info!("Final log:\n{}", log.get().await);
+    // }
 }
 fn get_bar(percent_done: f64, length: usize) -> String {
     let emojis = [
@@ -1102,22 +1103,26 @@ impl<T> Vec25<T> {
 }
 #[derive(Clone)]
 pub struct Log {
+    source: String,
     log: Arc<Mutex<(Vec<LogString>, Instant)>>,
 }
 impl Log {
-    pub fn new() -> Self {
+    pub fn new(source: String) -> Self {
         Self {
+            source,
             log: Arc::new(Mutex::new((Vec::new(), Instant::now()))),
         }
     }
     pub async fn log(&self, s: &str) {
         let mut d = self.log.lock().await;
         let t = d.1.elapsed();
+        log::info!("[{}] {}: {}", t.as_secs_f64(), self.source, s);
         d.0.push(LogString {
             s: s.to_owned(),
             time: t,
         });
     }
+    #[allow(dead_code)]
     pub async fn get(&self) -> String {
         let d = self.log.lock().await;
         d.0.iter()
