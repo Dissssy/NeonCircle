@@ -2,12 +2,12 @@ use rand::Rng;
 
 use serenity::all::*;
 
-use futures::SinkExt as _;
-
 use songbird::driver::Bitrate;
+use songbird::error::ControlError;
+use songbird::input::{File, YoutubeDl};
 use songbird::tracks::{LoopState, TrackHandle};
 use songbird::Call;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::Instant;
 
 use std::mem;
@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::commands::music::{AudioPromiseCommand, MetaVideo, RawMessage, SpecificVolume, VideoType};
+use crate::commands::music::{
+    AudioPromiseCommand, MetaVideo, RawMessage, SpecificVolume, VideoType,
+};
 use crate::radio::AzuraCast;
 
 use super::settingsdata::SettingsData;
@@ -24,7 +26,7 @@ use super::{MessageReference, OrAuto};
 
 pub struct ControlData {
     pub call: Arc<Mutex<Call>>,
-    pub rx: mpsc::UnboundedReceiver<(futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>,
+    pub rx: mpsc::UnboundedReceiver<(oneshot::Sender<String>, AudioPromiseCommand)>,
     pub msg: MessageReference,
     pub nothing_uri: Option<PathBuf>,
     pub transcribe: Arc<Mutex<TranscribeChannelHandler>>,
@@ -33,14 +35,33 @@ pub struct ControlData {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceiver<(futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>, rawtx: mpsc::UnboundedSender<(futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>, rawmsg: MessageReference, rawlooptime: u64, rawnothing_uri: Option<PathBuf>, rawtranscribe: Arc<Mutex<TranscribeChannelHandler>>, http: Arc<http::Http>) {
+pub async fn the_lüüp(
+    rawcall: Arc<Mutex<Call>>,
+    rawrx: mpsc::UnboundedReceiver<(oneshot::Sender<String>, AudioPromiseCommand)>,
+    rawtx: mpsc::UnboundedSender<(oneshot::Sender<String>, AudioPromiseCommand)>,
+    rawmsg: MessageReference,
+    rawlooptime: u64,
+    rawnothing_uri: Option<PathBuf>,
+    rawtranscribe: Arc<Mutex<TranscribeChannelHandler>>,
+    http: Arc<http::Http>,
+) {
     let (transcription_thread, kill_transcription_thread, mut recv_new_transcription) = {
-        let transcribe = crate::voice_events::VoiceDataManager::new(Arc::clone(&rawcall), Arc::clone(&http), rawtx).await;
+        let transcribe = crate::voice_events::VoiceDataManager::new(
+            Arc::clone(&rawcall),
+            Arc::clone(&http),
+            rawtx,
+        )
+        .await;
         let (killtranscribe, transcribereturn) = tokio::sync::mpsc::channel::<()>(1);
         let (transsender, transcribed) = mpsc::unbounded_channel::<(String, UserId)>();
         let trans = {
             let call = Arc::clone(&rawcall);
-            tokio::task::spawn(crate::voice_events::transcription_thread(transcribe, transcribereturn, transsender, call))
+            tokio::task::spawn(crate::voice_events::transcription_thread(
+                transcribe,
+                transcribereturn,
+                transsender,
+                call,
+            ))
         };
 
         (trans, killtranscribe, transcribed)
@@ -51,7 +72,15 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
     log.log("Starting loop").await;
 
     log.log("Creating control data").await;
-    let mut control = ControlData { call: rawcall, rx: rawrx, msg: rawmsg, nothing_uri: rawnothing_uri, transcribe: rawtranscribe, settings: SettingsData::default(), brk: false };
+    let mut control = ControlData {
+        call: rawcall,
+        rx: rawrx,
+        msg: rawmsg,
+        nothing_uri: rawnothing_uri,
+        transcribe: rawtranscribe,
+        settings: SettingsData::default(),
+        brk: false,
+    };
     {
         log.log("Locking call").await;
         let mut cl = control.call.lock().await;
@@ -66,7 +95,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
         //     }
         // };
     }
-    let (mut msg_updater, update_msg) = futures::channel::mpsc::channel::<(SettingsData, EmbedData)>(8);
+    let (mut msg_updater, update_msg) = mpsc::channel::<(SettingsData, EmbedData)>(8);
     let (mut manually_send, send_msg) = mpsc::unbounded_channel::<(String, UserId)>();
     let (killmsg, killrx) = tokio::sync::oneshot::channel::<()>();
 
@@ -84,12 +113,12 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                     _ = &mut killrx => {
                         break;
                     }
-                    shakesbutt = update_msg.next() => {
+                    shakesbutt = update_msg.recv() => {
                         // only get the latest
                         if let Some(shakesbutt) = shakesbutt {
 
                             let mut shakesbutt = shakesbutt;
-                            while let Ok(Some(u)) = update_msg.try_next() {
+                            while let Ok(u) = update_msg.try_recv() {
                                 shakesbutt = u;
                             }
                             let r = msg.update(shakesbutt.0, shakesbutt.1).await;
@@ -101,9 +130,9 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                             break;
                         }
                     }
-                    manmsg = send_msg.next() => {
+                    manmsg = send_msg.recv() => {
                         if let Some((manmsg, user)) = manmsg {
-                            if let Err(e) = msg.send_manually(manmsg, model::id::UserId::from(user.0)).await {
+                            if let Err(e) = msg.send_manually(manmsg, user).await {
                                 logger.log(&format!("Error sending message: {}", e)).await;
                             }
                         }
@@ -111,7 +140,9 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                 }
             }
             if let Err(e) = msg.final_cleanup().await {
-                logger.log(&format!("Error cleaning up message: {}", e)).await;
+                logger
+                    .log(&format!("Error cleaning up message: {}", e))
+                    .await;
             }
         })
     };
@@ -162,7 +193,8 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
 
     // spawn thread for handling tts with ttshandler, listening for messages, sending them in, etc. provide a "kill" oneshot for shutting down the thread and stopping the ttshandler, the oneshot will contain a oneshot that can be used to return the RawMessage Sender back to us to deregister it
 
-    let (killsubthread, bekilled) = tokio::sync::oneshot::channel::<tokio::sync::oneshot::Sender<futures::channel::mpsc::Receiver<RawMessage>>>();
+    let (killsubthread, bekilled) =
+        tokio::sync::oneshot::channel::<tokio::sync::oneshot::Sender<mpsc::Receiver<RawMessage>>>();
 
     log.log("Spawning tts thread").await;
     let subthread = {
@@ -186,7 +218,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                         }
                         break;
                     }
-                    msg = ttsrx.next() => {
+                    msg = ttsrx.recv() => {
                         if let Some(msg) = msg {
                             if let Err(e) = ttshandler.update(vec![msg]).await {
                                 logger.log(&format!("Error updating tts: {}", e)).await;
@@ -208,7 +240,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
     loop {
         control.settings.log_empty = log.is_empty().await;
         tokio::select! {
-            t = control.rx.next() => {
+            t = control.rx.recv() => {
                 match t {
                     Some((snd, command)) => {
                         // println!("Got command: {:?}", command);
@@ -523,11 +555,11 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
             }
             _ = run_dur.tick() => {
 
-                while let Ok(Some((msg, user))) = recv_new_transcription.try_next() {
+                while let Ok((msg, user)) = recv_new_transcription.try_recv() {
                     if msg.trim().is_empty() {
                         continue;
                     }
-                    if let Err(e) = manually_send.send((msg, user)).await {
+                    if let Err(e) = manually_send.send((msg, user)) {
                         log.log(&format!("Error sending transcription: {}\n", e)).await;
                     }
                 }
@@ -539,8 +571,11 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                         let playmode = tokio::time::timeout(g_timeout_time, thandle.get_info()).await;
 
                         match playmode {
-                            Ok(Err(e)) => {
-                                if e == TrackError::Finished {
+                            Ok(Err(ref e)) => {
+                                if match e {
+                                    ControlError::Finished => true,
+                                    _ => false,
+                                } {
                                     let url = current_track.as_ref().and_then(|t| match t.video {
                                         VideoType::Disk(_) => None,
                                         VideoType::Url(ref y) => Some(y.url.clone()),
@@ -611,41 +646,47 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
 
                         match r {
                             Ok(Ok(_)) => {},
-                            Ok(Err(e)) => {
-                                if e == TrackError::Finished {
+                            Ok(Err(ref e)) => {
+                                if match e {
+                                    ControlError::Finished => true,
+                                    _ => false,
+                                } {
                                     let calllock = control.call.try_lock();
                                     if let Ok(mut clock) = calllock {
-                                        let r = match current.video.clone() {
-                                            VideoType::Disk(v) => {
-                                                tokio::time::timeout(
-                                                    Duration::from_secs(30),
-                                                    ffmpeg(&v.path),
-                                                )
-                                                .await
-                                            }
-                                            VideoType::Url(v) => {
-                                                tokio::time::timeout(Duration::from_secs(30), ytdl(&v.url))
-                                                    .await
-                                            }
-                                        };
-                                        match r {
-                                            Ok(Ok(src)) => {
-                                                let (mut audio, handle) = create_player(src);
-                                                audio.set_volume(control.settings.volume() as f32);
-                                                clock.play(audio);
-                                                trackhandle = Some(handle);
-                                            },
-                                            Ok(Err(e)) => {
-                                                log.log(&format!(
-                                                    "Error playing track: {}\n",
-                                                    e
-                                                )).await;
-                                            }
-                                            Err(e) => {
-                                                log.log(&format!("Timeout procced: {}\n", e)).await;
+                                        // let r = match current.video.clone() {
+                                        //     VideoType::Disk(v) => {
+                                        //         tokio::time::timeout(
+                                        //             Duration::from_secs(30),
+                                        //             ffmpeg(&v.path),
+                                        //         )
+                                        //         .await
+                                        //     }
+                                        //     VideoType::Url(v) => {
+                                        //         tokio::time::timeout(Duration::from_secs(30), ytdl(&v.url))
+                                        //             .await
+                                        //     }
+                                        // };
+                                        // match r {
+                                        //     Ok(Ok(src)) => {
+                                        // let (mut audio, handle) = create_player(current.video.into_songbird());
+                                        // audio.set_volume(control.settings.volume() as f32);
+                                        // clock.play(audio);
+                                        // trackhandle = Some(handle);
+                                        let handle = clock.play_input(current.video.into_songbird());
+                                        handle.set_volume(control.settings.volume() as f32);
+                                        trackhandle = Some(handle);
+                                        //     },
+                                        //     Ok(Err(e)) => {
+                                        //         log.log(&format!(
+                                        //             "Error playing track: {}\n",
+                                        //             e
+                                        //         )).await;
+                                        //     }
+                                        //     Err(e) => {
+                                        //         log.log(&format!("Timeout procced: {}\n", e)).await;
 
-                                            }
-                                        }
+                                        //     }
+                                        // }
                                     }
                                 } else {
                                     log.log(&format!("Error getting tts info: {:?}\n", r)).await;
@@ -665,44 +706,48 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                                 match check {
                                     // the good path
                                     Ok(Some(tts)) => {
-                                        let r = tokio::time::timeout(g_timeout_time, ffmpeg(&tts.path))
-                                            .await;
+                                        // let r = tokio::time::timeout(g_timeout_time, ffmpeg(&tts.path))
+                                        //     .await;
+                                        let r = File::new(tts.path).into();
 
-                                        match r {
-                                            Ok(Ok(r)) => {
-                                                let (mut audio, handle) = create_player(r);
-                                                if control.settings.read_titles {
-                                                    audio.set_volume(control.settings.volume() as f32);
-                                                } else {
-                                                    audio.set_volume(0.0);
-                                                    if let Err(e) = handle.stop() {
-                                                        log.log(&format!("Error stopping tts: {}\n", e)).await;
-                                                    }
-                                                }
-                                                clock.play(audio);
-                                                tts_handle = Some(handle);
-                                            },
-                                            Ok(Err(e)) => {
-                                                if let Ok(h) = ytdl(crate::Config::get().bumper_url.as_str()).await {
-                                                    let (mut audio, handle) = create_player(h);
-                                                    audio.set_volume(control.settings.volume() as f32);
-                                                    clock.play(audio);
-                                                    tts_handle = Some(handle);
-                                                } else {
-                                                    log.log(&format!("Error playing track: {}\n", e)).await;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                if let Ok(h) = ytdl(crate::Config::get().bumper_url.as_str()).await {
-                                                    let (mut audio, handle) = create_player(h);
-                                                    audio.set_volume(control.settings.volume() as f32);
-                                                    clock.play(audio);
-                                                    tts_handle = Some(handle);
-                                                } else {
-                                                    log.log(&format!("Timeout procced: {}\n", e)).await;
-                                                }
-                                            }
-                                        }
+                                        // match r {
+                                        //     Ok(Ok(r)) => {
+                                        //         let (mut audio, handle) = create_player(r);
+                                        //         if control.settings.read_titles {
+                                        //             audio.set_volume(control.settings.volume() as f32);
+                                        //         } else {
+                                        //             audio.set_volume(0.0);
+                                        //             if let Err(e) = handle.stop() {
+                                        //                 log.log(&format!("Error stopping tts: {}\n", e)).await;
+                                        //             }
+                                        //         }
+                                        //         clock.play(audio);
+                                        //         tts_handle = Some(handle);
+                                        //     },
+                                        //     Ok(Err(e)) => {
+                                        //         if let Ok(h) = ytdl(crate::Config::get().bumper_url.as_str()).await {
+                                        //             let (mut audio, handle) = create_player(h);
+                                        //             audio.set_volume(control.settings.volume() as f32);
+                                        //             clock.play(audio);
+                                        //             tts_handle = Some(handle);
+                                        //         } else {
+                                        //             log.log(&format!("Error playing track: {}\n", e)).await;
+                                        //         }
+                                        //     }
+                                        //     Err(e) => {
+                                        //         if let Ok(h) = ytdl(crate::Config::get().bumper_url.as_str()).await {
+                                        //             let (mut audio, handle) = create_player(h);
+                                        //             audio.set_volume(control.settings.volume() as f32);
+                                        //             clock.play(audio);
+                                        //             tts_handle = Some(handle);
+                                        //         } else {
+                                        //             log.log(&format!("Timeout procced: {}\n", e)).await;
+                                        //         }
+                                        //     }
+                                        // }
+                                        let handle = clock.play_input(r);
+                                        handle.set_volume(control.settings.volume() as f32);
+                                        tts_handle = Some(handle);
                                     }
                                     // the "maybe later" path
                                     Ok(None) => {
@@ -716,38 +761,49 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                                             log.log(&format!("Error checking tts: {}\n", e)).await;
                                         }
                                         // since we errored, we want to skip playing the tts and just play the song, not entirely sure rn
-                                        let r = match current.video.clone() {
+                                        // let r = match current.video.clone() {
+                                        //     VideoType::Disk(v) => {
+                                        //         tokio::time::timeout(
+                                        //             Duration::from_secs(30),
+                                        //             ffmpeg(&v.path),
+                                        //         )
+                                        //         .await
+                                        //     }
+                                        //     VideoType::Url(v) => {
+                                        //         tokio::time::timeout(Duration::from_secs(30), ytdl(&v.url))
+                                        //             .await
+                                        //     }
+                                        // };
+                                        let r: songbird::input::Input = match current.video.clone() {
                                             VideoType::Disk(v) => {
-                                                tokio::time::timeout(
-                                                    Duration::from_secs(30),
-                                                    ffmpeg(&v.path),
-                                                )
-                                                .await
+                                                File::new(v.path).into()
                                             }
                                             VideoType::Url(v) => {
-                                                tokio::time::timeout(Duration::from_secs(30), ytdl(&v.url))
-                                                    .await
+                                                YoutubeDl::new(crate::WEB_CLIENT.clone(), v.url).into()
                                             }
                                         };
 
-                                        match r {
-                                            Ok(Ok(src)) => {
-                                                let (mut audio, handle) = create_player(src);
-                                                audio.set_volume(control.settings.volume() as f32);
-                                                clock.play(audio);
-                                                trackhandle = Some(handle);
-                                            },
-                                            Ok(Err(e)) => {
-                                                log.log(&format!(
-                                                    "Error playing track: {}\n",
-                                                    e
-                                                )).await;
-                                            }
-                                            Err(e) => {
-                                                log.log(&format!("Timeout procced: {}\n", e)).await;
+                                        // match r {
+                                        //     Ok(Ok(src)) => {
+                                        //         let (mut audio, handle) = create_player(src);
+                                        //         audio.set_volume(control.settings.volume() as f32);
+                                        //         clock.play(audio);
+                                        //         trackhandle = Some(handle);
+                                        //     },
+                                        //     Ok(Err(e)) => {
+                                        //         log.log(&format!(
+                                        //             "Error playing track: {}\n",
+                                        //             e
+                                        //         )).await;
+                                        //     }
+                                        //     Err(e) => {
+                                        //         log.log(&format!("Timeout procced: {}\n", e)).await;
 
-                                            }
-                                        }
+                                        //     }
+                                        // }
+                                        let handle = clock.play_input(r);
+                                        handle.set_volume(control.settings.volume() as f32);
+                                        trackhandle = Some(handle);
                                     }
                                 }
 
@@ -762,12 +818,17 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                                 // clock.play(audio);
                                 // tts_handle = Some(handle);
 
-                                if let Ok(h) = ytdl(crate::Config::get().bumper_url.as_str()).await {
-                                    let (mut audio, handle) = create_player(h);
-                                    audio.set_volume(control.settings.volume() as f32);
-                                    clock.play(audio);
-                                    tts_handle = Some(handle);
-                                }
+                                // if let Ok(h) = ytdl(crate::Config::get().bumper_url.as_str()).await {
+                                //     let (mut audio, handle) = create_player(h);
+                                //     audio.set_volume(control.settings.volume() as f32);
+                                //     clock.play(audio);
+                                //     tts_handle = Some(handle);
+                                // }
+
+                                let a = YoutubeDl::new(crate::WEB_CLIENT.clone(), crate::Config::get().bumper_url);
+                                let handle = clock.play_input(a.into());
+                                handle.set_volume(control.settings.volume() as f32);
+                                tts_handle = Some(handle);
                             }
                             #[cfg(not(feature = "tts"))]
                             {
@@ -859,54 +920,53 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                 if queue.is_empty() && current_track.is_none() {
                     control.settings.pause = false;
                     if nothing_handle.is_none() {
-                        let r = if let Some(uri) = control.nothing_uri.clone() {
-                            tokio::time::timeout(g_timeout_time, Restartable::ffmpeg(uri, false)).await
+                        let r: songbird::input::Input = if let Some(uri) = control.nothing_uri.clone() {
+                            // tokio::time::timeout(g_timeout_time, Restartable::ffmpeg(uri, false)).await
+                            File::new(uri).into()
                         } else {
                             // tokio::time::timeout(g_timeout_time, Restartable::ytdl("https://www.youtube.com/watch?v=xy_NKN75Jhw", false)).await
-                            tokio::time::timeout(
-                                Duration::from_secs(2),
-                                Restartable::ffmpeg(crate::Config::get().idle_url, false),
-                            )
-                            .await
+                            // tokio::time::timeout(
+                            //     Duration::from_secs(2),
+                            //     Restartable::ffmpeg(crate::Config::get().idle_url, false),
+                            // )
+                            // .await
+                            YoutubeDl::new(crate::WEB_CLIENT.clone(), crate::Config::get().idle_url).into()
                         };
 
-                        match r {
-                            Ok(Ok(src)) => {
-                                let (mut audio, handle) = create_player(src.into());
-                                let calllock = control.call.try_lock();
-                                match calllock {
-                                    Ok(mut clock) => {
-                                        if let Err(e) = audio.set_loops(LoopState::Infinite) {
-                                            log.log(&format!("Error setting loop: {}\n", e)).await;
-                                        }
-                                        // audio.set_volume(volume / 5.);
-                                        audio.set_volume(control.settings.radiovolume() as f32);
-                                        clock.play(audio);
-                                        nothing_handle = Some(handle);
-                                    },
-                                    Err(e) => {
-                                        log.log(&format!(
-                                            "Error locking call: {}\n",
-                                            e
-                                        )).await;
-                                    }
-                                }
-                            }
-                            Ok(Err(e)) => {
-                                log.log(&format!(
-                                    "Error playing nothing: {}\nfile_uri: {:?}",
-                                    e,
-                                    control.nothing_uri.clone()
-                                )).await;
-                            }
-                            Err(e) => {
-                                log.log(&format!(
-                                    "Error playing nothing: {}\nfile_uri: {:?}",
-                                    e,
-                                    control.nothing_uri.clone()
-                                )).await;
-                            }
+                        // match r {
+                        //     Ok(Ok(src)) => {
+                        //         let (mut audio, handle) = create_player(src.into());
+                        {
+                            let mut clock = control.call.lock().await;
+                            // if let Err(e) = audio.set_loops(LoopState::Infinite) {
+                            //     log.log(&format!("Error setting loop: {}\n", e)).await;
+                            // }
+                            // // audio.set_volume(volume / 5.);
+                            // audio.set_volume(control.settings.radiovolume() as f32);
+                            // clock.play(audio);
+                            // nothing_handle = Some(handle);
+                            let handle = clock.play_input(r);
+                            handle.set_volume(control.settings.radiovolume() as f32);
+                            handle.enable_loop();
+                            nothing_handle = Some(handle);
                         }
+                        //         }
+                        //     }
+                        //     Ok(Err(e)) => {
+                        //         log.log(&format!(
+                        //             "Error playing nothing: {}\nfile_uri: {:?}",
+                        //             e,
+                        //             control.nothing_uri.clone()
+                        //         )).await;
+                        //     }
+                        //     Err(e) => {
+                        //         log.log(&format!(
+                        //             "Error playing nothing: {}\nfile_uri: {:?}",
+                        //             e,
+                        //             control.nothing_uri.clone()
+                        //         )).await;
+                        //     }
+                        // }
                     }
                     let mut possible_body = "Queue is empty, use `/play` to play something!".to_owned();
 
@@ -1251,7 +1311,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
     log.log("SHUTTING DOWN").await;
     // transcribe_handler.stop().await;
 
-    let (returner, gimme) = tokio::sync::oneshot::channel::<futures::channel::mpsc::Receiver<RawMessage>>();
+    let (returner, gimme) = tokio::sync::oneshot::channel::<mpsc::Receiver<RawMessage>>();
     if killsubthread.send(returner).is_err() {
         log.log("Error sending killsubthread").await;
     }
@@ -1263,7 +1323,8 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
     match gimme.await {
         Ok(gimme) => {
             if let Err(e) = control.transcribe.lock().await.unlock(gimme).await {
-                log.log(&format!("Error unlocking transcribe: {}\n", e)).await;
+                log.log(&format!("Error unlocking transcribe: {}\n", e))
+                    .await;
             }
         }
         Err(e) => {
@@ -1274,7 +1335,8 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
     control.rx.close();
     calllock.stop();
     if let Err(e) = calllock.leave().await {
-        log.log(&format!("Error leaving voice channel: {}\n", e)).await;
+        log.log(&format!("Error leaving voice channel: {}\n", e))
+            .await;
     }
     if let Some(t) = trackhandle.as_mut() {
         let r = t.stop();
@@ -1288,7 +1350,8 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
         while t.delete().await.is_err() {
             tokio::time::sleep(Duration::from_millis(100)).await;
             tries -= 1;
-            log.log(&format!("Failed to delete file, {} tries left", tries)).await;
+            log.log(&format!("Failed to delete file, {} tries left", tries))
+                .await;
             if tries == 0 {
                 log.log("Failed to delete file, giving up").await;
                 break;
@@ -1303,7 +1366,8 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
     }
     let r = calllock.leave().await;
     if let Err(e) = r {
-        log.log(&format!("Error leaving voice channel: {}\n", e)).await;
+        log.log(&format!("Error leaving voice channel: {}\n", e))
+            .await;
     }
 
     if killmsg.send(()).is_err() {
@@ -1315,7 +1379,8 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
     if kill_transcription_thread.send(()).await.is_err() {
         log.log("Error sending kill_transcription_thread").await;
     } else if let Err(e) = transcription_thread.await {
-        log.log(&format!("Error joining transcription_thread: {}\n", e)).await;
+        log.log(&format!("Error joining transcription_thread: {}\n", e))
+            .await;
     }
 
     log.log("Gracefully exited").await;
@@ -1326,7 +1391,11 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
 }
 
 fn get_bar(percent_done: f64, length: usize) -> String {
-    let emojis = [["<:LE:1038954704744480898>", "<:LC:1038954708422885386>"], ["<:CE:1038954710184497203>", "<:CC:1038954696980824094>"], ["<:RE:1038954703033217285>", "<:RC:1038954706841649192>"]];
+    let emojis = [
+        ["<:LE:1038954704744480898>", "<:LC:1038954708422885386>"],
+        ["<:CE:1038954710184497203>", "<:CC:1038954696980824094>"],
+        ["<:RE:1038954703033217285>", "<:RC:1038954706841649192>"],
+    ];
     let mut bar = String::new();
 
     // subtract 1/length from percent_done to make sure the bar is always full
@@ -1470,16 +1539,24 @@ pub struct Log {
 
 impl Log {
     pub fn new() -> Self {
-        Self { log: Arc::new(Mutex::new((Vec::new(), Instant::now()))) }
+        Self {
+            log: Arc::new(Mutex::new((Vec::new(), Instant::now()))),
+        }
     }
     pub async fn log(&self, s: &str) {
         let mut d = self.log.lock().await;
         let t = d.1.elapsed();
-        d.0.push(LogString { s: s.to_owned(), time: t });
+        d.0.push(LogString {
+            s: s.to_owned(),
+            time: t,
+        });
     }
     pub async fn get(&self) -> String {
         let d = self.log.lock().await;
-        d.0.iter().map(|l| l.pretty()).collect::<Vec<String>>().join("\n")
+        d.0.iter()
+            .map(|l| l.pretty())
+            .collect::<Vec<String>>()
+            .join("\n")
     }
     pub async fn clear_until(&self, rm: usize) {
         let mut d = self.log.lock().await;

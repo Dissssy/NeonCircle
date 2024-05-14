@@ -1,9 +1,9 @@
+pub mod add;
 pub mod autoplay;
 pub mod join;
-pub mod loopit;
+pub mod loop_queue;
 pub mod mainloop;
 pub mod pause;
-pub mod play;
 pub mod remove;
 pub mod repeat;
 pub mod resume;
@@ -388,6 +388,12 @@ pub enum VideoType {
 }
 
 impl VideoType {
+    pub fn into_songbird(&self) -> songbird::input::Input {
+        match self {
+            VideoType::Disk(v) => v.into_songbird(),
+            VideoType::Url(v) => v.into_songbird(),
+        }
+    }
     pub fn get_duration(&self) -> Option<u64> {
         match self {
             VideoType::Disk(v) => Some(v.duration.floor() as u64),
@@ -509,7 +515,6 @@ pub struct MessageReference {
     first_time: bool,
 
     resend_next_time: bool,
-    client: reqwest::Client,
     transcription_thread: OptionOrFailed<GuildChannel>,
 }
 
@@ -557,7 +562,6 @@ impl MessageReference {
             edit_delay: 10000,
 
             resend_next_time: false,
-            client: reqwest::Client::new(),
             transcription_thread: OptionOrFailed::None,
         }
     }
@@ -615,7 +619,7 @@ impl MessageReference {
 
         let webhook_url = format!("{}?thread_id={}", webhook.url()?, thread_id);
 
-        self.client
+        crate::WEB_CLIENT
             .post(&webhook_url)
             .json(&json!({
                 "content": content,

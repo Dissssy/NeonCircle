@@ -5,12 +5,10 @@ pub struct SettingsData {
     pub something_playing: bool,
     pub log_empty: bool,
 
-    // READ ONLY?
     volume: f64,
     radiovolume: f64,
     pub bitrate: OrAuto,
 
-    // CLICKABLE
     pub autoplay: bool,
     pub looped: bool,
     pub repeat: bool,

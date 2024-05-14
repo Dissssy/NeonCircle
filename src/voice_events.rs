@@ -74,7 +74,7 @@ fn get_name(e: &EventContext) -> &'static str {
     }
 }
 
-type PacketSender = tokio::sync::mpsc::UnboundedSender<PacketData>;
+type PacketSender = mpsc::UnboundedSender<PacketData>;
 
 pub struct PacketData {
     pub user_id: UserId,
@@ -85,7 +85,7 @@ pub struct PacketData {
 
 pub struct VoiceDataManager {
     user_streams: HashMap<UserId, (Vec<i16>, Option<std::time::Instant>)>,
-    receiver: tokio::sync::mpsc::UnboundedReceiver<PacketData>,
+    receiver: mpsc::UnboundedReceiver<PacketData>,
     disabled_for: std::collections::HashMap<UserId, bool>,
     http: Arc<Http>,
     command: mpsc::UnboundedSender<(
@@ -106,7 +106,7 @@ impl VoiceDataManager {
         )>,
     ) -> Self {
         let ssrc_to_user_id = Arc::new(Mutex::new(HashMap::new()));
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<PacketData>();
+        let (sender, receiver) = mpsc::unbounded_channel::<PacketData>();
 
         for event in EVENTS {
             call.lock().await.add_global_event(
@@ -203,12 +203,11 @@ impl VoiceDataManager {
 
 pub async fn transcription_thread(
     mut transcribe: VoiceDataManager,
-    mut transcribereturn: tokio::sync::mpsc::Receiver<()>,
+    mut transcribereturn: mpsc::Receiver<()>,
     recvtext: mpsc::UnboundedSender<(String, UserId)>,
     call: Arc<Mutex<Call>>,
 ) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-    let reqwest = reqwest::Client::new();
     let (url, key) = {
         let config = crate::Config::get();
         (config.transcribe_url, config.transcribe_token)
@@ -234,7 +233,7 @@ pub async fn transcription_thread(
 
 
 
-                    let response = reqwest
+                    let response = crate::WEB_CLIENT
                         .post(format!("{}/transcribe/raw?format=s16le&sample_rate=48000&channels=1", url))
                         .header("x-token", key.clone())
                         .header("Content-Type", "multipart/form-data")
@@ -249,7 +248,7 @@ pub async fn transcription_thread(
                                 Ok(Ok(RequestResponse::Success { request_id })) => {
                                     pending_responses.push(
                                         wait_for_transcription(
-                                            reqwest.clone(),
+                                            crate::WEB_CLIENT.clone(),
                                             url.clone(),
                                             key.clone(),
                                             request_id,

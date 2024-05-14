@@ -848,7 +848,7 @@ impl EventHandler for Handler {
             finalusers.push(UserSafe { id });
         }
 
-        let mut req = reqwest::Client::new()
+        let mut req = WEB_CLIENT
             .post("http://localhost:16834/api/set/user")
             .json(&finalusers);
         if let Some(token) = Config::get().string_api_token {
@@ -858,7 +858,7 @@ impl EventHandler for Handler {
             println!("Failed to send users to api {e}. Users might be out of date");
         }
 
-        let mut req = reqwest::Client::new()
+        let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
             .json(&finalusers);
         if let Some(token) = Config::get().string_api_token {
@@ -1008,7 +1008,7 @@ impl EventHandler for Handler {
             finalusers.push(UserSafe { id });
         }
 
-        let mut req = reqwest::Client::new()
+        let mut req = WEB_CLIENT
             .post("http://localhost:16834/api/set/user")
             .json(&finalusers);
         if let Some(token) = Config::get().string_api_token {
@@ -1018,7 +1018,7 @@ impl EventHandler for Handler {
             println!("Failed to send users to api {e}. Users might be out of date");
         }
 
-        let mut req = reqwest::Client::new()
+        let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
             .json(&finalusers);
         if let Some(token) = Config::get().string_api_token {
@@ -1032,7 +1032,7 @@ impl EventHandler for Handler {
     async fn guild_member_addition(&self, _ctx: Context, new_member: Member) {
         let id = new_member.user.id.get().to_string();
 
-        let mut req = reqwest::Client::new()
+        let mut req = WEB_CLIENT
             .post("http://localhost:16834/api/add/user")
             .json(&UserSafe { id: id.clone() });
         if let Some(token) = Config::get().string_api_token {
@@ -1042,7 +1042,7 @@ impl EventHandler for Handler {
             println!("Failed to add user to api {e}. Users might be out of date");
         }
 
-        let mut req = reqwest::Client::new()
+        let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/add/user")
             .json(&UserSafe { id });
         if let Some(token) = Config::get().string_api_token {
@@ -1062,7 +1062,7 @@ impl EventHandler for Handler {
     ) {
         let id = user.id.get().to_string();
 
-        let mut req = reqwest::Client::new()
+        let mut req = WEB_CLIENT
             .post("http://localhost:16834/api/remove/user")
             .json(&UserSafe { id: id.clone() });
         if let Some(token) = Config::get().string_api_token {
@@ -1072,7 +1072,7 @@ impl EventHandler for Handler {
             println!("Failed to remove user from api {e}. Users might be out of date");
         }
 
-        let mut req = reqwest::Client::new()
+        let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/remove/user")
             .json(&UserSafe { id });
         if let Some(token) = Config::get().string_api_token {
@@ -1110,9 +1110,9 @@ async fn main() {
     let handler = Handler::new(vec![
         Box::new(commands::music::transcribe::Transcribe),
         Box::new(commands::music::repeat::Repeat),
-        Box::new(commands::music::loopit::Loop),
+        Box::new(commands::music::loop_queue::Loop),
         Box::new(commands::music::pause::Pause),
-        Box::new(commands::music::play::Play),
+        Box::new(commands::music::add::Add),
         Box::new(commands::music::join::Join),
         Box::new(commands::music::setbitrate::SetBitrate),
         Box::new(commands::music::remove::Remove),

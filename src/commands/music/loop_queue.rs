@@ -3,13 +3,13 @@ use anyhow::Error;
 use serenity::all::*;
 
 #[derive(Debug, Clone)]
-pub struct Shuffle;
+pub struct Loop;
 
 #[async_trait]
-impl crate::CommandTrait for Shuffle {
+impl crate::CommandTrait for Loop {
     fn register(&self) -> CreateCommand {
         CreateCommand::new(self.name())
-            .description("Shuffle the queue")
+            .description("Loop the queue")
             .set_options(vec![CreateCommandOption::new(
                 CommandOptionType::Boolean,
                 "value",
@@ -83,7 +83,7 @@ impl crate::CommandTrait for Shuffle {
                 ctx,
                 interaction,
                 guild_id,
-                AudioPromiseCommand::Shuffle(option),
+                AudioPromiseCommand::Loop(option),
             );
         } else if let Err(e) = interaction
             .edit_response(
@@ -96,7 +96,7 @@ impl crate::CommandTrait for Shuffle {
         }
     }
     fn name(&self) -> &str {
-        "shuffle"
+        "loop"
     }
     async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<(), Error> {
         Ok(())

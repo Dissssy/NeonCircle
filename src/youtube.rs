@@ -99,8 +99,7 @@ pub async fn search(query: String, lim: usize) -> Vec<VideoInfo> {
 }
 
 async fn videos_from_raw_youtube_url(url: String, lim: usize) -> Vec<VideoInfo> {
-    let client = reqwest::Client::new();
-    let res = client.get(url.as_str()).header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36").send().await;
+    let res = crate::WEB_CLIENT.get(url.as_str()).header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36").send().await;
     let mut videos = Vec::new();
     if let Ok(res) = res {
         let text = res.text().await;
@@ -218,8 +217,7 @@ pub struct RawVidInfo {
 pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
     let token = crate::Config::get().spotify_api_key;
     let url = format!("https://api.spotify.com/v1/tracks/{}", id);
-    let client = reqwest::Client::new();
-    let res = client
+    let res = crate::WEB_CLIENT
         .get(url.as_str())
         .header("Authorization", format!("Bearer {}", token.clone()))
         .send()
@@ -232,8 +230,7 @@ pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
         )])
     } else {
         let url = format!("https://api.spotify.com/v1/albums/{}", id);
-        let client = reqwest::Client::new();
-        let res = client
+        let res = crate::WEB_CLIENT
             .get(url.as_str())
             .header("Authorization", format!("Bearer {}", token.clone()))
             .send()
@@ -283,8 +280,8 @@ pub struct VideoInfo {
 }
 
 impl VideoInfo {
-    pub fn into_serenity(&self, client: reqwest::Client) -> songbird::input::Input {
-        songbird::input::YoutubeDl::new(client, self.url.clone()).into()
+    pub fn into_songbird(&self) -> songbird::input::Input {
+        songbird::input::YoutubeDl::new(crate::WEB_CLIENT.clone(), self.url.clone()).into()
     }
     pub async fn to_metavideo(&self) -> anyhow::Result<MetaVideo> {
         let v = crate::video::Video::get_video(&self.url, true, false)
@@ -384,8 +381,7 @@ pub async fn get_tts(
         }
     );
 
-    let client = reqwest::Client::new();
-    let res = client
+    let res = crate::WEB_CLIENT
         .post("https://texttospeech.googleapis.com/v1/text:synthesize")
         .header("Content-Type", "application/json; charset=utf-8")
         .header("X-Goog-User-Project", "97417849124")

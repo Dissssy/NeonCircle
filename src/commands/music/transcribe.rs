@@ -18,10 +18,9 @@ impl crate::CommandTrait for Transcribe {
             .description("Transcribe this channel")
             .set_options(vec![CreateCommandOption::new(
                 CommandOptionType::Boolean,
-                "transcribe",
-                "Transcribe",
-            )
-            .required(true)])
+                "value",
+                "Specific value, otherwise toggle",
+            )])
     }
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
         if let Err(e) = interaction
@@ -55,10 +54,11 @@ impl crate::CommandTrait for Transcribe {
         let options = interaction.data.options();
 
         let option = match options.iter().find_map(|o| match o.name {
-            "transcribe" => Some(&o.value),
+            "value" => Some(&o.value),
             _ => None,
         }) {
-            Some(ResolvedValue::Boolean(o)) => *o,
+            Some(ResolvedValue::Boolean(o)) => super::OrToggle::Specific(*o),
+            None => super::OrToggle::Toggle,
             _ => {
                 if let Err(e) = interaction
                     .edit_response(
@@ -145,47 +145,84 @@ impl crate::CommandTrait for Transcribe {
                     .clone();
 
                     let mut e = em.lock().await;
-
-                    if option {
-                        if let Err(res) = e.register(interaction.channel_id).await {
-                            if let Err(e) = interaction
+                    match option {
+                        super::OrToggle::Specific(option) => {
+                            if option {
+                                if let Err(res) = e.register(interaction.channel_id).await {
+                                    if let Err(e) = interaction
+                                        .edit_response(
+                                            &ctx.http,
+                                            EditInteractionResponse::new()
+                                                .content(format!("Error registering: {:?}", res)),
+                                        )
+                                        .await
+                                    {
+                                        eprintln!(
+                                            "Failed to edit original interaction response: {:?}",
+                                            e
+                                        );
+                                    }
+                                } else if let Err(e) = interaction
+                                    .edit_response(
+                                        &ctx.http,
+                                        EditInteractionResponse::new().content("Registered"),
+                                    )
+                                    .await
+                                {
+                                    eprintln!(
+                                        "Failed to edit original interaction response: {:?}",
+                                        e
+                                    );
+                                }
+                            } else if let Err(res) = e.unregister(interaction.channel_id).await {
+                                if let Err(e) = interaction
+                                    .edit_response(
+                                        &ctx.http,
+                                        EditInteractionResponse::new()
+                                            .content(format!("Error unregistering: {:?}", res)),
+                                    )
+                                    .await
+                                {
+                                    eprintln!(
+                                        "Failed to edit original interaction response: {:?}",
+                                        e
+                                    );
+                                }
+                            } else if let Err(e) = interaction
                                 .edit_response(
                                     &ctx.http,
-                                    EditInteractionResponse::new()
-                                        .content(format!("Error registering: {:?}", res)),
+                                    EditInteractionResponse::new().content("Unregistered"),
                                 )
                                 .await
                             {
                                 eprintln!("Failed to edit original interaction response: {:?}", e);
                             }
-                        } else if let Err(e) = interaction
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new().content("Registered"),
-                            )
-                            .await
-                        {
-                            eprintln!("Failed to edit original interaction response: {:?}", e);
                         }
-                    } else if let Err(res) = e.unregister(interaction.channel_id).await {
-                        if let Err(e) = interaction
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new()
-                                    .content(format!("Error unregistering: {:?}", res)),
-                            )
-                            .await
-                        {
-                            eprintln!("Failed to edit original interaction response: {:?}", e);
+                        super::OrToggle::Toggle => {
+                            if let Err(res) = e.toggle(interaction.channel_id).await {
+                                if let Err(e) = interaction
+                                    .edit_response(
+                                        &ctx.http,
+                                        EditInteractionResponse::new()
+                                            .content(format!("Error toggling: {:?}", res)),
+                                    )
+                                    .await
+                                {
+                                    eprintln!(
+                                        "Failed to edit original interaction response: {:?}",
+                                        e
+                                    );
+                                }
+                            } else if let Err(e) = interaction
+                                .edit_response(
+                                    &ctx.http,
+                                    EditInteractionResponse::new().content("Toggled"),
+                                )
+                                .await
+                            {
+                                eprintln!("Failed to edit original interaction response: {:?}", e);
+                            }
                         }
-                    } else if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new().content("Unregistered"),
-                        )
-                        .await
-                    {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
                     }
                 }
             }
@@ -487,7 +524,16 @@ impl TranscribeChannelHandler {
         channels.remove(&channel);
         Ok(())
     }
-
+    pub async fn toggle(&mut self, channel: ChannelId) -> Result<(), Error> {
+        let mut channels = self.channels.lock().await;
+        if channels.contains_key(&channel) {
+            channels.remove(&channel);
+        } else {
+            let tx = self.sender.clone();
+            channels.insert(channel, tx);
+        }
+        Ok(())
+    }
     pub async fn send(&mut self, msg: RawMessage) -> Result<(), RawMessage> {
         let mut channels = self.channels.lock().await;
         let tx = match channels.get_mut(&msg.channel_id) {
