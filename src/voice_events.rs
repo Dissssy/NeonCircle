@@ -3,13 +3,14 @@ use std::{collections::HashMap, pin::Pin, sync::Arc};
 use anyhow::Result;
 use serde::Deserialize as _;
 use serenity::{
+    all::UserId,
     async_trait,
     futures::{channel::mpsc, stream::FuturesUnordered, SinkExt, StreamExt as _},
     model::mention::Mentionable,
 };
 use songbird::{
-    events::context_data::VoiceData,
-    model::{id::UserId, payload::Speaking},
+    events::context_data::{VoiceData, VoiceTick},
+    model::payload::Speaking,
     Call, CoreEvent, Event, EventContext,
 };
 use tokio::sync::Mutex;
@@ -31,25 +32,26 @@ impl songbird::EventHandler for VoiceEventSender {
     async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
         match ctx {
             // EventContext::Track(_) => {},
-            EventContext::SpeakingStateUpdate(Speaking { ssrc, speaking: _, delay: _, user_id }) => {
+            EventContext::SpeakingStateUpdate(Speaking { ssrc, user_id, .. }) => {
                 let mut ssrc_to_user_id = self.ssrc_to_user_id.lock().await;
                 if let Some(user_id) = user_id {
-                    ssrc_to_user_id.insert(*ssrc, *user_id);
+                    ssrc_to_user_id.insert(*ssrc, UserId::new(user_id.0));
                 }
             }
             // EventContext::SpeakingUpdate(SpeakingUpdateData { ssrc, speaking }) => {}
-            EventContext::VoicePacket(VoiceData { audio, packet, payload_offset: _, payload_end_pad: _, .. }) => {
-                let ssrc = packet.ssrc;
-                let ssrc_to_user_id = self.ssrc_to_user_id.lock().await;
-                if let Some(user_id) = ssrc_to_user_id.get(&ssrc) {
-                    if self.sender.send(PacketData { user_id: *user_id, audio: audio.as_ref().cloned().unwrap_or_default(), received: std::time::Instant::now() }).is_err() {
-                        // eprintln!("Error sending audio packet");
+            EventContext::VoiceTick(VoiceTick { speaking, .. }) => {
+                for (ssrc, VoiceData { decoded_voice, .. }) in speaking.iter() {
+                    let ssrc_to_user_id = self.ssrc_to_user_id.lock().await;
+                    if let Some(user_id) = ssrc_to_user_id.get(&ssrc) {
+                        if self.sender.send(PacketData { user_id: *user_id, audio: decoded_voice.as_ref().cloned().unwrap_or_default(), received: std::time::Instant::now() }).is_err() {
+                            // eprintln!("Error sending audio packet");
+                        }
+                    } else {
+                        // println!(
+                        //     "Received voice packet from unknown user with {} bytes",
+                        //     audio.as_ref().map(|a| a.len()).unwrap_or(0)
+                        // );
                     }
-                } else {
-                    // println!(
-                    //     "Received voice packet from unknown user with {} bytes",
-                    //     audio.as_ref().map(|a| a.len()).unwrap_or(0)
-                    // );
                 }
             }
             // EventContext::RtcpPacket(RtcpData {
@@ -77,10 +79,7 @@ fn get_name(e: &EventContext) -> &'static str {
     match e {
         EventContext::Track(_) => "Track",
         EventContext::SpeakingStateUpdate(_) => "SpeakingStateUpdate",
-        EventContext::SpeakingUpdate(_) => "SpeakingUpdate",
-        EventContext::VoicePacket(_) => "VoicePacket",
-        EventContext::RtcpPacket(_) => "RtcpPacket",
-        EventContext::ClientDisconnect(_) => "ClientDisconnect",
+        EventContext::VoiceTick(_) => "VoiceTick",
         EventContext::DriverConnect(_) => "DriverConnect",
         EventContext::DriverReconnect(_) => "DriverReconnect",
         EventContext::DriverDisconnect(_) => "DriverDisconnect",
@@ -110,7 +109,7 @@ pub struct VoiceDataManager {
     command: mpsc::UnboundedSender<(serenity::futures::channel::oneshot::Sender<String>, crate::commands::music::AudioPromiseCommand)>,
 }
 
-static EVENTS: &[CoreEvent] = &[CoreEvent::SpeakingStateUpdate, CoreEvent::VoicePacket];
+static EVENTS: &[CoreEvent] = &[CoreEvent::SpeakingStateUpdate, CoreEvent::VoiceTick];
 
 impl VoiceDataManager {
     pub async fn new(call: Arc<Mutex<Call>>, http: Arc<serenity::http::Http>, command: mpsc::UnboundedSender<(serenity::futures::channel::oneshot::Sender<String>, crate::commands::music::AudioPromiseCommand)>) -> Self {
@@ -160,7 +159,7 @@ impl VoiceDataManager {
             let user_is_bot = match self.disabled_for.entry(user_id) {
                 std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    match self.http.get_user(user_id.0).await {
+                    match self.http.get_user(user_id).await {
                         Ok(user) => {
                             entry.insert(user.bot);
                             user.bot
@@ -276,7 +275,7 @@ pub async fn transcription_thread(mut transcribe: VoiceDataManager, mut transcri
             Some(response) = responses_to_await.next() => {
                 match response {
                     Ok(string) => {
-                        if let Err(e) = recvtext.send((string, songbird::model::id::UserId(transcribe.http.get_current_user().await.expect("Current user is none?").id.0))).await {
+                        if let Err(e) = recvtext.send((string, transcribe.http.get_current_user().await.expect("Current user is none?").id)).await {
                             eprintln!("Error sending text: {:?}", e);
                             break;
                         }
@@ -331,7 +330,8 @@ pub async fn transcription_thread(mut transcribe: VoiceDataManager, mut transcri
 
                 if let Some(feedback) = feedback {
                     let mut call = call.lock().await;
-                    let handle = call.play_source(songbird::ffmpeg(feedback.path.clone()).await.expect("Error creating ffmpeg source"));
+                    // let handle = call.play_source(songbird::ffmpeg(feedback.path.clone()).await.expect("Error creating ffmpeg source"));
+                    let handle = call.play_input(feedback.into_songbird());
                     let _ = handle.set_volume(0.8);
                     if let Err(e) = feedback.delete_when_finished(handle).await {
                         eprintln!("Error deleting feedback: {:?}", e);
@@ -357,7 +357,7 @@ pub async fn transcription_thread(mut transcribe: VoiceDataManager, mut transcri
                     Ok(ParsedCommand::MetaCommand(command)) => {
                         match command {
                             Command::NoConsent => {
-                                if let Err(e) = recvtext.send((format!("{} opted out.", serenity::model::id::UserId::from(user.0).mention()), songbird::model::id::UserId(transcribe.http.get_current_user().await.expect("Current user is none?").id.0))).await {
+                                if let Err(e) = recvtext.send((format!("{} opted out.", user.mention()), transcribe.http.get_current_user().await.expect("Current user is none?").id)).await {
                                     eprintln!("Error sending text: {:?}", e);
                                     break;
                                 }
@@ -376,7 +376,8 @@ pub async fn transcription_thread(mut transcribe: VoiceDataManager, mut transcri
                         // say the error
                         if let Some(feedback) = get_speech(&format!("Error: {:?}", e)).await {
                             let mut call = call.lock().await;
-                            let handle = call.play_source(songbird::ffmpeg(feedback.path.clone()).await.expect("Error creating ffmpeg source"));
+                            // let handle = call.play_source(songbird::ffmpeg(feedback.path.clone()).await.expect("Error creating ffmpeg source"));
+                            let handle = call.play_input(feedback.into_songbird());
                             let _ = handle.set_volume(0.8);
                             if let Err(e) = feedback.delete_when_finished(handle).await {
                                 eprintln!("Error deleting feedback: {:?}", e);
@@ -846,14 +847,14 @@ async fn get_videos(query: String, http: Arc<serenity::http::Http>, u: UserId) -
                         video: v,
                         ttsmsg: Some(crate::commands::music::LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(title.clone(), key.clone(), None)))),
                         title,
-                        author: http.get_user(u.0).await.ok().map(|u| crate::commands::music::Author { name: u.name.clone(), pfp_url: u.avatar_url().clone().unwrap_or(u.default_avatar_url().clone()) }),
+                        author: http.get_user(u).await.ok().map(|u| crate::commands::music::Author { name: u.name.clone(), pfp_url: u.avatar_url().clone().unwrap_or(u.default_avatar_url().clone()) }),
                     })
                 } else {
                     truevideos.push(crate::commands::music::MetaVideo {
                         video: v,
                         ttsmsg: None,
                         title,
-                        author: http.get_user(u.0).await.ok().map(|u| crate::commands::music::Author { name: u.name.clone(), pfp_url: u.avatar_url().unwrap_or(u.default_avatar_url().clone()) }),
+                        author: http.get_user(u).await.ok().map(|u| crate::commands::music::Author { name: u.name.clone(), pfp_url: u.avatar_url().unwrap_or(u.default_avatar_url().clone()) }),
                     });
                 }
                 #[cfg(not(feature = "tts"))]

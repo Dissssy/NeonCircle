@@ -90,6 +90,9 @@ async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
 }
 
 impl Video {
+    pub fn into_songbird(&self) -> songbird::input::Input {
+        songbird::input::File::new(self.path.clone()).into()
+    }
     pub async fn get_video(
         url: &str,
         // audio_only: bool,

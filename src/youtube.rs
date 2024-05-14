@@ -286,6 +286,9 @@ pub struct VideoInfo {
 }
 
 impl VideoInfo {
+    pub fn into_serenity(&self, client: reqwest::Client) -> songbird::input::Input {
+        songbird::input::YoutubeDl::new(client, self.url.clone()).into()
+    }
     pub async fn to_metavideo(&self) -> anyhow::Result<MetaVideo> {
         let v = crate::video::Video::get_video(&self.url, true, false).await?.first().ok_or(anyhow::anyhow!("Could not get video"))?.clone();
 

@@ -24,14 +24,13 @@ use anyhow::Error;
 use commands::music::transcribe::{TranscribeChannelHandler, TranscribeData};
 use commands::music::{OrAuto, SpecificVolume, VoiceAction, VoiceData};
 use serde::{Deserialize, Serialize};
+use serenity::all::*;
 // use hyper;
 // use hyper_rustls;
 use serenity::async_trait;
-use serenity::builder::{CreateApplicationCommand, CreateInputText};
+use serenity::builder::CreateInputText;
 
 use serenity::futures::StreamExt;
-use serenity::model::application::interaction::autocomplete::AutocompleteInteraction;
-use serenity::model::application::interaction::Interaction;
 use serenity::model::gateway::Ready;
 use serenity::model::prelude::{GuildId, Member, Message, ResumedEvent};
 use serenity::model::user::User;
@@ -39,7 +38,7 @@ use serenity::model::user::User;
 // use tokio::io::AsyncWriteExt;
 // use serenity::model::id::GuildId;
 // use crate::bigwetsloppybowser::ShitGPT;
-use serenity::model::prelude::command::Command;
+use serenity::model::prelude::Command;
 use serenity::model::voice::VoiceState;
 use serenity::prelude::*;
 use songbird::SerenityInit;
@@ -62,6 +61,7 @@ impl Handler {
 
 lazy_static::lazy_static! {
     static ref WHITELIST: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(serde_json::from_reader(std::fs::File::open(Config::get().whitelist_path).expect("Failed to open whitelist path file")).expect("Failed to parse whitelist path file")));
+    static ref WEB_CLIENT: reqwest::Client = reqwest::Client::new();
 }
 // lazy_static::lazy_static! {
 //     static ref WEBHOOKS: Arc<Mutex<HashMap<u64, Webhook>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -72,10 +72,10 @@ pub trait CommandTrait
 where
     Self: Send + Sync,
 {
-    fn register(&self, command: &mut CreateApplicationCommand);
-    async fn run(&self, ctx: &Context, interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction);
+    fn register(&self, command: &mut CreateCommand);
+    async fn run(&self, ctx: &Context, interaction: &serenity::model::prelude::CommandInteraction);
     fn name(&self) -> &str;
-    async fn autocomplete(&self, ctx: &Context, interaction: &AutocompleteInteraction) -> Result<(), Error>;
+    async fn autocomplete(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<(), Error>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +87,7 @@ pub struct UserSafe {
 impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         match &interaction {
-            Interaction::ApplicationCommand(rawcommand) => {
+            Interaction::Command(rawcommand) => {
                 let command_name = rawcommand.data.name.clone();
                 let command = self.commands.iter().find(|c| c.name() == command_name);
                 if let Some(command) = command {
@@ -110,16 +110,32 @@ impl EventHandler for Handler {
             Interaction::Ping(p) => {
                 println!("Ping: {:?}", p);
             }
-            Interaction::MessageComponent(mci) => {
-                let mut cmd = mci.data.custom_id.as_str();
+            Interaction::Component(mci) => {
+                // let mut cmd = mci.data.custom_id.as_str();
 
-                if cmd == "::controls" {
-                    cmd = mci.data.values[0].as_str();
-                }
+                // if cmd == "::controls" {
+                //     cmd = mci.data.values[0].as_str();
+                // }
+
+                let cmd = match mci.data.kind {
+                    ComponentInteractionDataKind::Button => mci.data.custom_id.as_str(),
+                    ComponentInteractionDataKind::StringSelect { values } => match values.first() {
+                        Some(v) => v.as_str(),
+                        None => {
+                            println!("No values in select");
+                            return;
+                        }
+                    },
+                    _ => {
+                        println!("Unknown component type");
+                        return;
+                    }
+                };
 
                 if cmd == "controls" {
                     // this was a placeholder option, so we can acknowledge the button press and do nothing
-                    if let Err(e) = mci.create_interaction_response(&ctx.http, |r| r.kind(serenity::model::application::interaction::InteractionResponseType::DeferredUpdateMessage)).await {
+                    // if let Err(e) = mci.create_interaction_response(&ctx.http, |r| r.kind(serenity::model::application::interaction::InteractionResponseType::DeferredUpdateMessage)).await {
+                    if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new())).await {
                         eprintln!("Failed to send response: {}", e);
                     };
                     return;
@@ -130,15 +146,15 @@ impl EventHandler for Handler {
                         let guild_id = match mci.guild_id {
                             Some(id) => id,
                             None => {
-                                if let Err(e) = mci
-                                    .create_interaction_response(&ctx.http, |r| {
-                                        r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
-                                            d.content("This can only be used in a server").ephemeral(true);
-                                            d
-                                        })
-                                    })
-                                    .await
-                                {
+                                // if let Err(e) = mci
+                                //     .create_interaction_response(&ctx.http, |r| {
+                                //         r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
+                                //             d.content("This can only be used in a server").ephemeral(true);
+                                //             d
+                                //         })
+                                //     })
+                                //     .await
+                                if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("This can only be used in a server").ephemeral(true))).await {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
@@ -173,21 +189,27 @@ impl EventHandler for Handler {
                                             }
                                         },
                                     )) {
-                                        if let Err(e) = mci
-                                            .create_interaction_response(&ctx.http, |r| {
-                                                r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
-                                                    d.content(format!("Failed to issue command for {} ERR {}", original_command, e)).ephemeral(true);
-                                                    d
-                                                })
-                                            })
-                                            .await
-                                        {
+                                        // if let Err(e) = mci
+                                        //     .create_interaction_response(&ctx.http, |r| {
+                                        //         r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
+                                        //             d.content(format!("Failed to issue command for {} ERR {}", original_command, e)).ephemeral(true);
+                                        //             d
+                                        //         })
+                                        //     })
+                                        //     .await
+                                        // {
+                                        //     eprintln!("Failed to send response: {}", e);
+                                        // }
+                                        if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for {} ERR {}", original_command, e)).ephemeral(true))).await {
                                             eprintln!("Failed to send response: {}", e);
                                         }
                                         return;
                                     }
 
-                                    if let Err(e) = mci.create_interaction_response(&ctx.http, |r| r.kind(serenity::model::application::interaction::InteractionResponseType::DeferredUpdateMessage)).await {
+                                    // if let Err(e) = mci.create_interaction_response(&ctx.http, |r| r.kind(serenity::model::application::interaction::InteractionResponseType::DeferredUpdateMessage)).await {
+                                    //     eprintln!("Failed to send response: {}", e);
+                                    // }
+                                    if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new())).await {
                                         eprintln!("Failed to send response: {}", e);
                                     }
                                     let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rrx).await;
@@ -203,15 +225,18 @@ impl EventHandler for Handler {
                                             println!("Failed to issue command for {} ERR: {}", original_command, e);
                                         }
                                     }
-                                    if let Err(e) = mci
-                                        .create_interaction_response(&ctx.http, |r| {
-                                            r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
-                                                d.content(format!("Failed to issue command for {}", original_command)).ephemeral(true);
-                                                d
-                                            })
-                                        })
-                                        .await
-                                    {
+                                    // if let Err(e) = mci
+                                    //     .create_interaction_response(&ctx.http, |r| {
+                                    //         r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
+                                    //             d.content(format!("Failed to issue command for {}", original_command)).ephemeral(true);
+                                    //             d
+                                    //         })
+                                    //     })
+                                    //     .await
+                                    // {
+                                    //     eprintln!("Failed to send response: {}", e);
+                                    // }
+                                    if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for {}", original_command)).ephemeral(true))).await {
                                         eprintln!("Failed to send response: {}", e);
                                     }
                                     return;
@@ -219,15 +244,18 @@ impl EventHandler for Handler {
 
                                 println!("{}", _c);
                             } else {
-                                if let Err(e) = mci
-                                    .create_interaction_response(&ctx.http, |r| {
-                                        r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
-                                            d.content("Get on in here, enjoy the tunes!").ephemeral(true);
-                                            d
-                                        })
-                                    })
-                                    .await
-                                {
+                                // if let Err(e) = mci
+                                //     .create_interaction_response(&ctx.http, |r| {
+                                //         r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
+                                //             d.content("Get on in here, enjoy the tunes!").ephemeral(true);
+                                //             d
+                                //         })
+                                //     })
+                                //     .await
+                                // {
+                                //     eprintln!("Failed to send response: {}", e);
+                                // }
+                                if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Get on in here, enjoy the tunes!").ephemeral(true))).await {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
@@ -238,15 +266,18 @@ impl EventHandler for Handler {
                         let guild_id = match mci.guild_id {
                             Some(id) => id,
                             None => {
-                                if let Err(e) = mci
-                                    .create_interaction_response(&ctx.http, |r| {
-                                        r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
-                                            d.content("This can only be used in a server").ephemeral(true);
-                                            d
-                                        })
-                                    })
-                                    .await
-                                {
+                                // if let Err(e) = mci
+                                //     .create_interaction_response(&ctx.http, |r| {
+                                //         r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
+                                //             d.content("This can only be used in a server").ephemeral(true);
+                                //             d
+                                //         })
+                                //     })
+                                //     .await
+                                // {
+                                //     eprintln!("Failed to send response: {}", e);
+                                // }
+                                if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("This can only be used in a server").ephemeral(true))).await {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
@@ -258,43 +289,65 @@ impl EventHandler for Handler {
                             let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
 
                             if let VoiceAction::InSame(_c) = next_step {
-                                if let Err(e) = mci
-                                    .create_interaction_response(&ctx.http, |r| {
-                                        r.kind(serenity::model::application::interaction::InteractionResponseType::Modal).interaction_response_data(|d| {
-                                            d.components(|f| {
-                                                f.create_action_row(|r| {
-                                                    r.add_input_text({
-                                                        let mut m = CreateInputText::default();
-                                                        m.placeholder("Number 0-100").custom_id("volume").label("%").style(serenity::model::prelude::component::InputTextStyle::Short).required(true);
-                                                        m
-                                                    })
-                                                })
-                                            });
-                                            d.custom_id(raw);
-                                            d.title(match raw {
-                                                "volume" => "Volume",
-                                                "radiovolume" => "Radio Volume",
-                                                _ => unreachable!(),
-                                            });
+                                // if let Err(e) = mci
+                                //     .create_interaction_response(&ctx.http, |r| {
+                                //         r.kind(serenity::model::application::interaction::InteractionResponseType::Modal).interaction_response_data(|d| {
+                                //             d.components(|f| {
+                                //                 f.create_action_row(|r| {
+                                //                     r.add_input_text({
+                                //                         let mut m = CreateInputText::default();
+                                //                         m.placeholder("Number 0-100").custom_id("volume").label("%").style(serenity::model::prelude::component::InputTextStyle::Short).required(true);
+                                //                         m
+                                //                     })
+                                //                 })
+                                //             });
+                                //             d.custom_id(raw);
+                                //             d.title(match raw {
+                                //                 "volume" => "Volume",
+                                //                 "radiovolume" => "Radio Volume",
+                                //                 _ => unreachable!(),
+                                //             });
 
-                                            d
-                                        })
-                                    })
+                                //             d
+                                //         })
+                                //     })
+                                //     .await
+                                // {
+                                //     eprintln!("Failed to send response: {}", e);
+                                // }
+                                if let Err(e) = mci
+                                    .create_response(
+                                        &ctx.http,
+                                        CreateInteractionResponse::Modal(
+                                            CreateModal::new(
+                                                raw,
+                                                match raw {
+                                                    "volume" => "Volume",
+                                                    "radiovolume" => "Radio Volume",
+                                                    _ => unreachable!(),
+                                                },
+                                            )
+                                            .components(vec![CreateActionRow::InputText(CreateInputText::new(InputTextStyle::Short, "%", "volume"))]),
+                                        ),
+                                    )
                                     .await
                                 {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
                             } else {
-                                if let Err(e) = mci
-                                    .create_interaction_response(&ctx.http, |r| {
-                                        r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
-                                            d.content("Get on in here, enjoy the tunes!").ephemeral(true);
-                                            d
-                                        })
-                                    })
-                                    .await
-                                {
+                                // if let Err(e) = mci
+                                //     .create_interaction_response(&ctx.http, |r| {
+                                //         r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
+                                //             d.content("Get on in here, enjoy the tunes!").ephemeral(true);
+                                //             d
+                                //         })
+                                //     })
+                                //     .await
+                                // {
+                                //     eprintln!("Failed to send response: {}", e);
+                                // }
+                                if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Get on in here, enjoy the tunes!").ephemeral(true))).await {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
@@ -306,15 +359,18 @@ impl EventHandler for Handler {
                         let guild_id = match mci.guild_id {
                             Some(id) => id,
                             None => {
-                                if let Err(e) = mci
-                                    .create_interaction_response(&ctx.http, |r| {
-                                        r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
-                                            d.content("This can only be used in a server").ephemeral(true);
-                                            d
-                                        })
-                                    })
-                                    .await
-                                {
+                                // if let Err(e) = mci
+                                //     .create_interaction_response(&ctx.http, |r| {
+                                //         r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
+                                //             d.content("This can only be used in a server").ephemeral(true);
+                                //             d
+                                //         })
+                                //     })
+                                //     .await
+                                // {
+                                //     eprintln!("Failed to send response: {}", e);
+                                // }
+                                if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("This can only be used in a server").ephemeral(true))).await {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
@@ -326,39 +382,45 @@ impl EventHandler for Handler {
                             let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
 
                             if let VoiceAction::InSame(_c) = next_step {
-                                if let Err(e) = mci
-                                    .create_interaction_response(&ctx.http, |r| {
-                                        r.kind(serenity::model::application::interaction::InteractionResponseType::Modal).interaction_response_data(|d| {
-                                            d.components(|f| {
-                                                f.create_action_row(|r| {
-                                                    r.add_input_text({
-                                                        let mut m = CreateInputText::default();
-                                                        m.placeholder("Number 512-512000").custom_id("bitrate").label("bps").style(serenity::model::prelude::component::InputTextStyle::Short).required(false);
-                                                        m
-                                                    })
-                                                })
-                                            });
-                                            d.custom_id("bitrate");
-                                            d.title("Bitrate");
+                                // if let Err(e) = mci
+                                //     .create_interaction_response(&ctx.http, |r| {
+                                //         r.kind(serenity::model::application::interaction::InteractionResponseType::Modal).interaction_response_data(|d| {
+                                //             d.components(|f| {
+                                //                 f.create_action_row(|r| {
+                                //                     r.add_input_text({
+                                //                         let mut m = CreateInputText::default();
+                                //                         m.placeholder("Number 512-512000").custom_id("bitrate").label("bps").style(serenity::model::prelude::component::InputTextStyle::Short).required(false);
+                                //                         m
+                                //                     })
+                                //                 })
+                                //             });
+                                //             d.custom_id("bitrate");
+                                //             d.title("Bitrate");
 
-                                            d
-                                        })
-                                    })
-                                    .await
-                                {
+                                //             d
+                                //         })
+                                //     })
+                                //     .await
+                                // {
+                                //     eprintln!("Failed to send response: {}", e);
+                                // }
+                                if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Modal(CreateModal::new("bitrate", "Bitrate").components(vec![CreateActionRow::InputText(CreateInputText::new(InputTextStyle::Short, "bps", "bitrate").placeholder("512 - 512000, left blank for auto").required(false))]))).await {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
                             } else {
-                                if let Err(e) = mci
-                                    .create_interaction_response(&ctx.http, |r| {
-                                        r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
-                                            d.content("Get on in here, enjoy the tunes!").ephemeral(true);
-                                            d
-                                        })
-                                    })
-                                    .await
-                                {
+                                // if let Err(e) = mci
+                                //     .create_interaction_response(&ctx.http, |r| {
+                                //         r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
+                                //             d.content("Get on in here, enjoy the tunes!").ephemeral(true);
+                                //             d
+                                //         })
+                                //     })
+                                //     .await
+                                // {
+                                //     eprintln!("Failed to send response: {}", e);
+                                // }
+                                if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Get on in here, enjoy the tunes!").ephemeral(true))).await {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
@@ -370,15 +432,18 @@ impl EventHandler for Handler {
                         let guild_id = match mci.guild_id {
                             Some(id) => id,
                             None => {
-                                if let Err(e) = mci
-                                    .create_interaction_response(&ctx.http, |r| {
-                                        r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
-                                            d.content("This can only be used in a server").ephemeral(true);
-                                            d
-                                        })
-                                    })
-                                    .await
-                                {
+                                // if let Err(e) = mci
+                                //     .create_interaction_response(&ctx.http, |r| {
+                                //         r.kind(serenity::model::application::interaction::InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|d| {
+                                //             d.content("This can only be used in a server").ephemeral(true);
+                                //             d
+                                //         })
+                                //     })
+                                //     .await
+                                // {
+                                //     eprintln!("Failed to send response: {}", e);
+                                // }
+                                if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("This can only be used in a server").ephemeral(true))).await {
                                     eprintln!("Failed to send response: {}", e);
                                 }
                                 return;
