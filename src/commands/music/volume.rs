@@ -1,8 +1,6 @@
-use super::{AudioCommandHandler, AudioPromiseCommand};
+use super::AudioPromiseCommand;
 use anyhow::Error;
 use serenity::all::*;
-use std::time::Duration;
-use tokio::sync::oneshot;
 
 #[derive(Debug, Clone)]
 pub struct Volume;
@@ -84,105 +82,12 @@ impl crate::CommandTrait for Volume {
                 v.mutual_channel(ctx, &guild_id, &member.user.id)
             };
 
-            match next_step {
-                super::VoiceAction::UserNotConnected => {
-                    if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new().content("You're not in a voice channel"),
-                        )
-                        .await
-                    {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
-                    }
-                    return;
-                }
-                super::VoiceAction::InDifferent(_channel) => {
-                    if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new()
-                                .content("I'm in a different voice channel"),
-                        )
-                        .await
-                    {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
-                    }
-                    return;
-                }
-                super::VoiceAction::Join(_channel) => {
-                    if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new().content(
-                                "I'm not in a channel, if you want me to join use /join or /play",
-                            ),
-                        )
-                        .await
-                    {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
-                    }
-                    return;
-                }
-                super::VoiceAction::InSame(_channel) => {
-                    let audio_command_handler = ctx
-                        .data
-                        .read()
-                        .await
-                        .get::<AudioCommandHandler>()
-                        .expect("Expected AudioCommandHandler in TypeMap")
-                        .clone();
-
-                    let mut audio_command_handler = audio_command_handler.lock().await;
-
-                    if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
-                        let (rtx, rrx) = oneshot::channel::<String>();
-                        if tx.send((rtx, AudioPromiseCommand::Volume(option))).is_err() {
-                            if let Err(e) = interaction
-                                .edit_response(
-                                    &ctx.http,
-                                    EditInteractionResponse::new()
-                                        .content("Failed to send volume change"),
-                                )
-                                .await
-                            {
-                                eprintln!("Failed to edit original interaction response: {:?}", e);
-                            }
-                            return;
-                        }
-
-                        let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
-                        if let Ok(Ok(msg)) = timeout {
-                            if let Err(e) = interaction
-                                .edit_response(
-                                    &ctx.http,
-                                    EditInteractionResponse::new().content(msg),
-                                )
-                                .await
-                            {
-                                eprintln!("Failed to edit original interaction response: {:?}", e);
-                            }
-                        } else if let Err(e) = interaction
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new().content("Failed to change volume"),
-                            )
-                            .await
-                        {
-                            eprintln!("Failed to edit original interaction response: {:?}", e);
-                        }
-                    } else if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new()
-                                .content("Couldnt find the channel handler :( im broken."),
-                        )
-                        .await
-                    {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
-                    }
-                }
-            }
+            next_step.send_command_or_respond(
+                ctx,
+                interaction,
+                guild_id,
+                AudioPromiseCommand::Volume(option),
+            );
         } else if let Err(e) = interaction
             .edit_response(
                 &ctx.http,

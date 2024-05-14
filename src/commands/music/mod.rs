@@ -26,6 +26,7 @@ use std::collections::HashMap;
 
 use std::fmt::Display;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Error;
 
@@ -161,6 +162,112 @@ pub enum VoiceAction {
     InSame(ChannelId),
     InDifferent(ChannelId),
     UserNotConnected,
+}
+
+impl VoiceAction {
+    pub async fn send_command_or_respond(
+        self,
+        ctx: &Context,
+        interaction: &CommandInteraction,
+        guild_id: GuildId,
+        command: AudioPromiseCommand,
+    ) {
+        match self {
+            Self::UserNotConnected => {
+                if let Err(e) = interaction
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content("You're not in a voice channel"),
+                    )
+                    .await
+                {
+                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                }
+                return;
+            }
+            Self::InDifferent(_channel) => {
+                if let Err(e) = interaction
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content("I'm in a different voice channel"),
+                    )
+                    .await
+                {
+                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                }
+                return;
+            }
+            Self::Join(_channel) => {
+                if let Err(e) = interaction
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(
+                            "I'm not in a channel, if you want me to join use /join or /play",
+                        ),
+                    )
+                    .await
+                {
+                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                }
+                return;
+            }
+            Self::InSame(_channel) => {
+                let audio_command_handler = ctx
+                    .data
+                    .read()
+                    .await
+                    .get::<AudioCommandHandler>()
+                    .expect("Expected AudioCommandHandler in TypeMap")
+                    .clone();
+
+                let mut audio_command_handler = audio_command_handler.lock().await;
+
+                if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
+                    let (rtx, rrx) = oneshot::channel::<String>();
+                    if tx.send((rtx, command)).is_err() {
+                        if let Err(e) = interaction
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .content("Failed to send volume change"),
+                            )
+                            .await
+                        {
+                            eprintln!("Failed to edit original interaction response: {:?}", e);
+                        }
+                        return;
+                    }
+
+                    let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
+                    if let Ok(Ok(msg)) = timeout {
+                        if let Err(e) = interaction
+                            .edit_response(&ctx.http, EditInteractionResponse::new().content(msg))
+                            .await
+                        {
+                            eprintln!("Failed to edit original interaction response: {:?}", e);
+                        }
+                    } else if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content("Failed to send inner command"),
+                        )
+                        .await
+                    {
+                        eprintln!("Failed to edit original interaction response: {:?}", e);
+                    }
+                } else if let Err(e) = interaction
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content("Couldnt find the channel handler :( im broken."),
+                    )
+                    .await
+                {
+                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
