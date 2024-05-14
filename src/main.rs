@@ -1019,7 +1019,6 @@ struct Timed<T> {
 }
 #[tokio::main]
 async fn main() {
-    env_logger::init();
     let cfg = Config::get();
     let mut tmp = cfg.data_path.clone();
     tmp.push("tmp");
