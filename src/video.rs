@@ -2,9 +2,10 @@
 
 use std::path::PathBuf;
 
-use anyhow::Error;
+use anyhow::Result;
 // use async_recursion::async_recursion;
 use serde::Deserialize;
+use serenity::async_trait;
 use ytd_rs::Arg;
 
 #[cfg(feature = "spotify")]
@@ -31,7 +32,7 @@ pub struct RawVideo {
     pub duration: u32,
 }
 
-async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>, anyhow::Error> {
+async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
     let mut bot_path = crate::Config::get().data_path.clone();
     bot_path.push("cookies.txt");
     let url = if !(url.starts_with("http://") || url.starts_with("https://")) {
@@ -94,7 +95,7 @@ impl Video {
         // audio_only: bool,
         allow_playlist: bool,
         allow_search: bool,
-    ) -> Result<Vec<VideoType>, anyhow::Error> {
+    ) -> Result<Vec<VideoType>> {
         let now = std::time::Instant::now();
         let mut v = get_videos(url, allow_search).await?;
         println!("Took {}ms to get videos", now.elapsed().as_millis());
@@ -106,7 +107,7 @@ impl Video {
         }
         Ok(v.iter().map(|v| VideoType::Url(VideoInfo { title: v.title.clone(), url: v.url.clone(), duration: Some(v.duration as u64) })).collect::<Vec<VideoType>>())
     }
-    pub async fn download_video(url: &str, audio_only: bool, spoiler: bool, max_filesize: &str) -> Result<VideoType, anyhow::Error> {
+    pub async fn download_video(url: &str, audio_only: bool, spoiler: bool, max_filesize: &str) -> Result<VideoType> {
         let v = Self::get_video(url, false, false).await?;
         let v = v.first().ok_or(anyhow::anyhow!("No videos found"))?;
         // convert to downloaded video type
@@ -189,7 +190,7 @@ impl Video {
     //     url: String,
     //     audio_only: bool,
     //     allow_playlist: bool,
-    // ) -> Result<Vec<VideoType>, anyhow::Error> {
+    // ) -> Result<Vec<VideoType>> {
     //     // if url is empty
     //     if url.is_empty() {
     //         return Self::get_video(crate::Config::get().bumper_url, audio_only, allow_playlist)
@@ -260,11 +261,11 @@ impl Video {
     //         Ok(videos.iter().map(|v| VideoType::Disk(v.clone())).collect())
     //     }
     // }
-    pub fn delete(&self) -> Result<(), anyhow::Error> {
+    pub fn delete(&self) -> Result<()> {
         std::fs::remove_file(self.path.clone())?;
         Ok(())
     }
-    pub fn from_path(path: PathBuf, url: String, audio_only: bool, id: String) -> Result<Self, Error> {
+    pub fn from_path(path: PathBuf, url: String, audio_only: bool, id: String) -> Result<Self> {
         let file_name = match path.file_name().and_then(|f| f.to_str()) {
             Some(f) => f,
             None => return Err(anyhow::anyhow!("No file name")),
@@ -278,10 +279,30 @@ impl Video {
         let playlist_index = file_name.split('_').nth(1).and_then(|s| s.split('.').next().and_then(|s| s.parse::<usize>().ok())).unwrap_or(0);
         Ok(Self { url, path: path.clone(), title: title.to_string(), duration, video, playlist_index })
     }
+    pub async fn delete_when_finished(self, handle: songbird::tracks::TrackHandle) -> Result<()> {
+        handle.add_event(songbird::events::Event::Track(songbird::events::TrackEvent::End), self)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl songbird::EventHandler for Video {
+    async fn act(&self, ctx: &songbird::EventContext<'_>) -> Option<songbird::Event> {
+        if let songbird::EventContext::Track(track) = ctx {
+            for (state, _handle) in *track {
+                if state.playing.is_done() {
+                    if let Err(e) = self.delete() {
+                        println!("Failed to delete file: {}", e);
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 #[cfg(feature = "spotify")]
-pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>, Error> {
+pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>> {
     let id = url.split('/').last().ok_or_else(|| anyhow::anyhow!("Invalid spotify URL"))?.split('?').next().ok_or_else(|| anyhow::anyhow!("Invalid spotify URL"))?.to_string();
     let videos = get_spotify_song_title(id).await?;
     if videos.is_empty() {
@@ -302,7 +323,7 @@ pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>, Error> {
     }
 }
 
-async fn run_preprocessor(filepath: &PathBuf) -> Result<(), Error> {
+async fn run_preprocessor(filepath: &PathBuf) -> Result<()> {
     // run the preprocessor script located in the data folder if it exists and is executable
     let mut path = crate::Config::get().data_path.clone();
     path.push("preprocessor.sh");

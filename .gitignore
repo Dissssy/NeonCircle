@@ -14,3 +14,5 @@ shitgpt.json
 whitelist.json
 ex.html
 src/commands/emulate.rs.old
+sam
+alerts.json

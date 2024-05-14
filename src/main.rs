@@ -8,6 +8,7 @@
 mod commands;
 
 mod radio;
+mod sam;
 mod video;
 mod youtube;
 use std::collections::HashMap;
@@ -160,7 +161,7 @@ impl EventHandler for Handler {
                                         match original_command {
                                             "pause" => AudioPromiseCommand::Paused(OrToggle::Toggle),
                                             "skip" => AudioPromiseCommand::Skip,
-                                            "stop" => AudioPromiseCommand::Stop,
+                                            "stop" => AudioPromiseCommand::Stop(None),
                                             "looped" => AudioPromiseCommand::Loop(OrToggle::Toggle),
                                             "shuffle" => AudioPromiseCommand::Shuffle(OrToggle::Toggle),
                                             "repeat" => AudioPromiseCommand::Repeat(OrToggle::Toggle),
@@ -1051,7 +1052,7 @@ impl EventHandler for Handler {
 
         if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
             let (rtx, rrx) = serenity::futures::channel::oneshot::channel::<String>();
-            if let Err(e) = tx.unbounded_send((rtx, AudioPromiseCommand::Stop)) {
+            if let Err(e) = tx.unbounded_send((rtx, AudioPromiseCommand::Stop(None))) {
                 eprintln!("Failed to send stop command: {}", e);
             };
 
@@ -1072,9 +1073,10 @@ impl EventHandler for Handler {
     }
 
     async fn message(&self, ctx: Context, new_message: Message) {
-        if new_message.author.bot {
-            return;
-        }
+        // println!("Message: {:?}", new_message);
+        // if new_message.author.bot {
+        //     return;
+        // }
         if new_message.content.trim().is_empty() {
             return;
         }
@@ -1402,7 +1404,7 @@ async fn main() {
             println!("Sending stop command {}", i);
             let (tx, rx) = serenity::futures::channel::oneshot::channel::<String>();
 
-            if let Err(e) = x.unbounded_send((tx, commands::music::AudioPromiseCommand::Stop)) {
+            if let Err(e) = x.unbounded_send((tx, commands::music::AudioPromiseCommand::Stop(None))) {
                 println!("Failed to send stop command: {}", e);
             };
 
@@ -1466,6 +1468,8 @@ struct Config {
     transcribe_token: String,
     #[cfg(feature = "transcribe")]
     alert_phrases_path: PathBuf,
+    #[cfg(feature = "transcribe")]
+    sam_path: PathBuf,
 }
 
 impl Config {
@@ -1509,6 +1513,8 @@ impl Config {
                 transcribe_token: if let Some(transcribe_token) = rec.transcribe_token { transcribe_token } else { Self::safe_read("\nPlease enter your transcribe token:") },
                 #[cfg(feature = "transcribe")]
                 alert_phrases_path: if let Some(alert_phrase_path) = rec.alert_phrase_path { alert_phrase_path } else { Self::safe_read("\nPlease enter your alert phrase path:") },
+                #[cfg(feature = "transcribe")]
+                sam_path: if let Some(sam_path) = rec.sam_path { sam_path } else { Self::safe_read("\nPlease enter your sam path:") },
             }
         } else {
             println!("Welcome to my shitty Rust Music Bot!");
@@ -1540,6 +1546,7 @@ impl Config {
                 transcribe_token: Self::safe_read("\nPlease enter your transcribe token:"),
                 transcribe_url: Self::safe_read("\nPlease enter your transcribe url:"),
                 alert_phrases_path: Self::safe_read("\nPlease enter your alert phrase path:"),
+                sam_path: Self::safe_read("\nPlease enter your sam path:"),
             }
         };
         std::fs::write(config_path.clone(), serde_json::to_string_pretty(&config).unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path))).expect("Failed to write config.json");
@@ -1611,4 +1618,6 @@ struct RecoverConfig {
     transcribe_token: Option<String>,
     #[cfg(feature = "transcribe")]
     alert_phrase_path: Option<PathBuf>,
+    #[cfg(feature = "transcribe")]
+    sam_path: Option<PathBuf>,
 }

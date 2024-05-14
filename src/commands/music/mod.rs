@@ -217,7 +217,8 @@ pub enum AudioPromiseCommand {
     Play(Vec<MetaVideo>),
 
     Paused(OrToggle),
-    Stop,
+    // contains an optional delay to wait before leaving the channel
+    Stop(Option<tokio::time::Duration>),
     Loop(OrToggle),
     Repeat(OrToggle),
     Shuffle(OrToggle),
@@ -274,6 +275,12 @@ impl VideoType {
             VideoType::Disk(v) => v.title.clone(),
             VideoType::Url(v) => v.title.clone(),
         }
+    }
+    pub async fn delete(&self) -> Result<(), Error> {
+        if let VideoType::Disk(v) = self {
+            v.delete()?;
+        }
+        Ok(())
     }
 }
 
@@ -347,10 +354,7 @@ pub struct MetaVideo {
 
 impl MetaVideo {
     pub async fn delete(&mut self) -> Result<(), Error> {
-        match self.video {
-            VideoType::Disk(ref mut video) => video.delete(),
-            _ => Ok(()),
-        }?;
+        self.video.delete().await?;
         #[cfg(feature = "tts")]
         if let Some(ref mut ttsmsg) = self.ttsmsg {
             if let Ok(vid) = ttsmsg.wait_for().await {

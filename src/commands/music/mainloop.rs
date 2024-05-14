@@ -42,7 +42,10 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
         let transcribe = crate::voice_events::VoiceDataManager::new(Arc::clone(&rawcall), Arc::clone(&http), rawtx).await;
         let (killtranscribe, transcribereturn) = tokio::sync::mpsc::channel::<()>(1);
         let (transsender, transcribed) = mpsc::unbounded::<(String, UserId)>();
-        let trans = tokio::task::spawn(crate::voice_events::transcription_thread(transcribe, transcribereturn, transsender));
+        let trans = {
+            let call = Arc::clone(&rawcall);
+            tokio::task::spawn(crate::voice_events::transcription_thread(transcribe, transcribereturn, transsender, call))
+        };
 
         (trans, killtranscribe, transcribed)
     };
@@ -247,12 +250,15 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                                     log.log(&format!("Error sending play: {}\n", e)).await;
                                 }
                             }
-                            AudioPromiseCommand::Stop => {
+                            AudioPromiseCommand::Stop(delay) => {
                                 let r = snd.send(String::from("Stopped"));
                                 if let Err(e) = r {
                                     log.log(&format!("Error sending stop: {}\n", e)).await;
                                 }
                                 control.brk = true;
+                                if let Some(delay) = delay {
+                                    tokio::time::sleep(delay).await;
+                                }
                             }
                             AudioPromiseCommand::Paused(paused) => {
                                 let val = paused.get_val(control.settings.pause);

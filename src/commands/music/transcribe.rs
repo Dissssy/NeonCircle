@@ -1,7 +1,7 @@
 use rand::seq::SliceRandom;
 
 use serenity::model::prelude::interaction::autocomplete::AutocompleteInteraction;
-use serenity::model::prelude::{ChannelId, GuildId, Message, UserId};
+use serenity::model::prelude::{ChannelId, GuildId, Message};
 use songbird::tracks::TrackHandle;
 use songbird::{ffmpeg, Call};
 use tokio::sync::Mutex;
@@ -232,7 +232,7 @@ impl Handler {
             if self.current_handle.is_none() {
                 let mut call = self.call.lock().await;
                 let handle = call.play_source(ffmpeg(v.get_video().path.clone()).await.expect("Error creating ffmpeg source"));
-                let _ = handle.set_volume(1.5);
+                let _ = handle.set_volume(2.0);
                 self.current_handle = Some((handle, v.clone()));
                 // println!("Prepared next is done");
                 self.prepared_next = None;
@@ -368,7 +368,7 @@ pub struct TranscribeChannelHandler {
     channels: Amh<ChannelId, Sender<RawMessage>>,
     sender: Sender<RawMessage>,
     receiver: Option<Receiver<RawMessage>>,
-    assigned_voice: Amh<UserId, crate::youtube::TTSVoice>,
+    assigned_voice: Amh<String, crate::youtube::TTSVoice>,
     voice_cycle: Vec<crate::youtube::TTSVoice>,
 }
 
@@ -420,11 +420,11 @@ impl TranscribeChannelHandler {
         // attempt to get voice
         let voice = {
             let mut assigned_voice = self.assigned_voice.lock().await;
-            match assigned_voice.get(&msg.author.id) {
+            match assigned_voice.get(&msg.author.name) {
                 Some(v) => *v,
                 None => {
                     let v = self.voice_cycle.remove(0);
-                    assigned_voice.insert(msg.author.id, v);
+                    assigned_voice.insert(msg.author.name.clone(), v);
                     self.voice_cycle.push(v);
                     messages.push(RawMessage::announcement(msg, format!("{} is now using this voice to speak", msg.author.name), &v));
                     v
@@ -444,7 +444,7 @@ impl TranscribeChannelHandler {
         messages
     }
     pub async fn send_tts(&mut self, ctx: &Context, msg: &Message) {
-        let undo_voice = { self.assigned_voice.lock().await.get(&msg.author.id).is_none() };
+        let undo_voice = { self.assigned_voice.lock().await.get(&msg.author.name).is_none() };
         let messages = self.get_tts(ctx, msg).await;
 
         let mut errored = false;
@@ -457,7 +457,7 @@ impl TranscribeChannelHandler {
             }
         }
         if errored && undo_voice {
-            self.assigned_voice.lock().await.remove(&msg.author.id);
+            self.assigned_voice.lock().await.remove(&msg.author.name);
         }
     }
 }

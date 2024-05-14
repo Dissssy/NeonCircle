@@ -9,7 +9,7 @@ while true; do
     # yt-dlp --update-to nightly
     python -m pip install --upgrade yt-dlp
     # run the application
-    cargo run --release --features experimental --features misogyny
+    cargo run --release --features experimental # --features misogyny
 
     # save the return code
     ret=$?

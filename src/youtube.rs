@@ -516,7 +516,7 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>, Er
     let output = if bot_path.exists() {
         tokio::process::Command::new("yt-dlp")
             .args(["--cookies", bot_path.to_str().expect("Could not convert path to str")])
-            .args(["--default-search", "ytsearch"])
+            // .args(["--default-search", "ytsearch"])
             // .arg("--dump-json")
             .args(["-O", "%(.{webpage_url,title,duration,uploader})j"])
             .arg("--flat-playlist")
@@ -528,7 +528,7 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>, Er
             .await?
     } else {
         tokio::process::Command::new("yt-dlp")
-            .args(["--default-search", "ytsearch"])
+            // .args(["--default-search", "ytsearch"])
             .args(["-O", "%(.{webpage_url,title,duration,uploader})j"])
             // .arg("--dump-json")
             .arg("--flat-playlist")

@@ -72,7 +72,7 @@ impl crate::CommandTrait for Stop {
 
                     if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
                         let (rtx, rrx) = serenity::futures::channel::oneshot::channel::<String>();
-                        if tx.unbounded_send((rtx, AudioPromiseCommand::Stop)).is_err() {
+                        if tx.unbounded_send((rtx, AudioPromiseCommand::Stop(None))).is_err() {
                             if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("Failed to send stop command")).await {
                                 eprintln!("Failed to edit original interaction response: {:?}", e);
                             }

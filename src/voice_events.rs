@@ -1,5 +1,6 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, pin::Pin, sync::Arc};
 
+use anyhow::Result;
 use serde::Deserialize as _;
 use serenity::{
     async_trait,
@@ -13,7 +14,10 @@ use songbird::{
 };
 use tokio::sync::Mutex;
 
-use crate::commands::music::{AudioPromiseCommand, OrToggle};
+use crate::{
+    commands::music::{AudioPromiseCommand, OrToggle},
+    video::Video,
+};
 
 const SAMPLES_PER_MILLISECOND: f64 = 1920.0 / 20.0;
 
@@ -195,7 +199,7 @@ impl VoiceDataManager {
     }
 }
 
-pub async fn transcription_thread(mut transcribe: VoiceDataManager, mut transcribereturn: tokio::sync::mpsc::Receiver<()>, mut recvtext: serenity::futures::channel::mpsc::UnboundedSender<(String, UserId)>) {
+pub async fn transcription_thread(mut transcribe: VoiceDataManager, mut transcribereturn: tokio::sync::mpsc::Receiver<()>, mut recvtext: serenity::futures::channel::mpsc::UnboundedSender<(String, UserId)>, call: Arc<Mutex<Call>>) {
     // tick to check every 1 second
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     let reqwest = reqwest::Client::new();
@@ -314,10 +318,33 @@ pub async fn transcription_thread(mut transcribe: VoiceDataManager, mut transcri
                     }
                 }
             }
-            Some(parsed) = pending_parse.next() => {
-                println!("Parsed: {:?}", parsed);
-                match parsed {
-                    Ok((result, user, ParsedCommand::None)) => {
+            Some(result) = pending_parse.next() => {
+                // println!("Parsed: {:?}", parsed);
+
+                let (result, user, WithFeedback { command, feedback }) = match result {
+                    Ok((result, user, with_feedback)) => (result, user, with_feedback),
+                    Err(e) => {
+                        eprintln!("Error parsing command: {:?}", e);
+                        continue;
+                    }
+                };
+
+                if let Some(feedback) = feedback {
+                    let mut call = call.lock().await;
+                    let handle = call.play_source(songbird::ffmpeg(feedback.path.clone()).await.expect("Error creating ffmpeg source"));
+                    let _ = handle.set_volume(0.8);
+                    if let Err(e) = feedback.delete_when_finished(handle).await {
+                        eprintln!("Error deleting feedback: {:?}", e);
+                    }
+                }
+
+                match command.await {
+                    // Ok((_, _, WithFeedback { command: ParsedCommand::None, feedback: _ } )) => {
+                    //     let mut call = call.lock().await;
+                    //     let handle = call.play_source(songbird::ffmpeg(audio.path.clone()).await.expect("Error creating ffmpeg source"));
+                    //     let _ = handle.set_volume(1.5);
+                    // },
+                    Ok(ParsedCommand::None) => {
                         if ![
                             "bye.", "thank you."
                         ].contains(&result.to_lowercase().as_str()) {
@@ -326,8 +353,8 @@ pub async fn transcription_thread(mut transcribe: VoiceDataManager, mut transcri
                                 break;
                             }
                         }
-                    },
-                    Ok((_, user, ParsedCommand::MetaCommand(command))) => {
+                    }
+                    Ok(ParsedCommand::MetaCommand(command)) => {
                         match command {
                             Command::NoConsent => {
                                 if let Err(e) = recvtext.send((format!("{} opted out.", serenity::model::id::UserId::from(user.0).mention()), songbird::model::id::UserId(transcribe.http.get_current_user().await.expect("Current user is none?").id.0))).await {
@@ -338,21 +365,25 @@ pub async fn transcription_thread(mut transcribe: VoiceDataManager, mut transcri
                             }
                         }
                     }
-                    Ok((_, _, ParsedCommand::Command(command))) => {
+                    Ok(ParsedCommand::Command(command)) => {
                         let (tx, rx) = serenity::futures::channel::oneshot::channel();
                         if let Err(e) = transcribe.command.send((tx, command.clone())).await {
                             eprintln!("Error sending command: {:?}", e);
                         }
                         responses_to_await.push(rx);
                     }
-                    Ok((_, _, ParsedCommand::Error(e))) => {
-                        if let Err(e) = recvtext.send((e, songbird::model::id::UserId(transcribe.http.get_current_user().await.expect("Current user is none?").id.0))).await {
-                            eprintln!("Error sending text: {:?}", e);
-                            break;
-                        }
-                    }
                     Err(e) => {
-                        eprintln!("Error parsing command: {:?}", e);
+                        // say the error
+                        if let Some(feedback) = get_speech(&format!("Error: {:?}", e)).await {
+                            let mut call = call.lock().await;
+                            let handle = call.play_source(songbird::ffmpeg(feedback.path.clone()).await.expect("Error creating ffmpeg source"));
+                            let _ = handle.set_volume(0.8);
+                            if let Err(e) = feedback.delete_when_finished(handle).await {
+                                eprintln!("Error deleting feedback: {:?}", e);
+                            }
+                        } else {
+                            eprintln!("Error getting error speech for {:?}", e);
+                        }
                     }
                 }
             }
@@ -474,7 +505,7 @@ async fn wait_for_transcription(reqwest: reqwest::Client, url: String, key: Stri
 // }
 
 fn filter_input(s: &str) -> String {
-    s.to_lowercase().chars().filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect::<String>().split_whitespace().filter(|w| !w.is_empty()).collect::<Vec<&str>>().join(" ")
+    s.to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric() || c.is_whitespace()).collect::<String>().split_whitespace().filter(|w| !w.is_empty()).collect::<Vec<&str>>().join(" ")
 }
 
 lazy_static::lazy_static!(
@@ -482,7 +513,15 @@ lazy_static::lazy_static!(
         // load it in from a file
         let file = crate::Config::get().alert_phrases_path;
         let text = std::fs::read_to_string(file).expect("Error reading alert phrases file");
-        serde_json::from_str(&text).expect("Error deserializing alert phrases")
+        let mut the = serde_json::from_str::<Alerts>(&text).expect("Error deserializing alert phrases");
+        // add a space to the end of each piece of text
+        for alert in &mut the.phrases {
+            alert.main.push(' ');
+            for alias in &mut alert.aliases {
+                alias.push(' ');
+            }
+        }
+        the
     };
 );
 
@@ -530,16 +569,16 @@ impl std::fmt::Display for Alert {
 
 // const ALERT_PHRASES: &[(&str, &[&str])] = &[("neon circle", &["beyond circle", "neoncircle", "me uncircled", "me on circle"]), ("jarvis", &[]), ("jeeves", &["jeebs"])];
 
-async fn parse_commands(s: String, u: UserId, http: Arc<serenity::http::Http>) -> (String, UserId, ParsedCommand) {
+async fn parse_commands(s: String, u: UserId, http: Arc<serenity::http::Http>) -> (String, UserId, WithFeedback) {
     if s.is_empty() {
-        return (s, u, ParsedCommand::None);
+        return (s, u, WithFeedback::new_without_feedback(Box::pin(async move { Ok(ParsedCommand::None) })).await);
     }
     let filtered = filter_input(&s);
     if filtered.is_empty() {
-        return (s, u, ParsedCommand::None);
+        return (s, u, WithFeedback::new_without_feedback(Box::pin(async move { Ok(ParsedCommand::None) })).await);
     }
     if filtered.contains("i do not consent to being recorded") {
-        return (s, u, ParsedCommand::MetaCommand(Command::NoConsent));
+        return (s, u, WithFeedback::new_without_feedback(Box::pin(async move { Ok(ParsedCommand::MetaCommand(Command::NoConsent)) })).await);
     }
 
     // println!("Filtered: {}", filtered);
@@ -555,20 +594,23 @@ async fn parse_commands(s: String, u: UserId, http: Arc<serenity::http::Http>) -
         if let Some(alert) = ALERT_PHRASES.get_alert(&with_aliases) {
             // println!("Found alert: {}", alert);
             let mut split = with_aliases.split(&alert.main);
-            // println!("Discarding: {}", split.next().unwrap_or("")); // discard the first part
+            split.next(); // discard the first part
+                          // println!("Discarding: {}", discard.unwrap_or("")); // discard the first part
             let rest = split.next().unwrap_or("");
             // println!("Rest: {}", rest);
             let mut split = rest.split_whitespace();
             let command = match split.next() {
                 Some(command) => command,
-                None => return (s, u, ParsedCommand::None),
+                // None => return (s, u, ParsedCommand::None(get_speech("You need to say a command").await)),
+                None => return (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::None) }), "You need to say a command").await),
             };
             // println!("Command: {}", command);
-            let args: Vec<&str> = split.next().map(|s| s.split_whitespace().collect()).unwrap_or_default();
+            // args is the rest of the words
+            let args = split.collect();
             // println!("Args: {}", args.join(" | "));
             (command, args)
         } else {
-            return (s, u, ParsedCommand::None);
+            return (s, u, WithFeedback::new_without_feedback(Box::pin(async move { Ok(ParsedCommand::None) })).await);
         }
     };
 
@@ -577,102 +619,77 @@ async fn parse_commands(s: String, u: UserId, http: Arc<serenity::http::Http>) -
     match command {
         t if ["play", "add", "queue", "played"].contains(&t) => {
             let query = args.join(" ");
-            let vids = crate::video::Video::get_video(&query, true, true).await;
-            match vids {
-                Ok(vids) => {
-                    let mut truevideos = Vec::new();
-                    #[cfg(feature = "tts")]
-                    let key = crate::youtube::get_access_token().await;
-                    for v in vids {
-                        let title = match v.clone() {
-                            crate::commands::music::VideoType::Disk(v) => v.title,
-                            crate::commands::music::VideoType::Url(v) => v.title,
-                        };
-                        #[cfg(feature = "tts")]
-                        if let Ok(key) = key.as_ref() {
-                            // if let Ok(tts) = t {
-                            // match tts {
-                            //     VideoType::Disk(tts) => {
-                            //         truevideos.push(MetaVideo {
-                            //             video: v,
-                            //             ttsmsg: Some(tts),
-                            //             title,
-                            //         });
-                            //     }
-                            //     VideoType::Url(_) => {
-                            //         unreachable!("TTS should always be a disk file");
-                            //     }
-                            // }
-                            // println!("Getting tts for {}", title);
-                            truevideos.push(crate::commands::music::MetaVideo {
-                                video: v,
-                                ttsmsg: Some(crate::commands::music::LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(title.clone(), key.clone(), None)))),
-                                title,
-                                author: http.get_user(u.0).await.ok().map(|u| crate::commands::music::Author { name: u.name.clone(), pfp_url: u.avatar_url().clone().unwrap_or(u.default_avatar_url().clone()) }),
-                            })
-
-                            // } else {
-                            //     println!("Error {:?}", t);
-                            //     truevideos.push(MetaVideo {
-                            //         video: v,
-                            //         ttsmsg: None,
-                            //         title,
-                            //     });
-                            // }
-                        } else {
-                            truevideos.push(crate::commands::music::MetaVideo {
-                                video: v,
-                                ttsmsg: None,
-                                title,
-                                author: http.get_user(u.0).await.ok().map(|u| crate::commands::music::Author { name: u.name.clone(), pfp_url: u.avatar_url().unwrap_or(u.default_avatar_url().clone()) }),
-                            });
-                        }
-                        #[cfg(not(feature = "tts"))]
-                        truevideos.push(MetaVideo { video: v, title });
-                    }
-                    return (s, u, ParsedCommand::Command(AudioPromiseCommand::Play(truevideos)));
-                }
-                Err(e) => {
-                    return (s, u, ParsedCommand::Error(format!("Error getting video: {:?}", e)));
-                }
+            let http = Arc::clone(&http);
+            if query.replace(' ', "").contains("wonderwall") {
+                (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::Command(AudioPromiseCommand::Play(get_videos(query, http, u).await?))) }), "Anyway, here's wonderwall").await)
+            } else {
+                let response = format!("Adding {} to the queue", query);
+                (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::Command(AudioPromiseCommand::Play(get_videos(query, http, u).await?))) }), &response).await)
             }
         }
-        t if ["stop", "leave", "disconnect"].contains(&t) => {
-            return (s, u, ParsedCommand::Command(AudioPromiseCommand::Stop));
-        }
-        t if ["skip", "next"].contains(&t) => {
-            return (s, u, ParsedCommand::Command(AudioPromiseCommand::Skip));
-        }
-        t if ["pause"].contains(&t) => {
-            return (s, u, ParsedCommand::Command(AudioPromiseCommand::Paused(OrToggle::Specific(true))));
-        }
-        t if ["resume", "unpause"].contains(&t) => {
-            return (s, u, ParsedCommand::Command(AudioPromiseCommand::Paused(OrToggle::Specific(false))));
-        }
+        t if ["stop", "leave", "disconnect"].contains(&t) => (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::Command(AudioPromiseCommand::Stop(Some(tokio::time::Duration::from_millis(2500))))) }), "Goodbuy, my friend").await),
+        t if ["skip", "next"].contains(&t) => (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::Command(AudioPromiseCommand::Skip)) }), "Skipping").await),
+        t if ["pause"].contains(&t) => (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::Command(AudioPromiseCommand::Paused(OrToggle::Specific(true)))) }), "Pausing").await),
+        t if ["resume", "unpause"].contains(&t) => (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::Command(AudioPromiseCommand::Paused(OrToggle::Specific(false)))) }), "Resuming").await),
         t if ["volume", "vol"].contains(&t) => {
             if let Some(vol) = attempt_to_parse_number(&args) {
-                return (s, u, ParsedCommand::Command(AudioPromiseCommand::Volume(vol.clamp(0, 100) as f64 / 100.0)));
+                // (s, u, ParsedCommand::Command(AudioPromiseCommand::Volume(vol.clamp(0, 100) as f64 / 100.0)))
+                if vol <= 100 {
+                    (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::Command(AudioPromiseCommand::Volume(vol.clamp(0, 100) as f64 / 100.0))) }), &format!("Setting volyume to {}%", humanize_number(vol))).await)
+                } else {
+                    (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::None) }), "Volyume must be between zero and one hundred").await)
+                }
+            } else {
+                // (s, u, ParsedCommand::None(get_speech("You need to say a number for the volyume").await))
+                (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::None) }), "You need to say a number for the volyume").await)
             }
         }
         t if ["remove", "delete"].contains(&t) => {
             if let Some(index) = attempt_to_parse_number(&args) {
-                return (s, u, ParsedCommand::Command(AudioPromiseCommand::Remove(index)));
+                // (s, u, ParsedCommand::Command(AudioPromiseCommand::Remove(index)))
+                (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::Command(AudioPromiseCommand::Remove(index))) }), &format!("Removing song {} from queue", index)).await)
+            } else {
+                // (s, u, ParsedCommand::None(get_speech("You need to say a number for the index").await))
+                (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::None) }), "You need to say a number for the index").await)
             }
         }
-        _ => {
-            // println!("Unrecognized command: {}", command);
+        t if ["say", "echo"].contains(&t) => {
+            // (s, u, ParsedCommand::Command(AudioPromiseCommand::Say(args.join(" "))))
+            (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::None) }), &args.join(" ")).await)
+        }
+        unknown => {
+            // println!("Unknown command: {}", unknown);
+            // (s, u, ParsedCommand::None(if args.is_empty() { get_speech(&format!("Unknown command. {}", unknown)).await } else { get_speech(&format!("Unknown command. {}. Arguments: {}", unknown, args.join(" "))).await }))
+            (s, u, WithFeedback::new_with_feedback(Box::pin(async move { Ok(ParsedCommand::None) }), &format!("Unknown command. {}", unknown)).await)
         }
     }
-
-    (s, u, ParsedCommand::None)
 }
 
 #[derive(Debug)]
 enum ParsedCommand {
     None,
-    Error(String),
     MetaCommand(Command),
     Command(AudioPromiseCommand),
+}
+
+struct WithFeedback {
+    command: Pin<Box<dyn std::future::Future<Output = Result<ParsedCommand>> + Send>>,
+    feedback: Option<Video>,
+}
+
+impl std::fmt::Debug for WithFeedback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WithFeedback").field("command", &"Future").field("feedback", &self.feedback).finish()
+    }
+}
+
+impl WithFeedback {
+    async fn new_with_feedback(command: Pin<Box<dyn std::future::Future<Output = std::prelude::v1::Result<ParsedCommand, anyhow::Error>> + Send>>, feedback: &str) -> Self {
+        Self { command, feedback: get_speech(feedback).await }
+    }
+    async fn new_without_feedback(command: Pin<Box<dyn std::future::Future<Output = std::prelude::v1::Result<ParsedCommand, anyhow::Error>> + Send>>) -> Self {
+        Self { command, feedback: None }
+    }
 }
 
 #[derive(Debug)]
@@ -685,6 +702,7 @@ fn attempt_to_parse_number(args: &[&str]) -> Option<usize> {
     let mut num = 0;
     for word in args {
         match *word {
+            "zero" => num += 0,
             "one" => num += 1,
             "two" => num += 2,
             "three" => num += 3,
@@ -722,10 +740,130 @@ fn attempt_to_parse_number(args: &[&str]) -> Option<usize> {
             // n if n.parse::<u8>().is_ok() => num += n.parse::<u8>(),
             n if let Ok(n) = n.parse::<usize>() => num += n,
             _ => {
-                // invalid word detected
+                eprintln!("Error parsing number: {:?} from {}", word, args.join(" "));
                 return None;
             }
         }
     }
     Some(num)
+}
+
+pub fn humanize_number(n: usize) -> String {
+    // will only deal with numbers between 1-9999
+    // eg 9119 -> nine thousand one hundred and nineteen
+    if n == 0 {
+        return "zero".to_owned();
+    }
+    let mut n = n;
+    let mut words = Vec::new();
+    if n >= 1000 {
+        words.push(humanize_number(n / 1000));
+        words.push("thousand".to_owned());
+        n %= 1000;
+    }
+    if n >= 100 {
+        words.push(humanize_number(n / 100));
+        words.push("hundred".to_owned());
+        n %= 100;
+    }
+    if !words.is_empty() && n > 0 {
+        words.push("and".to_owned());
+    }
+    if n >= 20 {
+        match n / 10 {
+            2 => words.push("twenty".to_owned()),
+            3 => words.push("thirty".to_owned()),
+            4 => words.push("forty".to_owned()),
+            5 => words.push("fifty".to_owned()),
+            6 => words.push("sixty".to_owned()),
+            7 => words.push("seventy".to_owned()),
+            8 => words.push("eighty".to_owned()),
+            9 => words.push("ninety".to_owned()),
+            _ => unreachable!(),
+        }
+        n %= 10;
+    }
+    if n >= 10 {
+        match n {
+            10 => words.push("ten".to_owned()),
+            11 => words.push("eleven".to_owned()),
+            12 => words.push("twelve".to_owned()),
+            13 => words.push("thirteen".to_owned()),
+            14 => words.push("fourteen".to_owned()),
+            15 => words.push("fifteen".to_owned()),
+            16 => words.push("sixteen".to_owned()),
+            17 => words.push("seventeen".to_owned()),
+            18 => words.push("eighteen".to_owned()),
+            19 => words.push("nineteen".to_owned()),
+            _ => unreachable!(),
+        }
+        n = 0;
+    }
+    if n > 0 {
+        match n {
+            1 => words.push("one".to_owned()),
+            2 => words.push("two".to_owned()),
+            3 => words.push("three".to_owned()),
+            4 => words.push("four".to_owned()),
+            5 => words.push("five".to_owned()),
+            6 => words.push("six".to_owned()),
+            7 => words.push("seven".to_owned()),
+            8 => words.push("eight".to_owned()),
+            9 => words.push("nine".to_owned()),
+            _ => unreachable!(),
+        }
+    }
+    words.join(" ")
+}
+
+async fn get_speech(text: &str) -> Option<Video> {
+    // first we want to strip any periods from the end and insert one, it makes the speech sound more natural
+    let text = if text.ends_with('.') { text.to_owned() } else { format!("{}.", text) };
+    match crate::sam::get_speech(&text) {
+        Ok(vid) => Some(vid),
+        Err(e) => {
+            eprintln!("Error getting speech: {:?}", e);
+            None
+        }
+    }
+}
+
+async fn get_videos(query: String, http: Arc<serenity::http::Http>, u: UserId) -> Result<Vec<crate::commands::music::MetaVideo>> {
+    let vids = crate::video::Video::get_video(&query, true, true).await;
+    match vids {
+        Ok(vids) => {
+            let mut truevideos = Vec::new();
+            #[cfg(feature = "tts")]
+            let key = crate::youtube::get_access_token().await;
+            for v in vids {
+                let title = match v.clone() {
+                    crate::commands::music::VideoType::Disk(v) => v.title,
+                    crate::commands::music::VideoType::Url(v) => v.title,
+                };
+                #[cfg(feature = "tts")]
+                if let Ok(key) = key.as_ref() {
+                    truevideos.push(crate::commands::music::MetaVideo {
+                        video: v,
+                        ttsmsg: Some(crate::commands::music::LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(title.clone(), key.clone(), None)))),
+                        title,
+                        author: http.get_user(u.0).await.ok().map(|u| crate::commands::music::Author { name: u.name.clone(), pfp_url: u.avatar_url().clone().unwrap_or(u.default_avatar_url().clone()) }),
+                    })
+                } else {
+                    truevideos.push(crate::commands::music::MetaVideo {
+                        video: v,
+                        ttsmsg: None,
+                        title,
+                        author: http.get_user(u.0).await.ok().map(|u| crate::commands::music::Author { name: u.name.clone(), pfp_url: u.avatar_url().unwrap_or(u.default_avatar_url().clone()) }),
+                    });
+                }
+                #[cfg(not(feature = "tts"))]
+                truevideos.push(MetaVideo { video: v, title });
+            }
+            Ok(truevideos)
+        }
+        Err(e) => {
+            eprintln!("Error getting video: {:?}", e);
+            Err(anyhow::anyhow!("Error getting audio."))
+        }
+    }
 }
