@@ -4,6 +4,9 @@
 # It is used to handle the daily restart of the application. 
 # It is also used to notify the user if the application crashes.
 
+# set log level
+export RUST_LOG="alrightguysnewprojecttime=trace"
+
 # loop until the application has a return code of != 0
 while true; do
     # yt-dlp --update-to nightly

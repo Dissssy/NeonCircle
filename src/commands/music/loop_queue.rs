@@ -2,20 +2,17 @@ use super::AudioPromiseCommand;
 use anyhow::Error;
 use serenity::all::*;
 #[derive(Debug, Clone)]
-pub struct Volume;
+pub struct Loop;
 #[async_trait]
-impl crate::CommandTrait for Volume {
+impl crate::CommandTrait for Loop {
     fn register(&self) -> CreateCommand {
         CreateCommand::new(self.name())
-            .description("Change the volume of the bot for this session")
+            .description("Loop the queue")
             .set_options(vec![CreateCommandOption::new(
-                CommandOptionType::Number,
-                "volume",
-                "Volume",
-            )
-            .max_number_value(100.0)
-            .min_number_value(0.0)
-            .required(true)])
+                CommandOptionType::Boolean,
+                "value",
+                "Specific value, otherwise toggle",
+            )])
     }
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
         if let Err(e) = interaction
@@ -47,10 +44,11 @@ impl crate::CommandTrait for Volume {
         };
         let options = interaction.data.options();
         let option = match options.iter().find_map(|o| match o.name {
-            "volume" => Some(&o.value),
+            "value" => Some(&o.value),
             _ => None,
         }) {
-            Some(ResolvedValue::Number(f)) => *f,
+            Some(ResolvedValue::Boolean(b)) => super::OrToggle::Specific(*b),
+            None => super::OrToggle::Toggle,
             _ => {
                 if let Err(e) = interaction
                     .edit_response(
@@ -63,8 +61,7 @@ impl crate::CommandTrait for Volume {
                 }
                 return;
             }
-        } as f64
-            / 100.0;
+        };
         let ungus = {
             let bingus = ctx.data.read().await;
             let bungly = bingus.get::<super::VoiceData>();
@@ -80,7 +77,7 @@ impl crate::CommandTrait for Volume {
                     ctx,
                     interaction,
                     guild_id,
-                    AudioPromiseCommand::Volume(option),
+                    AudioPromiseCommand::Loop(option),
                 )
                 .await;
         } else if let Err(e) = interaction
@@ -94,7 +91,7 @@ impl crate::CommandTrait for Volume {
         }
     }
     fn name(&self) -> &str {
-        "volume"
+        "loop"
     }
     async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<(), Error> {
         Ok(())

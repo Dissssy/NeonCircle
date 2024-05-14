@@ -1,16 +1,13 @@
 use super::OrAuto;
-
 #[derive(Clone, PartialEq, Debug)]
 pub struct SettingsData {
     pub something_playing: bool,
     pub log_empty: bool,
 
-    // READ ONLY?
     volume: f64,
     radiovolume: f64,
     pub bitrate: OrAuto,
 
-    // CLICKABLE
     pub autoplay: bool,
     pub looped: bool,
     pub repeat: bool,
@@ -18,7 +15,6 @@ pub struct SettingsData {
     pub pause: bool,
     pub read_titles: bool,
 }
-
 impl SettingsData {
     pub fn volume(&mut self) -> f64 {
         self.something_playing = true;
@@ -41,7 +37,6 @@ impl SettingsData {
         self.radiovolume
     }
 }
-
 impl Default for SettingsData {
     fn default() -> Self {
         Self {

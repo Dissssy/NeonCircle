@@ -1,147 +1,244 @@
-use rand::seq::SliceRandom;
-
-use serenity::model::prelude::interaction::autocomplete::AutocompleteInteraction;
-use serenity::model::prelude::{ChannelId, GuildId, Message};
-use songbird::tracks::TrackHandle;
-use songbird::{ffmpeg, Call};
-use tokio::sync::Mutex;
-
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use anyhow::Error;
-use serenity::builder::CreateApplicationCommand;
-use serenity::futures::channel::mpsc;
-use serenity::futures::channel::mpsc::{Receiver, Sender};
-use serenity::model::application::interaction::InteractionResponseType;
-use serenity::model::prelude::command::CommandOptionType;
-
-use serenity::prelude::{Context, TypeMapKey};
-
-use crate::video::Video;
-use crate::youtube::TTSVoice;
-
 use super::RawMessage;
-
+use crate::{video::Video, youtube::TTSVoice};
+use anyhow::Error;
+use rand::seq::SliceRandom;
+use serenity::all::*;
+use songbird::{input::Input, tracks::TrackHandle, typemap::TypeMapKey, Call};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::{mpsc, Mutex};
 #[derive(Debug, Clone)]
 pub struct Transcribe;
-
-#[serenity::async_trait]
+#[async_trait]
 impl crate::CommandTrait for Transcribe {
-    fn register(&self, command: &mut CreateApplicationCommand) {
-        command.name(self.name()).description("Transcribe this channel").create_option(|option| option.name("transcribe").description("Transcribe the active voice channel").kind(CommandOptionType::Boolean).required(true));
+    fn register(&self) -> CreateCommand {
+        CreateCommand::new(self.name())
+            .description("Transcribe this channel")
+            .set_options(vec![CreateCommandOption::new(
+                CommandOptionType::Boolean,
+                "value",
+                "Specific value, otherwise toggle",
+            )])
     }
-    async fn run(&self, ctx: &Context, interaction: &serenity::model::prelude::application_command::ApplicationCommandInteraction) {
-        if let Err(e) = interaction.create_interaction_response(&ctx.http, |response| response.interaction_response_data(|f| f.ephemeral(true)).kind(InteractionResponseType::DeferredChannelMessageWithSource)).await {
-            eprintln!("Failed to create interaction response: {:?}", e);
-        };
+    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
+        if let Err(e) = interaction
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Defer(
+                    CreateInteractionResponseMessage::new().ephemeral(true),
+                ),
+            )
+            .await
+        {
+            log::error!("Failed to create interaction response: {:?}", e);
+        }
         let guild_id = match interaction.guild_id {
             Some(id) => id,
             None => {
-                if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("This command can only be used in a server")).await {
-                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                if let Err(e) = interaction
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content("This command can only be used in a server"),
+                    )
+                    .await
+                {
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
                 return;
             }
         };
-
-        let option = match interaction.data.options.iter().find(|o| o.name == "transcribe") {
-            Some(o) => match o.value.as_ref() {
-                Some(v) => {
-                    if let Some(v) = v.as_bool() {
-                        v
-                    } else {
-                        if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("This command requires an option")).await {
-                            eprintln!("Failed to edit original interaction response: {:?}", e);
-                        }
-                        return;
-                    }
-                }
-                None => {
-                    if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("This command requires an option")).await {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
-                    }
-                    return;
-                }
-            },
-            None => {
-                if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("This command requires an option")).await {
-                    eprintln!("Failed to edit original interaction response: {:?}", e);
+        let options = interaction.data.options();
+        let option = match options.iter().find_map(|o| match o.name {
+            "value" => Some(&o.value),
+            _ => None,
+        }) {
+            Some(ResolvedValue::Boolean(o)) => super::OrToggle::Specific(*o),
+            None => super::OrToggle::Toggle,
+            _ => {
+                if let Err(e) = interaction
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content("This command requires an option"),
+                    )
+                    .await
+                {
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
                 return;
             }
         };
-
         let ungus = {
             let bingus = ctx.data.read().await;
             let bungly = bingus.get::<super::VoiceData>();
-
             bungly.cloned()
         };
-
         if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
             let next_step = {
                 let mut v = v.lock().await;
                 v.mutual_channel(ctx, &guild_id, &member.user.id)
             };
-
             match next_step {
                 super::VoiceAction::UserNotConnected => {
-                    if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("You're not in a voice channel")).await {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content("You're not in a voice channel"),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
                 super::VoiceAction::InDifferent(_channel) => {
-                    if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("I'm in a different voice channel")).await {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new()
+                                .content("I'm in a different voice channel"),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
                 super::VoiceAction::Join(_channel) => {
-                    if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("I'm not in a channel, if you want me to join use /join or /play")).await {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content(
+                                "I'm not in a channel, if you want me to join use /join or /play",
+                            ),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
                 super::VoiceAction::InSame(_channel) => {
-                    let em = match ctx.data.read().await.get::<TranscribeData>().expect("Expected TranscribeData in TypeMap.").lock().await.entry(guild_id) {
+                    let em = match ctx
+                        .data
+                        .read()
+                        .await
+                        .get::<TranscribeData>()
+                        .expect("Expected TranscribeData in TypeMap.")
+                        .lock()
+                        .await
+                        .entry(guild_id)
+                    {
                         std::collections::hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
-                        std::collections::hash_map::Entry::Vacant(e) => e.insert(Arc::new(Mutex::new(TranscribeChannelHandler::new()))),
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(Arc::new(Mutex::new(TranscribeChannelHandler::new())))
+                        }
                     }
                     .clone();
-
                     let mut e = em.lock().await;
-
-                    if option {
-                        if let Err(res) = e.register(interaction.channel_id).await {
-                            if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error registering: {:?}", res))).await {
-                                eprintln!("Failed to edit original interaction response: {:?}", e);
+                    match option {
+                        super::OrToggle::Specific(option) => {
+                            if option {
+                                if let Err(res) = e.register(interaction.channel_id).await {
+                                    if let Err(e) = interaction
+                                        .edit_response(
+                                            &ctx.http,
+                                            EditInteractionResponse::new()
+                                                .content(format!("Error registering: {:?}", res)),
+                                        )
+                                        .await
+                                    {
+                                        log::error!(
+                                            "Failed to edit original interaction response: {:?}",
+                                            e
+                                        );
+                                    }
+                                } else if let Err(e) = interaction
+                                    .edit_response(
+                                        &ctx.http,
+                                        EditInteractionResponse::new().content("Registered"),
+                                    )
+                                    .await
+                                {
+                                    log::error!(
+                                        "Failed to edit original interaction response: {:?}",
+                                        e
+                                    );
+                                }
+                            } else if let Err(res) = e.unregister(interaction.channel_id).await {
+                                if let Err(e) = interaction
+                                    .edit_response(
+                                        &ctx.http,
+                                        EditInteractionResponse::new()
+                                            .content(format!("Error unregistering: {:?}", res)),
+                                    )
+                                    .await
+                                {
+                                    log::error!(
+                                        "Failed to edit original interaction response: {:?}",
+                                        e
+                                    );
+                                }
+                            } else if let Err(e) = interaction
+                                .edit_response(
+                                    &ctx.http,
+                                    EditInteractionResponse::new().content("Unregistered"),
+                                )
+                                .await
+                            {
+                                log::error!(
+                                    "Failed to edit original interaction response: {:?}",
+                                    e
+                                );
                             }
-                        } else if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("Registered")).await {
-                            eprintln!("Failed to edit original interaction response: {:?}", e);
                         }
-                    } else if let Err(res) = e.unregister(interaction.channel_id).await {
-                        if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content(format!("Error unregistering: {:?}", res))).await {
-                            eprintln!("Failed to edit original interaction response: {:?}", e);
+                        super::OrToggle::Toggle => {
+                            if let Err(res) = e.toggle(interaction.channel_id).await {
+                                if let Err(e) = interaction
+                                    .edit_response(
+                                        &ctx.http,
+                                        EditInteractionResponse::new()
+                                            .content(format!("Error toggling: {:?}", res)),
+                                    )
+                                    .await
+                                {
+                                    log::error!(
+                                        "Failed to edit original interaction response: {:?}",
+                                        e
+                                    );
+                                }
+                            } else if let Err(e) = interaction
+                                .edit_response(
+                                    &ctx.http,
+                                    EditInteractionResponse::new().content("Toggled"),
+                                )
+                                .await
+                            {
+                                log::error!(
+                                    "Failed to edit original interaction response: {:?}",
+                                    e
+                                );
+                            }
                         }
-                    } else if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("Unregistered")).await {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
                     }
                 }
             }
-        } else if let Err(e) = interaction.edit_original_interaction_response(&ctx.http, |response| response.content("TELL ETHAN THIS SHOULD NEVER HAPPEN :(")).await {
-            eprintln!("Failed to edit original interaction response: {:?}", e);
+        } else if let Err(e) = interaction
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new().content("TELL ETHAN THIS SHOULD NEVER HAPPEN :("),
+            )
+            .await
+        {
+            log::error!("Failed to edit original interaction response: {:?}", e);
         }
     }
     fn name(&self) -> &str {
         "transcribe"
     }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &AutocompleteInteraction) -> Result<(), Error> {
+    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<(), Error> {
         Ok(())
     }
 }
-
 pub struct Handler {
     call: Arc<Mutex<Call>>,
     queue: Vec<RawMessage>,
@@ -151,13 +248,11 @@ pub struct Handler {
     last_channel_name: String,
     waiting_on: Option<String>,
 }
-
 #[derive(Debug, Clone)]
 pub enum Deleteable {
     Delete(Video),
     Keep(Video),
 }
-
 impl Deleteable {
     pub fn delete(&self) -> Result<(), Error> {
         match self {
@@ -174,73 +269,72 @@ impl Deleteable {
             Self::Keep(v) => v,
         }
     }
+    pub fn to_songbird(&self) -> Input {
+        match self {
+            Self::Delete(v) => v.to_songbird(),
+            Self::Keep(v) => v.to_songbird(),
+        }
+    }
 }
-
 impl Handler {
     pub fn new(call: Arc<Mutex<Call>>) -> Self {
-        Self { call, queue: Vec::new(), prepared_next: None, current_handle: None, channel_names: HashMap::new(), waiting_on: None, last_channel_name: String::new() }
+        Self {
+            call,
+            queue: Vec::new(),
+            prepared_next: None,
+            current_handle: None,
+            channel_names: HashMap::new(),
+            waiting_on: None,
+            last_channel_name: String::new(),
+        }
     }
     pub async fn update(&mut self, messages: Vec<RawMessage>) -> Result<(), Error> {
         self.queue.extend(messages);
-        // sort by timestamp, ensuring the first element is always the oldest message
         self.queue.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-
         self.shift().await?;
-
         Ok(())
     }
-
     pub async fn shift(&mut self) -> Result<(), Error> {
         self.check_current_handle().await?;
         self.check_next_tts().await?;
         self.prepare_next_tts().await?;
         Ok(())
     }
-
     pub async fn check_current_handle(&mut self) -> Result<(), Error> {
         if let Some((handle, v)) = &self.current_handle {
-            match tokio::time::timeout(tokio::time::Duration::from_secs(1), handle.get_info()).await {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(1), handle.get_info()).await
+            {
                 Ok(Ok(info)) => {
                     if !info.playing.is_done() {
                         return Ok(());
                     }
                 }
-                Ok(Err(e)) => {
-                    match e {
-                        songbird::error::TrackError::Finished => {
-                            // track is done, we can stop and delete :D
-                        }
-                        e => {
-                            return Err(e.into());
-                        }
+                Ok(Err(e)) => match e {
+                    songbird::error::ControlError::Finished => {}
+                    e => {
+                        return Err(e.into());
                     }
-                }
-                Err(_) => {
-                    // timeout
-                }
+                },
+                Err(_) => {}
             }
             let _ = handle.stop();
             v.delete()?;
         }
-        // println!("Current handle is done");
         self.current_handle = None;
         Ok(())
     }
-
     pub async fn check_next_tts(&mut self) -> Result<(), Error> {
         if let Some(v) = &self.prepared_next {
             if self.current_handle.is_none() {
                 let mut call = self.call.lock().await;
-                let handle = call.play_source(ffmpeg(v.get_video().path.clone()).await.expect("Error creating ffmpeg source"));
+                let handle = call.play_input(v.to_songbird());
                 let _ = handle.set_volume(2.0);
                 self.current_handle = Some((handle, v.clone()));
-                // println!("Prepared next is done");
                 self.prepared_next = None;
             }
         }
         Ok(())
     }
-
     pub async fn prepare_next_tts(&mut self) -> Result<(), Error> {
         if self.prepared_next.is_some() {
             return Ok(());
@@ -250,82 +344,74 @@ impl Handler {
             if let Some(ref mn) = &m.channel_name {
                 if mn != &self.last_channel_name {
                     self.last_channel_name.clone_from(mn);
-                    // println!("Waiting on {:?}", mn);
                     self.waiting_on = Some(mn.clone());
-                    // we want to make the next item in the queue a tts for channel change announcement
                     let content = format!("in #{}", mn);
                     push = Some(RawMessage {
                         author_id: String::new(),
-                        // author: String::new(),
+
                         channel_id: m.channel_id,
                         channel_name: Some(mn.clone()),
-                        // content: content.clone(),
+
                         timestamp: m.timestamp,
                         tts_audio_handle: match self.channel_names.get(mn) {
                             Some(v) => {
                                 let v = v.clone().get_video().clone();
                                 Some(tokio::task::spawn(async move { Ok(v) }))
                             }
-                            None => match RawMessage::audio_handle(content, TTSVoice::default()).await {
-                                Ok(Ok(v)) => {
-                                    self.channel_names.insert(mn.clone(), Deleteable::Keep(v.clone()));
-                                    Some(tokio::task::spawn(async move { Ok(v) }))
+                            None => {
+                                match RawMessage::audio_handle(content, TTSVoice::default()).await {
+                                    Ok(Ok(v)) => {
+                                        self.channel_names
+                                            .insert(mn.clone(), Deleteable::Keep(v.clone()));
+                                        Some(tokio::task::spawn(async move { Ok(v) }))
+                                    }
+                                    _ => None,
                                 }
-                                _ => None,
-                            },
+                            }
                         },
                     });
                 }
             }
         }
-        // we need push to be the next element in the queue
-        match push {
-            Some(m) => {
-                self.queue.insert(0, m);
-            }
-            None => {
-                // println!("No tts needed");
-            }
+        if let Some(m) = push {
+            self.queue.insert(0, m);
         }
-
         if let Some(m) = self.queue.get_mut(0) {
             let deleteable = !m.author_id.is_empty();
-
             let v = match m.check_tts().await? {
                 Some(Ok(v)) => Some(v),
                 Some(Err(e)) => {
-                    // audio failed to generate, skip
-                    println!("Error generating audio: {:?}", e);
+                    log::error!("Error generating audio: {:?}", e);
                     None
                 }
                 None => {
-                    // println!("tts not prepared yet");
                     return Ok(());
                 }
             };
             if let Some(v) = v {
-                self.prepared_next = if deleteable { Some(Deleteable::Delete(v)) } else { Some(Deleteable::Keep(v)) };
+                self.prepared_next = if deleteable {
+                    Some(Deleteable::Delete(v))
+                } else {
+                    Some(Deleteable::Keep(v))
+                };
             }
-            // println!("Next tts is prepared");
             self.queue.remove(0);
         }
         Ok(())
     }
-
     pub async fn stop(&mut self) {
-        // prepare for shutdown, close all handles and delete all files
         if let Some((handle, v)) = &self.current_handle {
             if let Err(e) = handle.stop() {
-                println!("Error stopping track: {:?}", e);
+                log::error!("Error stopping audio: {:?}", e);
             }
             if let Err(e) = v.delete() {
-                println!("Error deleting video: {:?}", e);
+                log::error!("Error deleting video: {:?}", e);
             }
         }
         self.current_handle = None;
         if let Some(v) = self.prepared_next.take() {
             if let Err(e) = v.delete() {
-                println!("Error deleting video: {:?}", e);
+                log::error!("Error deleting video: {:?}", e);
             }
         }
         self.prepared_next = None;
@@ -335,62 +421,63 @@ impl Handler {
                 match h.await {
                     Ok(Ok(v)) => {
                         if let Err(e) = v.delete() {
-                            println!("Error deleting video: {:?}", e);
+                            log::error!("Error deleting video: {:?}", e);
                         }
                     }
                     Ok(Err(e)) => {
-                        println!("Error getting audio handle: {:?}", e);
+                        log::error!("Error getting audio handle: {:?}", e);
                     }
                     Err(e) => {
-                        println!("Error getting audio handle: {:?}", e);
+                        log::error!("Error getting audio handle: {:?}", e);
                     }
                 }
             }
         }
         for v in self.channel_names.values() {
             if let Err(e) = v.force_delete() {
-                println!("Error deleting video: {:?}", e);
+                log::error!("Error deleting video: {:?}", e);
             }
         }
         self.queue.clear();
     }
 }
-
 pub struct TranscribeData;
-
 impl TypeMapKey for TranscribeData {
     type Value = Amh<GuildId, Arc<Mutex<TranscribeChannelHandler>>>;
 }
-
 type Amh<K, V> = Arc<Mutex<HashMap<K, V>>>;
-
 pub struct TranscribeChannelHandler {
-    channels: Amh<ChannelId, Sender<RawMessage>>,
-    sender: Sender<RawMessage>,
-    receiver: Option<Receiver<RawMessage>>,
+    channels: Amh<ChannelId, mpsc::Sender<RawMessage>>,
+    sender: mpsc::Sender<RawMessage>,
+    receiver: Option<mpsc::Receiver<RawMessage>>,
     assigned_voice: Amh<String, crate::youtube::TTSVoice>,
     voice_cycle: Vec<crate::youtube::TTSVoice>,
 }
-
 impl TranscribeChannelHandler {
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::channel::<RawMessage>(16);
         let mut v = crate::youtube::VOICES.clone();
         v.shuffle(&mut rand::thread_rng());
-        Self { channels: Arc::new(Mutex::new(HashMap::new())), sender, receiver: Some(receiver), assigned_voice: Arc::new(Mutex::new(HashMap::new())), voice_cycle: v }
+        Self {
+            channels: Arc::new(Mutex::new(HashMap::new())),
+            sender,
+            receiver: Some(receiver),
+            assigned_voice: Arc::new(Mutex::new(HashMap::new())),
+            voice_cycle: v,
+        }
     }
-    // receiver side
-    pub fn lock(&mut self) -> Result<Receiver<RawMessage>, Error> {
-        self.receiver.take().ok_or_else(|| anyhow::anyhow!("Receiver already taken"))
+    pub fn lock(&mut self) -> Result<mpsc::Receiver<RawMessage>, Error> {
+        self.receiver
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Receiver already taken"))
     }
-    pub async fn unlock(&mut self, receiver: Receiver<RawMessage>) -> Result<(), Error> {
+    pub async fn unlock(&mut self, receiver: mpsc::Receiver<RawMessage>) -> Result<(), Error> {
         self.receiver = Some(receiver);
         self.channels.lock().await.clear();
         self.assigned_voice.lock().await.clear();
         self.voice_cycle.shuffle(&mut rand::thread_rng());
         Ok(())
     }
-    // sender side
     pub async fn register(&mut self, channel: ChannelId) -> Result<(), Error> {
         let tx = self.sender.clone();
         let mut channels = self.channels.lock().await;
@@ -402,7 +489,16 @@ impl TranscribeChannelHandler {
         channels.remove(&channel);
         Ok(())
     }
-    // when message is sent, attempt to find a sender, if not found, return error
+    pub async fn toggle(&mut self, channel: ChannelId) -> Result<(), Error> {
+        let mut channels = self.channels.lock().await;
+        if let std::collections::hash_map::Entry::Vacant(e) = channels.entry(channel) {
+            let tx = self.sender.clone();
+            e.insert(tx);
+        } else {
+            channels.remove(&channel);
+        }
+        Ok(())
+    }
     pub async fn send(&mut self, msg: RawMessage) -> Result<(), RawMessage> {
         let mut channels = self.channels.lock().await;
         let tx = match channels.get_mut(&msg.channel_id) {
@@ -411,13 +507,14 @@ impl TranscribeChannelHandler {
         };
         match tx.try_send(msg) {
             Ok(_) => Ok(()),
-            Err(e) => Err(e.into_inner()),
+            Err(e) => Err(match e {
+                mpsc::error::TrySendError::Full(m) => m,
+                mpsc::error::TrySendError::Closed(m) => m,
+            }),
         }
     }
     pub async fn get_tts(&mut self, ctx: &Context, msg: &Message) -> Vec<RawMessage> {
         let mut messages = Vec::new();
-
-        // attempt to get voice
         let voice = {
             let mut assigned_voice = self.assigned_voice.lock().await;
             match assigned_voice.get(&msg.author.name) {
@@ -426,27 +523,29 @@ impl TranscribeChannelHandler {
                     let v = self.voice_cycle.remove(0);
                     assigned_voice.insert(msg.author.name.clone(), v);
                     self.voice_cycle.push(v);
-                    messages.push(RawMessage::announcement(msg, format!("{} is now using this voice to speak", msg.author.name), &v));
+                    messages.push(RawMessage::announcement(
+                        msg,
+                        format!("{} is now using this voice to speak", msg.author.name),
+                        &v,
+                    ));
                     v
                 }
             }
         };
-
-        match RawMessage::message(ctx, msg, &voice).await {
-            Ok(b) => {
-                messages.push(b);
-            }
-            Err(_) => {
-                // dont actually process message
-            }
+        if let Ok(b) = RawMessage::message(ctx, msg, &voice).await {
+            messages.push(b);
         }
-
         messages
     }
     pub async fn send_tts(&mut self, ctx: &Context, msg: &Message) {
-        let undo_voice = { self.assigned_voice.lock().await.get(&msg.author.name).is_none() };
+        let undo_voice = {
+            self.assigned_voice
+                .lock()
+                .await
+                .get(&msg.author.name)
+                .is_none()
+        };
         let messages = self.get_tts(ctx, msg).await;
-
         let mut errored = false;
         for raw in messages {
             if let Err(ugh) = self.send(raw).await {
