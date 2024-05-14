@@ -1,10 +1,8 @@
 use super::AudioPromiseCommand;
 use anyhow::Error;
 use serenity::all::*;
-
 #[derive(Debug, Clone)]
 pub struct Stop;
-
 #[async_trait]
 impl crate::CommandTrait for Stop {
     fn register(&self) -> CreateCommand {
@@ -38,26 +36,24 @@ impl crate::CommandTrait for Stop {
                 return;
             }
         };
-
         let ungus = {
             let bingus = ctx.data.read().await;
             let bungly = bingus.get::<super::VoiceData>();
-
             bungly.cloned()
         };
-
         if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
             let next_step = {
                 let mut v = v.lock().await;
                 v.mutual_channel(ctx, &guild_id, &member.user.id)
             };
-
-            next_step.send_command_or_respond(
-                ctx,
-                interaction,
-                guild_id,
-                AudioPromiseCommand::Stop(None),
-            );
+            next_step
+                .send_command_or_respond(
+                    ctx,
+                    interaction,
+                    guild_id,
+                    AudioPromiseCommand::Stop(None),
+                )
+                .await;
         } else if let Err(e) = interaction
             .edit_response(
                 &ctx.http,

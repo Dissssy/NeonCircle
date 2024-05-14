@@ -1,11 +1,8 @@
-use std::{sync::Arc, time::Duration};
-
+use crate::commands::music::mainloop::Log;
 use anyhow::Error;
 use serde::{Deserialize, Serialize};
+use std::{sync::Arc, time::Duration};
 use tokio::{sync::Mutex, time::Instant};
-
-use crate::commands::music::mainloop::Log;
-
 pub struct AzuraCast {
     data: Arc<Mutex<Root>>,
     log: Log,
@@ -13,7 +10,6 @@ pub struct AzuraCast {
     url: String,
     timeout: Duration,
 }
-
 #[allow(dead_code)]
 impl AzuraCast {
     pub async fn new(
@@ -30,10 +26,8 @@ impl AzuraCast {
             timeout,
         })
     }
-
     pub async fn slow_data(&mut self) -> Result<Root, Error> {
         let r = tokio::time::timeout(self.timeout, self.data.lock()).await;
-
         match r {
             Ok(mut i) => {
                 let r = tokio::time::timeout(self.timeout, i.update(&self.url)).await;
@@ -57,9 +51,7 @@ impl AzuraCast {
                     .await;
             }
         }
-
         let r = tokio::time::timeout(self.timeout, self.data.lock()).await;
-
         match r {
             Ok(i) => Ok(i.clone()),
             Err(e) => {
@@ -70,7 +62,6 @@ impl AzuraCast {
             }
         }
     }
-
     pub async fn fast_data(&mut self) -> Result<Root, Error> {
         if self.last_update.elapsed().as_secs() > 5 {
             let d = self.data.clone();
@@ -79,7 +70,6 @@ impl AzuraCast {
             let timeout = self.timeout;
             tokio::spawn(async move {
                 let r = tokio::time::timeout(timeout, d.lock()).await;
-
                 match r {
                     Ok(mut i) => {
                         let r = tokio::time::timeout(timeout, i.update(&url)).await;
@@ -103,9 +93,7 @@ impl AzuraCast {
             });
             self.last_update = Instant::now();
         }
-
         let r = tokio::time::timeout(self.timeout, self.data.lock()).await;
-
         match r {
             Ok(i) => Ok(i.clone()),
             Err(e) => {
@@ -117,7 +105,6 @@ impl AzuraCast {
         }
     }
 }
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Root {
@@ -133,7 +120,6 @@ pub struct Root {
     #[serde(rename = "is_online")]
     pub is_online: bool,
 }
-
 impl Root {
     pub async fn update(&mut self, url: &str) -> Result<(), Error> {
         let data = reqwest::get(url).await?.json::<Root>().await?;
@@ -141,7 +127,6 @@ impl Root {
         Ok(())
     }
 }
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Station {
@@ -170,7 +155,6 @@ pub struct Station {
     #[serde(rename = "hls_listeners")]
     pub hls_listeners: i64,
 }
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Mount {
@@ -184,7 +168,6 @@ pub struct Mount {
     #[serde(rename = "is_default")]
     pub is_default: bool,
 }
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Listeners {
@@ -192,7 +175,6 @@ pub struct Listeners {
     pub unique: i64,
     pub current: i64,
 }
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Listeners2 {
@@ -200,7 +182,6 @@ pub struct Listeners2 {
     pub unique: i64,
     pub current: i64,
 }
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Live {
@@ -209,7 +190,6 @@ pub struct Live {
     #[serde(rename = "streamer_name")]
     pub streamer_name: String,
 }
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NowPlaying {
@@ -226,7 +206,6 @@ pub struct NowPlaying {
     pub elapsed: i64,
     pub remaining: i64,
 }
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Song {
@@ -240,7 +219,6 @@ pub struct Song {
     pub lyrics: String,
     pub art: String,
 }
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayingNext {
@@ -254,7 +232,6 @@ pub struct PlayingNext {
     pub is_request: bool,
     pub song: Song,
 }
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SongHistory {

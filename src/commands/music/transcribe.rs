@@ -1,16 +1,13 @@
-use crate::{video::Video, youtube::TTSVoice};
-
 use super::RawMessage;
+use crate::{video::Video, youtube::TTSVoice};
 use anyhow::Error;
 use rand::seq::SliceRandom;
 use serenity::all::*;
 use songbird::{input::Input, tracks::TrackHandle, typemap::TypeMapKey, Call};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, Mutex};
-
 #[derive(Debug, Clone)]
 pub struct Transcribe;
-
 #[async_trait]
 impl crate::CommandTrait for Transcribe {
     fn register(&self) -> CreateCommand {
@@ -50,9 +47,7 @@ impl crate::CommandTrait for Transcribe {
                 return;
             }
         };
-
         let options = interaction.data.options();
-
         let option = match options.iter().find_map(|o| match o.name {
             "value" => Some(&o.value),
             _ => None,
@@ -72,20 +67,16 @@ impl crate::CommandTrait for Transcribe {
                 return;
             }
         };
-
         let ungus = {
             let bingus = ctx.data.read().await;
             let bungly = bingus.get::<super::VoiceData>();
-
             bungly.cloned()
         };
-
         if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
             let next_step = {
                 let mut v = v.lock().await;
                 v.mutual_channel(ctx, &guild_id, &member.user.id)
             };
-
             match next_step {
                 super::VoiceAction::UserNotConnected => {
                     if let Err(e) = interaction
@@ -143,7 +134,6 @@ impl crate::CommandTrait for Transcribe {
                         }
                     }
                     .clone();
-
                     let mut e = em.lock().await;
                     match option {
                         super::OrToggle::Specific(option) => {
@@ -243,7 +233,6 @@ impl crate::CommandTrait for Transcribe {
         Ok(())
     }
 }
-
 pub struct Handler {
     call: Arc<Mutex<Call>>,
     queue: Vec<RawMessage>,
@@ -253,13 +242,11 @@ pub struct Handler {
     last_channel_name: String,
     waiting_on: Option<String>,
 }
-
 #[derive(Debug, Clone)]
 pub enum Deleteable {
     Delete(Video),
     Keep(Video),
 }
-
 impl Deleteable {
     pub fn delete(&self) -> Result<(), Error> {
         match self {
@@ -276,14 +263,13 @@ impl Deleteable {
             Self::Keep(v) => v,
         }
     }
-    pub fn into_songbird(&self) -> Input {
+    pub fn to_songbird(&self) -> Input {
         match self {
-            Self::Delete(v) => v.into_songbird(),
-            Self::Keep(v) => v.into_songbird(),
+            Self::Delete(v) => v.to_songbird(),
+            Self::Keep(v) => v.to_songbird(),
         }
     }
 }
-
 impl Handler {
     pub fn new(call: Arc<Mutex<Call>>) -> Self {
         Self {
@@ -298,21 +284,16 @@ impl Handler {
     }
     pub async fn update(&mut self, messages: Vec<RawMessage>) -> Result<(), Error> {
         self.queue.extend(messages);
-
         self.queue.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-
         self.shift().await?;
-
         Ok(())
     }
-
     pub async fn shift(&mut self) -> Result<(), Error> {
         self.check_current_handle().await?;
         self.check_next_tts().await?;
         self.prepare_next_tts().await?;
         Ok(())
     }
-
     pub async fn check_current_handle(&mut self) -> Result<(), Error> {
         if let Some((handle, v)) = &self.current_handle {
             match tokio::time::timeout(tokio::time::Duration::from_secs(1), handle.get_info()).await
@@ -333,26 +314,21 @@ impl Handler {
             let _ = handle.stop();
             v.delete()?;
         }
-
         self.current_handle = None;
         Ok(())
     }
-
     pub async fn check_next_tts(&mut self) -> Result<(), Error> {
         if let Some(v) = &self.prepared_next {
             if self.current_handle.is_none() {
                 let mut call = self.call.lock().await;
-
-                let handle = call.play_input(v.into_songbird());
+                let handle = call.play_input(v.to_songbird());
                 let _ = handle.set_volume(2.0);
                 self.current_handle = Some((handle, v.clone()));
-
                 self.prepared_next = None;
             }
         }
         Ok(())
     }
-
     pub async fn prepare_next_tts(&mut self) -> Result<(), Error> {
         if self.prepared_next.is_some() {
             return Ok(());
@@ -362,9 +338,7 @@ impl Handler {
             if let Some(ref mn) = &m.channel_name {
                 if mn != &self.last_channel_name {
                     self.last_channel_name.clone_from(mn);
-
                     self.waiting_on = Some(mn.clone());
-
                     let content = format!("in #{}", mn);
                     push = Some(RawMessage {
                         author_id: String::new(),
@@ -393,17 +367,11 @@ impl Handler {
                 }
             }
         }
-
-        match push {
-            Some(m) => {
-                self.queue.insert(0, m);
-            }
-            None => {}
+        if let Some(m) = push {
+            self.queue.insert(0, m);
         }
-
         if let Some(m) = self.queue.get_mut(0) {
             let deleteable = !m.author_id.is_empty();
-
             let v = match m.check_tts().await? {
                 Some(Ok(v)) => Some(v),
                 Some(Err(e)) => {
@@ -421,12 +389,10 @@ impl Handler {
                     Some(Deleteable::Keep(v))
                 };
             }
-
             self.queue.remove(0);
         }
         Ok(())
     }
-
     pub async fn stop(&mut self) {
         if let Some((handle, v)) = &self.current_handle {
             if let Err(e) = handle.stop() {
@@ -469,15 +435,11 @@ impl Handler {
         self.queue.clear();
     }
 }
-
 pub struct TranscribeData;
-
 impl TypeMapKey for TranscribeData {
     type Value = Amh<GuildId, Arc<Mutex<TranscribeChannelHandler>>>;
 }
-
 type Amh<K, V> = Arc<Mutex<HashMap<K, V>>>;
-
 pub struct TranscribeChannelHandler {
     channels: Amh<ChannelId, mpsc::Sender<RawMessage>>,
     sender: mpsc::Sender<RawMessage>,
@@ -485,7 +447,6 @@ pub struct TranscribeChannelHandler {
     assigned_voice: Amh<String, crate::youtube::TTSVoice>,
     voice_cycle: Vec<crate::youtube::TTSVoice>,
 }
-
 impl TranscribeChannelHandler {
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::channel::<RawMessage>(16);
@@ -499,7 +460,6 @@ impl TranscribeChannelHandler {
             voice_cycle: v,
         }
     }
-
     pub fn lock(&mut self) -> Result<mpsc::Receiver<RawMessage>, Error> {
         self.receiver
             .take()
@@ -512,7 +472,6 @@ impl TranscribeChannelHandler {
         self.voice_cycle.shuffle(&mut rand::thread_rng());
         Ok(())
     }
-
     pub async fn register(&mut self, channel: ChannelId) -> Result<(), Error> {
         let tx = self.sender.clone();
         let mut channels = self.channels.lock().await;
@@ -526,11 +485,11 @@ impl TranscribeChannelHandler {
     }
     pub async fn toggle(&mut self, channel: ChannelId) -> Result<(), Error> {
         let mut channels = self.channels.lock().await;
-        if channels.contains_key(&channel) {
-            channels.remove(&channel);
-        } else {
+        if let std::collections::hash_map::Entry::Vacant(e) = channels.entry(channel) {
             let tx = self.sender.clone();
-            channels.insert(channel, tx);
+            e.insert(tx);
+        } else {
+            channels.remove(&channel);
         }
         Ok(())
     }
@@ -550,7 +509,6 @@ impl TranscribeChannelHandler {
     }
     pub async fn get_tts(&mut self, ctx: &Context, msg: &Message) -> Vec<RawMessage> {
         let mut messages = Vec::new();
-
         let voice = {
             let mut assigned_voice = self.assigned_voice.lock().await;
             match assigned_voice.get(&msg.author.name) {
@@ -568,14 +526,9 @@ impl TranscribeChannelHandler {
                 }
             }
         };
-
-        match RawMessage::message(ctx, msg, &voice).await {
-            Ok(b) => {
-                messages.push(b);
-            }
-            Err(_) => {}
+        if let Ok(b) = RawMessage::message(ctx, msg, &voice).await {
+            messages.push(b);
         }
-
         messages
     }
     pub async fn send_tts(&mut self, ctx: &Context, msg: &Message) {
@@ -587,7 +540,6 @@ impl TranscribeChannelHandler {
                 .is_none()
         };
         let messages = self.get_tts(ctx, msg).await;
-
         let mut errored = false;
         for raw in messages {
             if let Err(ugh) = self.send(raw).await {

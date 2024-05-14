@@ -2,9 +2,7 @@
 #![feature(try_blocks)]
 #![feature(duration_millis_float)]
 #![feature(if_let_guard)]
-
 mod commands;
-
 mod radio;
 mod sam;
 mod video;
@@ -14,34 +12,26 @@ use std::path::PathBuf;
 use std::sync::Arc;
 mod context_menu;
 mod voice_events;
-
+use crate::commands::music::{AudioCommandHandler, AudioPromiseCommand, OrToggle};
 use anyhow::Error;
-
 use commands::music::transcribe::{TranscribeChannelHandler, TranscribeData};
 use commands::music::{OrAuto, SpecificVolume, VoiceAction, VoiceData};
 use serde::{Deserialize, Serialize};
 use serenity::all::*;
-
 use songbird::SerenityInit;
 use tokio::sync::{mpsc, oneshot, Mutex};
-
-use crate::commands::music::{AudioCommandHandler, AudioPromiseCommand, OrToggle};
-
 struct Handler {
     commands: Vec<Box<dyn CommandTrait>>,
 }
-
 impl Handler {
     fn new(commands: Vec<Box<dyn CommandTrait>>) -> Self {
         Self { commands }
     }
 }
-
 lazy_static::lazy_static! {
     static ref WHITELIST: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(serde_json::from_reader(std::fs::File::open(Config::get().whitelist_path).expect("Failed to open whitelist path file")).expect("Failed to parse whitelist path file")));
     static ref WEB_CLIENT: reqwest::Client = reqwest::Client::new();
 }
-
 #[async_trait]
 pub trait CommandTrait
 where
@@ -56,12 +46,10 @@ where
         interaction: &CommandInteraction,
     ) -> Result<(), Error>;
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserSafe {
     pub id: String,
 }
-
 #[async_trait]
 impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
@@ -105,7 +93,6 @@ impl EventHandler for Handler {
                         return;
                     }
                 };
-
                 if cmd == "controls" {
                     if let Err(e) = mci
                         .create_response(
@@ -120,7 +107,6 @@ impl EventHandler for Handler {
                     };
                     return;
                 }
-
                 match cmd {
                     original_command if ["pause", "skip", "stop", "looped", "shuffle", "repeat", "autoplay", "read_titles"].iter().any(|a| *a == original_command) => {
                         let guild_id = match mci.guild_id {
@@ -368,7 +354,6 @@ impl EventHandler for Handler {
                             return;
                         }
                     };
-
                     let mut content = "Thanks for the feedback!".to_owned();
                     let feedback = format!(
                         "User thinks `{}` should\n```\n{}```",
@@ -396,7 +381,6 @@ impl EventHandler for Handler {
                             content = format!("{}{}\n{}\n{}\n{}", content, "Unfortunately, I failed to send your feedback to the developer.", "If you're able to, be sure to send it to him yourself!", "He's <@156533151198478336> (monkey_d._issy)\n\nHere's a copy if you need it.", feedback);
                         }
                     }
-
                     if let Err(e) = p
                         .create_response(
                             &ctx.http,
@@ -434,12 +418,10 @@ impl EventHandler for Handler {
                             return;
                         }
                     };
-
                     let val = match val.parse::<f64>() {
                         Ok(v) => v,
                         Err(e) => {
                             println!("Failed to parse volume: {}", e);
-
                             if let Err(e) = p
                                 .create_response(
                                     &ctx.http,
@@ -456,7 +438,6 @@ impl EventHandler for Handler {
                             return;
                         }
                     };
-
                     if !(0.0..=100.0).contains(&val) {
                         if let Err(e) = p
                             .create_response(
@@ -473,7 +454,6 @@ impl EventHandler for Handler {
                         }
                         return;
                     }
-
                     let guild_id = match p.guild_id {
                         Some(id) => id,
                         None => {
@@ -494,14 +474,12 @@ impl EventHandler for Handler {
                             return;
                         }
                     };
-
                     if let (Some(v), Some(member)) = (
                         ctx.data.read().await.get::<VoiceData>().cloned(),
                         p.member.as_ref(),
                     ) {
                         let mut v = v.lock().await;
                         let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
-
                         if let VoiceAction::InSame(_c) = next_step {
                             let audio_command_handler = ctx
                                 .data
@@ -510,9 +488,7 @@ impl EventHandler for Handler {
                                 .get::<AudioCommandHandler>()
                                 .expect("Expected AudioCommandHandler in TypeMap")
                                 .clone();
-
                             let mut audio_command_handler = audio_command_handler.lock().await;
-
                             if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
                                 let (rtx, rrx) = oneshot::channel::<String>();
                                 if let Err(e) = tx.send((
@@ -548,11 +524,9 @@ impl EventHandler for Handler {
                                     }
                                     return;
                                 }
-
                                 let timeout =
                                     tokio::time::timeout(std::time::Duration::from_secs(10), rrx)
                                         .await;
-
                                 match timeout {
                                     Ok(Ok(_msg)) => {
                                         if let Err(e) = p
@@ -576,7 +550,6 @@ impl EventHandler for Handler {
                                         println!("Failed to issue command for {} ERR: {}", raw, e);
                                     }
                                 }
-
                                 if let Err(e) = p
                                     .create_response(
                                         &ctx.http,
@@ -595,7 +568,6 @@ impl EventHandler for Handler {
                                 }
                                 return;
                             }
-
                             println!("{}", _c);
                         } else {
                             if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Why did you leave? I was just about to change the volume!").ephemeral(true))).await {
@@ -628,7 +600,6 @@ impl EventHandler for Handler {
                             return;
                         }
                     };
-
                     let val = if val.is_empty() {
                         OrAuto::Auto
                     } else {
@@ -637,7 +608,6 @@ impl EventHandler for Handler {
                                 Ok(v) => v,
                                 Err(e) => {
                                     println!("Failed to parse bitrate: {}", e);
-
                                     if let Err(e) = p
                                         .create_response(
                                             &ctx.http,
@@ -673,11 +643,9 @@ impl EventHandler for Handler {
                                 }
                                 return;
                             }
-
                             val
                         })
                     };
-
                     let guild_id = match p.guild_id {
                         Some(id) => id,
                         None => {
@@ -698,14 +666,12 @@ impl EventHandler for Handler {
                             return;
                         }
                     };
-
                     if let (Some(v), Some(member)) = (
                         ctx.data.read().await.get::<VoiceData>().cloned(),
                         p.member.as_ref(),
                     ) {
                         let mut v = v.lock().await;
                         let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
-
                         if let VoiceAction::InSame(_c) = next_step {
                             let audio_command_handler = ctx
                                 .data
@@ -714,9 +680,7 @@ impl EventHandler for Handler {
                                 .get::<AudioCommandHandler>()
                                 .expect("Expected AudioCommandHandler in TypeMap")
                                 .clone();
-
                             let mut audio_command_handler = audio_command_handler.lock().await;
-
                             if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
                                 let (rtx, rrx) = oneshot::channel::<String>();
                                 if let Err(e) = tx.send((rtx, AudioPromiseCommand::SetBitrate(val)))
@@ -726,11 +690,9 @@ impl EventHandler for Handler {
                                     }
                                     return;
                                 }
-
                                 let timeout =
                                     tokio::time::timeout(std::time::Duration::from_secs(10), rrx)
                                         .await;
-
                                 match timeout {
                                     Ok(Ok(_msg)) => {
                                         if let Err(e) = p
@@ -754,7 +716,6 @@ impl EventHandler for Handler {
                                         println!("Failed to issue command for bitrate ERR: {}", e);
                                     }
                                 }
-
                                 if let Err(e) = p
                                     .create_response(
                                         &ctx.http,
@@ -770,7 +731,6 @@ impl EventHandler for Handler {
                                 }
                                 return;
                             }
-
                             println!("{}", _c);
                         } else {
                             if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Why did you leave? I was just about to change the bitrate!").ephemeral(true))).await {
@@ -802,11 +762,9 @@ impl EventHandler for Handler {
             }
         }
     }
-
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
         let mut users = Vec::new();
-
         let voicedata = ctx
             .data
             .read()
@@ -814,9 +772,7 @@ impl EventHandler for Handler {
             .get::<VoiceData>()
             .expect("Expected VoiceData in TypeMap.")
             .clone();
-
         let mut voicedata = voicedata.lock().await;
-
         for guild in ready.guilds {
             match ctx.http.get_guild(guild.id).await {
                 Ok(guild) => {
@@ -832,7 +788,6 @@ impl EventHandler for Handler {
                             users.push(id);
                         }
                     }
-
                     if let Err(e) = voicedata.refresh_guild(&ctx, guild.id).await {
                         println!("Failed to refresh voice states for guild: {}", e);
                     }
@@ -847,7 +802,6 @@ impl EventHandler for Handler {
         for id in users {
             finalusers.push(UserSafe { id });
         }
-
         let mut req = WEB_CLIENT
             .post("http://localhost:16834/api/set/user")
             .json(&finalusers);
@@ -857,7 +811,6 @@ impl EventHandler for Handler {
         if let Err(e) = req.send().await {
             println!("Failed to send users to api {e}. Users might be out of date");
         }
-
         let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
             .json(&finalusers);
@@ -867,7 +820,6 @@ impl EventHandler for Handler {
         if let Err(e) = req.send().await {
             println!("Failed to send users to api {e}. Users might be out of date");
         }
-
         println!("Registering commands");
         if let Err(e) = Command::set_global_commands(
             &ctx.http,
@@ -881,7 +833,6 @@ impl EventHandler for Handler {
             eprintln!("Failed to register commands: {}", e);
         }
     }
-
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
         let data = {
             let uh = ctx.data.read().await;
@@ -893,22 +844,18 @@ impl EventHandler for Handler {
             let mut data = data.lock().await;
             data.update(old.clone(), new.clone());
         }
-
         let guild_id = match (old.and_then(|o| o.guild_id), new.guild_id) {
             (Some(g), _) => g,
             (_, Some(g)) => g,
             _ => return,
         };
-
         let leave = {
             let mut data = data.lock().await;
             data.bot_alone(&guild_id)
         };
-
         if !leave {
             return;
         }
-
         let audio_command_handler = ctx
             .data
             .read()
@@ -916,17 +863,13 @@ impl EventHandler for Handler {
             .get::<AudioCommandHandler>()
             .expect("Expected AudioCommandHandler in TypeMap")
             .clone();
-
         let mut audio_command_handler = audio_command_handler.lock().await;
-
         if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
             let (rtx, rrx) = oneshot::channel::<String>();
             if let Err(e) = tx.send((rtx, AudioPromiseCommand::Stop(None))) {
                 eprintln!("Failed to send stop command: {}", e);
             };
-
             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rrx).await;
-
             match timeout {
                 Ok(Ok(_msg)) => {
                     return;
@@ -940,12 +883,10 @@ impl EventHandler for Handler {
             }
         }
     }
-
     async fn message(&self, ctx: Context, new_message: Message) {
         if new_message.content.trim().is_empty() {
             return;
         }
-
         let guild_id = match new_message.guild_id {
             Some(guild) => guild,
             None => return,
@@ -963,17 +904,13 @@ impl EventHandler for Handler {
             std::collections::hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
             std::collections::hash_map::Entry::Vacant(e) => {
                 let uh = TranscribeChannelHandler::new();
-
                 e.insert(Arc::new(Mutex::new(uh)))
             }
         }
         .clone();
-
         let mut e = em.lock().await;
-
         e.send_tts(&ctx, &new_message).await;
     }
-
     async fn resume(&self, ctx: Context, _: ResumedEvent) {
         let mut users = Vec::new();
         for guild in match ctx.http.get_guilds(None, None).await {
@@ -1007,7 +944,6 @@ impl EventHandler for Handler {
         for id in users {
             finalusers.push(UserSafe { id });
         }
-
         let mut req = WEB_CLIENT
             .post("http://localhost:16834/api/set/user")
             .json(&finalusers);
@@ -1017,7 +953,6 @@ impl EventHandler for Handler {
         if let Err(e) = req.send().await {
             println!("Failed to send users to api {e}. Users might be out of date");
         }
-
         let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
             .json(&finalusers);
@@ -1028,10 +963,8 @@ impl EventHandler for Handler {
             println!("Failed to send users to api {e}. Users might be out of date");
         }
     }
-
     async fn guild_member_addition(&self, _ctx: Context, new_member: Member) {
         let id = new_member.user.id.get().to_string();
-
         let mut req = WEB_CLIENT
             .post("http://localhost:16834/api/add/user")
             .json(&UserSafe { id: id.clone() });
@@ -1041,7 +974,6 @@ impl EventHandler for Handler {
         if let Err(e) = req.send().await {
             println!("Failed to add user to api {e}. Users might be out of date");
         }
-
         let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/add/user")
             .json(&UserSafe { id });
@@ -1052,7 +984,6 @@ impl EventHandler for Handler {
             println!("Failed to add user to api {e}. Users might be out of date");
         }
     }
-
     async fn guild_member_removal(
         &self,
         _ctx: Context,
@@ -1061,7 +992,6 @@ impl EventHandler for Handler {
         _member_data_if_available: Option<Member>,
     ) {
         let id = user.id.get().to_string();
-
         let mut req = WEB_CLIENT
             .post("http://localhost:16834/api/remove/user")
             .json(&UserSafe { id: id.clone() });
@@ -1071,7 +1001,6 @@ impl EventHandler for Handler {
         if let Err(e) = req.send().await {
             println!("Failed to remove user from api {e}. Users might be out of date");
         }
-
         let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/remove/user")
             .json(&UserSafe { id });
@@ -1083,30 +1012,23 @@ impl EventHandler for Handler {
         }
     }
 }
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Timed<T> {
     thing: T,
     time: u64,
 }
-
 #[tokio::main]
 async fn main() {
     env_logger::init();
-
     let cfg = Config::get();
-
     let mut tmp = cfg.data_path.clone();
     tmp.push("tmp");
-
     let r = std::fs::remove_dir_all(&tmp);
     if r.is_err() {
         println!("Failed to remove tmp folder");
     }
     std::fs::create_dir_all(&tmp).expect("Failed to create tmp folder");
-
     let token = cfg.token;
-
     let handler = Handler::new(vec![
         Box::new(commands::music::transcribe::Transcribe),
         Box::new(commands::music::repeat::Repeat),
@@ -1126,12 +1048,10 @@ async fn main() {
         Box::new(commands::embed::Audio),
         Box::new(commands::embed::John),
     ]);
-
     let config = songbird::Config::default()
         .preallocated_tracks(2)
         .decode_mode(songbird::driver::DecodeMode::Decode)
         .crypto_mode(songbird::driver::CryptoMode::Lite);
-
     let mut client = Client::builder(token, GatewayIntents::all())
         .register_songbird_from_config(config)
         .event_handler(handler)
@@ -1148,7 +1068,6 @@ async fn main() {
             HashMap::new(),
         )));
     }
-
     let mut tick = tokio::time::interval({
         let now = chrono::Local::now();
         let mut next = chrono::Local::now()
@@ -1162,11 +1081,8 @@ async fn main() {
         let next = next - now.naive_utc().and_utc();
         tokio::time::Duration::from_secs(next.num_seconds() as u64)
     });
-
     tick.tick().await;
-
     let exit_code;
-
     tokio::select! {
         _ = tick.tick() => {
             println!("Exit code 3 {}", chrono::Local::now());
@@ -1192,13 +1108,10 @@ async fn main() {
         for (i, x) in v.lock().await.values().enumerate() {
             println!("Sending stop command {}", i);
             let (tx, rx) = oneshot::channel::<String>();
-
             if let Err(e) = x.send((tx, commands::music::AudioPromiseCommand::Stop(None))) {
                 println!("Failed to send stop command: {}", e);
             };
-
             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rx);
-
             if let Ok(Ok(msg)) = timeout.await {
                 println!("Stopped playing: {}", msg);
             } else {
@@ -1209,9 +1122,7 @@ async fn main() {
     if let Some(v) = dw.get::<commands::music::AudioHandler>().take() {
         for (i, x) in v.lock().await.values_mut().enumerate() {
             println!("Joining handle {}", i);
-
             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), x);
-
             if let Ok(Ok(())) = timeout.await {
                 println!("Joined handle");
             } else {
@@ -1219,16 +1130,13 @@ async fn main() {
             }
         }
     }
-
     if let Some(v) = dw
         .get::<commands::music::transcribe::TranscribeData>()
         .take()
     {
         v.lock().await.clear();
     }
-
     client.shard_manager.shutdown_all().await;
-
     std::process::exit(exit_code);
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1261,7 +1169,6 @@ struct Config {
     #[cfg(feature = "transcribe")]
     sam_path: PathBuf,
 }
-
 impl Config {
     pub fn get() -> Self {
         let path = dirs::data_dir();
@@ -1469,7 +1376,6 @@ impl Config {
         }
     }
 }
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RecoverConfig {
     token: Option<String>,

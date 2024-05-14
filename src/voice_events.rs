@@ -1,5 +1,7 @@
-use std::{collections::HashMap, pin::Pin, sync::Arc};
-
+use crate::{
+    commands::music::{AudioPromiseCommand, OrToggle},
+    video::Video,
+};
 use anyhow::Result;
 use serde::Deserialize as _;
 use serenity::{
@@ -11,20 +13,13 @@ use songbird::{
     model::payload::Speaking,
     Call, CoreEvent, Event, EventContext,
 };
+use std::{collections::HashMap, pin::Pin, sync::Arc};
 use tokio::sync::{mpsc, oneshot, Mutex};
-
-use crate::{
-    commands::music::{AudioPromiseCommand, OrToggle},
-    video::Video,
-};
-
 const SAMPLES_PER_MILLISECOND: f64 = 1920.0 / 20.0;
-
 struct VoiceEventSender {
     ssrc_to_user_id: Arc<Mutex<HashMap<u32, UserId>>>,
     sender: PacketSender,
 }
-
 #[async_trait]
 impl songbird::EventHandler for VoiceEventSender {
     async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
@@ -39,7 +34,7 @@ impl songbird::EventHandler for VoiceEventSender {
             EventContext::VoiceTick(VoiceTick { speaking, .. }) => {
                 for (ssrc, VoiceData { decoded_voice, .. }) in speaking.iter() {
                     let ssrc_to_user_id = self.ssrc_to_user_id.lock().await;
-                    if let Some(user_id) = ssrc_to_user_id.get(&ssrc) {
+                    if let Some(user_id) = ssrc_to_user_id.get(ssrc) {
                         if self
                             .sender
                             .send(PacketData {
@@ -57,11 +52,9 @@ impl songbird::EventHandler for VoiceEventSender {
                 println!("unhandled type: {}", get_name(e));
             }
         }
-
         None
     }
 }
-
 fn get_name(e: &EventContext) -> &'static str {
     match e {
         EventContext::Track(_) => "Track",
@@ -73,16 +66,13 @@ fn get_name(e: &EventContext) -> &'static str {
         _ => "Unknown",
     }
 }
-
 type PacketSender = mpsc::UnboundedSender<PacketData>;
-
 pub struct PacketData {
     pub user_id: UserId,
 
     pub audio: Vec<i16>,
     pub received: std::time::Instant,
 }
-
 pub struct VoiceDataManager {
     user_streams: HashMap<UserId, (Vec<i16>, Option<std::time::Instant>)>,
     receiver: mpsc::UnboundedReceiver<PacketData>,
@@ -93,9 +83,7 @@ pub struct VoiceDataManager {
         crate::commands::music::AudioPromiseCommand,
     )>,
 }
-
 static EVENTS: &[CoreEvent] = &[CoreEvent::SpeakingStateUpdate, CoreEvent::VoiceTick];
-
 impl VoiceDataManager {
     pub async fn new(
         call: Arc<Mutex<Call>>,
@@ -107,7 +95,6 @@ impl VoiceDataManager {
     ) -> Self {
         let ssrc_to_user_id = Arc::new(Mutex::new(HashMap::new()));
         let (sender, receiver) = mpsc::unbounded_channel::<PacketData>();
-
         for event in EVENTS {
             call.lock().await.add_global_event(
                 (*event).into(),
@@ -117,7 +104,6 @@ impl VoiceDataManager {
                 },
             );
         }
-
         Self {
             user_streams: HashMap::new(),
             receiver,
@@ -126,13 +112,10 @@ impl VoiceDataManager {
             command,
         }
     }
-
     pub async fn get_streams(&mut self) -> Vec<(UserId, Vec<i16>)> {
         self.consume_packets().await;
-
         let mut streams = Vec::new();
         let now = std::time::Instant::now();
-
         for (user_id, (audio, last_received)) in self.user_streams.iter_mut() {
             if match last_received {
                 Some(last_received) => now.duration_since(*last_received).as_secs_f64() > 0.2,
@@ -140,11 +123,9 @@ impl VoiceDataManager {
             } {
                 let audio = std::mem::take(audio);
                 std::mem::take(last_received);
-
                 if audio.len() * std::mem::size_of::<i16>() < 120 * 1024 {
                     continue;
                 }
-
                 let max = audio.iter().map(|a| a.abs()).max().unwrap_or(0);
                 if max < 1000 {
                     continue;
@@ -152,10 +133,8 @@ impl VoiceDataManager {
                 streams.push((*user_id, audio));
             }
         }
-
         streams
     }
-
     async fn consume_packets(&mut self) {
         while let Ok(packet) = self.receiver.try_recv() {
             let (user_id, audio) = (packet.user_id, packet.audio);
@@ -169,28 +148,23 @@ impl VoiceDataManager {
                         }
                         Err(e) => {
                             eprintln!("Error getting user: {:?}", e);
-
                             true
                         }
                     }
                 }
             };
-
             if user_is_bot {
                 continue;
             }
-
             let (audio_buf, received) = self
                 .user_streams
                 .entry(user_id)
                 .or_insert((Vec::new(), None));
-
             if let Some(received) = received {
                 let bytes_to_fill = ((packet.received.duration_since(*received).as_millis_f64()
                     * SAMPLES_PER_MILLISECOND)
                     .floor() as usize)
                     .saturating_sub(audio.len());
-
                 if bytes_to_fill > (SAMPLES_PER_MILLISECOND * 50.0) as usize {
                     audio_buf.extend(std::iter::repeat(0).take(bytes_to_fill));
                 }
@@ -200,7 +174,6 @@ impl VoiceDataManager {
         }
     }
 }
-
 pub async fn transcription_thread(
     mut transcribe: VoiceDataManager,
     mut transcribereturn: mpsc::Receiver<()>,
@@ -212,11 +185,9 @@ pub async fn transcription_thread(
         let config = crate::Config::get();
         (config.transcribe_url, config.transcribe_token)
     };
-
     let mut pending_responses = FuturesUnordered::new();
     let mut responses_to_await = FuturesUnordered::new();
     let mut pending_parse = FuturesUnordered::new();
-
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -337,7 +308,7 @@ pub async fn transcription_thread(
                 if let Some(feedback) = feedback {
                     let mut call = call.lock().await;
 
-                    let handle = call.play_input(feedback.into_songbird());
+                    let handle = call.play_input(feedback.to_songbird());
                     let _ = handle.set_volume(0.8);
                     if let Err(e) = feedback.delete_when_finished(handle).await {
                         eprintln!("Error deleting feedback: {:?}", e);
@@ -383,7 +354,7 @@ pub async fn transcription_thread(
                         if let Some(feedback) = get_speech(&format!("Error: {:?}", e)).await {
                             let mut call = call.lock().await;
 
-                            let handle = call.play_input(feedback.into_songbird());
+                            let handle = call.play_input(feedback.to_songbird());
                             let _ = handle.set_volume(0.8);
                             if let Err(e) = feedback.delete_when_finished(handle).await {
                                 eprintln!("Error deleting feedback: {:?}", e);
@@ -397,14 +368,12 @@ pub async fn transcription_thread(
         }
     }
 }
-
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(untagged)]
 enum RequestResponse {
     Error { error: String },
     Success { request_id: String },
 }
-
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(untagged)]
 enum TranscriptionResponse {
@@ -419,12 +388,10 @@ enum TranscriptionResponse {
         result: TranscriptionResult,
     },
 }
-
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct TranscriptionResult {
     segments: Vec<TranscriptionSegment>,
 }
-
 impl std::fmt::Display for TranscriptionResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut segments = self.segments.clone();
@@ -439,19 +406,16 @@ impl std::fmt::Display for TranscriptionResult {
         Ok(())
     }
 }
-
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct TranscriptionSegment {
     start: f64,
     text: String,
 }
-
 #[derive(Debug, Clone)]
 enum PendingStatus {
     Pending { position: u32 },
     InProgress,
 }
-
 fn deserialize_pending<'de, D>(deserializer: D) -> Result<PendingStatus, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -474,7 +438,6 @@ where
     }
     Err(serde::de::Error::custom("Invalid pending status"))
 }
-
 async fn wait_for_transcription(
     reqwest: reqwest::Client,
     url: String,
@@ -483,7 +446,6 @@ async fn wait_for_transcription(
     user: UserId,
 ) -> Result<(Result<TranscriptionResponse, String>, UserId), reqwest::Error> {
     let url = format!("{}/result/{}/wait", url, request_id);
-
     let response = reqwest
         .get(url)
         .header("x-token", key)
@@ -494,10 +456,8 @@ async fn wait_for_transcription(
         .map(|b| {
             serde_json::from_str::<TranscriptionResponse>(&b).map_err(|e| format!("{:?}\n{}", e, b))
         });
-
     response.map(|r| (r, user))
 }
-
 fn filter_input(s: &str) -> String {
     s.to_lowercase()
         .chars()
@@ -508,7 +468,6 @@ fn filter_input(s: &str) -> String {
         .collect::<Vec<&str>>()
         .join(" ")
 }
-
 lazy_static::lazy_static!(
     pub static ref ALERT_PHRASES: Alerts = {
 
@@ -525,12 +484,10 @@ lazy_static::lazy_static!(
         the
     };
 );
-
 #[derive(Debug, serde::Deserialize)]
 pub struct Alerts {
     phrases: Vec<Alert>,
 }
-
 impl std::fmt::Display for Alerts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for alert in &self.phrases {
@@ -539,7 +496,6 @@ impl std::fmt::Display for Alerts {
         Ok(())
     }
 }
-
 impl Alerts {
     fn filter(&self, s: String) -> String {
         let mut s = s;
@@ -550,24 +506,20 @@ impl Alerts {
         }
         s
     }
-
     fn get_alert(&'static self, s: &str) -> Option<&'static Alert> {
         self.phrases.iter().find(|a| s.contains(&a.main))
     }
 }
-
 #[derive(Debug, serde::Deserialize)]
 pub struct Alert {
     main: String,
     aliases: Vec<String>,
 }
-
 impl std::fmt::Display for Alert {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: [{}]", self.main, self.aliases.join(", "))
     }
 }
-
 async fn parse_commands(s: String, u: UserId, http: Arc<Http>) -> (String, UserId, WithFeedback) {
     if s.is_empty() {
         return (
@@ -596,16 +548,12 @@ async fn parse_commands(s: String, u: UserId, http: Arc<Http>) -> (String, UserI
             .await,
         );
     }
-
     let with_aliases = ALERT_PHRASES.filter(filtered);
-
     let (command, args): (&str, Vec<&str>) = {
         if let Some(alert) = ALERT_PHRASES.get_alert(&with_aliases) {
             let mut split = with_aliases.split(&alert.main);
             split.next();
-
             let rest = split.next().unwrap_or("");
-
             let mut split = rest.split_whitespace();
             let command = match split.next() {
                 Some(command) => command,
@@ -622,9 +570,7 @@ async fn parse_commands(s: String, u: UserId, http: Arc<Http>) -> (String, UserI
                     )
                 }
             };
-
             let args = split.collect();
-
             (command, args)
         } else {
             return (
@@ -637,7 +583,6 @@ async fn parse_commands(s: String, u: UserId, http: Arc<Http>) -> (String, UserI
             );
         }
     };
-
     match command {
         t if ["play", "add", "queue", "played"].contains(&t) => {
             let query = args.join(" ");
@@ -805,19 +750,16 @@ async fn parse_commands(s: String, u: UserId, http: Arc<Http>) -> (String, UserI
         ),
     }
 }
-
 #[derive(Debug)]
 enum ParsedCommand {
     None,
     MetaCommand(Command),
     Command(AudioPromiseCommand),
 }
-
 struct WithFeedback {
     command: Pin<Box<dyn std::future::Future<Output = Result<ParsedCommand>> + Send>>,
     feedback: Option<Video>,
 }
-
 impl std::fmt::Debug for WithFeedback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WithFeedback")
@@ -826,7 +768,6 @@ impl std::fmt::Debug for WithFeedback {
             .finish()
     }
 }
-
 impl WithFeedback {
     async fn new_with_feedback(
         command: Pin<
@@ -858,12 +799,10 @@ impl WithFeedback {
         }
     }
 }
-
 #[derive(Debug)]
 enum Command {
     NoConsent,
 }
-
 fn attempt_to_parse_number(args: &[&str]) -> Option<usize> {
     let mut num = 0;
     for word in args {
@@ -913,7 +852,6 @@ fn attempt_to_parse_number(args: &[&str]) -> Option<usize> {
     }
     Some(num)
 }
-
 pub fn humanize_number(n: usize) -> String {
     if n == 0 {
         return "zero".to_owned();
@@ -979,7 +917,6 @@ pub fn humanize_number(n: usize) -> String {
     }
     words.join(" ")
 }
-
 async fn get_speech(text: &str) -> Option<Video> {
     let text = if text.ends_with('.') {
         text.to_owned()
@@ -994,7 +931,6 @@ async fn get_speech(text: &str) -> Option<Video> {
         }
     }
 }
-
 async fn get_videos(
     query: String,
     http: Arc<Http>,

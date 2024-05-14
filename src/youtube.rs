@@ -7,10 +7,8 @@ use anyhow::Error;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "tts")]
 use tokio::io::AsyncWriteExt;
-
 #[cfg(all(feature = "misandry", feature = "misogyny"))]
 compile_error!("Cannot enable both misandrist and misogynist features");
-
 lazy_static::lazy_static!(
     pub static ref VOICES: Vec<TTSVoice> = {
 
@@ -92,18 +90,15 @@ lazy_static::lazy_static!(
         v
     };
 );
-
 pub async fn search(query: String, lim: usize) -> Vec<VideoInfo> {
     let url = format!("https://www.youtube.com/results?search_query={}", query);
     videos_from_raw_youtube_url(url, lim).await
 }
-
 async fn videos_from_raw_youtube_url(url: String, lim: usize) -> Vec<VideoInfo> {
     let res = crate::WEB_CLIENT.get(url.as_str()).header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36").send().await;
     let mut videos = Vec::new();
     if let Ok(res) = res {
         let text = res.text().await;
-
         if let Ok(text) = text {
             let original_id = if url.contains("watch?v=") {
                 url.split("watch?v=").nth(1).map(|s| s.to_string())
@@ -115,7 +110,6 @@ async fn videos_from_raw_youtube_url(url: String, lim: usize) -> Vec<VideoInfo> 
     }
     videos
 }
-
 async fn get_ids_from_html(
     text: String,
     lim: usize,
@@ -146,11 +140,9 @@ async fn get_ids_from_html(
         }
         h.push(tokio::task::spawn(async move {
             let split = s.split('\\').next();
-
             if let Some(id) = split {
                 let url = format!("https://www.youtube.com/watch?v={}", id);
                 let vid = get_video_info(url).await;
-
                 if let Ok(vid) = vid {
                     Some(vid)
                 } else {
@@ -169,7 +161,6 @@ async fn get_ids_from_html(
     }
     videos
 }
-
 pub async fn get_recommendations(url: String, lim: usize) -> Vec<VideoInfo> {
     if url
         .split("https://www.youtube.com/watch?v=")
@@ -180,18 +171,15 @@ pub async fn get_recommendations(url: String, lim: usize) -> Vec<VideoInfo> {
     }
     videos_from_raw_youtube_url(url, lim).await
 }
-
 #[allow(dead_code)]
 pub async fn get_video_info(url: String) -> Result<VideoInfo, Error> {
     let info = get_url_video_info(&url).await?;
-
     Ok(VideoInfo {
         title: info.title,
         url,
         duration: info.duration,
     })
 }
-
 pub async fn get_url_video_info(url: &str) -> Result<RawVidInfo, Error> {
     let dl = ytd_rs::YoutubeDL::new(
         &std::path::PathBuf::from("/dev/null"),
@@ -205,14 +193,12 @@ pub async fn get_url_video_info(url: &str) -> Result<RawVidInfo, Error> {
         e
     })?)
 }
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawVidInfo {
     pub title: String,
     #[serde(default)]
     pub duration: Option<u64>,
 }
-
 #[cfg(feature = "spotify")]
 pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
     let token = crate::Config::get().spotify_api_key;
@@ -235,7 +221,6 @@ pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
             .header("Authorization", format!("Bearer {}", token.clone()))
             .send()
             .await?;
-
         let spoofydata = res.json::<RawSpotifyAlbum>().await;
         if let Ok(spoofy) = spoofydata {
             Ok(spoofy
@@ -250,37 +235,31 @@ pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
         }
     }
 }
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RawSpotifyAlbum {
     tracks: RawSpotifyTracks,
 }
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RawSpotifyTracks {
     items: Vec<RawSpotifyTrack>,
 }
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RawSpotifyTrack {
     name: String,
     artists: Vec<RawSpotifyArtist>,
 }
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RawSpotifyArtist {
     name: String,
 }
-
 #[derive(Debug, Clone)]
 pub struct VideoInfo {
     pub title: String,
     pub url: String,
     pub duration: Option<u64>,
 }
-
 impl VideoInfo {
-    pub fn into_songbird(&self) -> songbird::input::Input {
+    pub fn to_songbird(&self) -> songbird::input::Input {
         songbird::input::YoutubeDl::new(crate::WEB_CLIENT.clone(), self.url.clone()).into()
     }
     pub async fn to_metavideo(&self) -> anyhow::Result<MetaVideo> {
@@ -289,10 +268,8 @@ impl VideoInfo {
             .first()
             .ok_or(anyhow::anyhow!("Could not get video"))?
             .clone();
-
         #[cfg(feature = "tts")]
         let key = crate::youtube::get_access_token().await;
-
         let title = match v.clone() {
             VideoType::Disk(v) => v.title,
             VideoType::Url(v) => v.title,
@@ -321,20 +298,17 @@ impl VideoInfo {
         return Ok(MetaVideo { video: v, title });
     }
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 pub struct TTSVoice {
     pub language_code: &'static str,
     pub name: &'static str,
     pub gender: &'static str,
 }
-
 impl Default for TTSVoice {
     fn default() -> Self {
         Self::new("en-US", "en-US-Wavenet-C", "FEMALE")
     }
 }
-
 impl TTSVoice {
     pub fn new(language_code: &'static str, name: &'static str, gender: &'static str) -> Self {
         Self {
@@ -344,7 +318,6 @@ impl TTSVoice {
         }
     }
 }
-
 #[cfg(feature = "tts")]
 pub async fn get_tts(
     title: String,
@@ -352,19 +325,15 @@ pub async fn get_tts(
     specificvoice: Option<TTSVoice>,
 ) -> Result<Video, Error> {
     let mut title = title;
-
     use rand::seq::SliceRandom;
-
     let voice = specificvoice.unwrap_or_else(|| {
         *SILLYVOICES
             .choose(&mut rand::thread_rng())
             .expect("NO SILLY VOICES AVAILABLE")
     });
-
     if specificvoice.is_none() {
         title = format!("Now playing... {}", title);
     }
-
     let body = serde_json::json!(
         {
             "input":{
@@ -380,7 +349,6 @@ pub async fn get_tts(
             }
         }
     );
-
     let res = crate::WEB_CLIENT
         .post("https://texttospeech.googleapis.com/v1/text:synthesize")
         .header("Content-Type", "application/json; charset=utf-8")
@@ -389,9 +357,7 @@ pub async fn get_tts(
         .body(body.to_string())
         .send()
         .await?;
-
     let mut json: TTSResponse = res.json().await?;
-
     {
         let mut string = String::with_capacity(json.audio_content.len());
         json.audio_content
@@ -399,19 +365,16 @@ pub async fn get_tts(
             .clone_into(&mut string);
         std::mem::swap(&mut json.audio_content, &mut string);
     }
-
     let data = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD_NO_PAD,
         json.audio_content,
     )?;
-
     let id = nanoid::nanoid!(10);
     let mut path = crate::Config::get().data_path;
     path.push("tmp");
     path.push(format!("GTTS{}_NA.ogg", id));
     let mut file = tokio::fs::File::create(path.clone()).await?;
     file.write_all(data.as_ref()).await?;
-
     Video::from_path(
         path,
         "GTTS".to_owned(),
@@ -419,13 +382,11 @@ pub async fn get_tts(
         "GTTS".to_owned(),
     )
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TTSResponse {
     #[serde(rename = "audioContent")]
     audio_content: String,
 }
-
 #[cfg(feature = "tts")]
 pub async fn get_access_token() -> Result<String, Error> {
     #[cfg(target_family = "windows")]
@@ -452,7 +413,6 @@ pub async fn get_access_token() -> Result<String, Error> {
             .arg(crate::Config::get().gcloud_script.as_str())
             .output()
             .await?;
-
         let t = String::from_utf8(output.stdout)? + &String::from_utf8(output.stderr)?;
         if t.contains(' ') {
             println!("{}", t);
@@ -462,19 +422,15 @@ pub async fn get_access_token() -> Result<String, Error> {
         }
     }
 }
-
 #[cfg(feature = "youtube-search")]
-
 pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>, Error> {
     let url = format!(
         "https://www.youtube.com/results?search_query={}",
         urlencoding::encode(url)
     );
     let lim = lim.to_string();
-
     let mut bot_path = crate::Config::get().data_path.clone();
     bot_path.push("cookies.txt");
-
     let output = if bot_path.exists() {
         tokio::process::Command::new("yt-dlp")
             .args([
@@ -498,9 +454,7 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>, Er
             .output()
             .await?
     };
-
     let output = String::from_utf8(output.stdout)?;
-
     Ok(output
         .split('\n')
         .flat_map(|line| match serde_json::from_str::<YoutubeMedia>(line) {
@@ -514,7 +468,6 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>, Er
         })
         .collect::<Vec<YoutubeMedia>>())
 }
-
 #[derive(Deserialize, Debug)]
 pub struct YoutubeMedia {
     #[serde(rename = "webpage_url")]
@@ -532,18 +485,15 @@ impl YoutubeMedia {
         })
     }
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YTSearchResultMeta {
     pub items: Vec<YTSearchResult>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YTSearchResult {
     pub id: YTSearchID,
     pub snippet: YTSearchSnippet,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YTSearchID {
     #[serde(rename = "videoId")]
@@ -551,7 +501,6 @@ pub struct YTSearchID {
     #[serde(rename = "playlistId")]
     pub playlist_id: Option<String>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YTSearchSnippet {
     pub title: String,

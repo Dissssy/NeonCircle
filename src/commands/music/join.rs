@@ -1,13 +1,10 @@
-use std::sync::Arc;
-
 use super::{AudioHandler, AudioPromiseCommand};
 use anyhow::Error;
 use serenity::all::*;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
-
 #[derive(Debug, Clone)]
 pub struct Join;
-
 #[async_trait]
 impl crate::CommandTrait for Join {
     fn register(&self) -> CreateCommand {
@@ -41,20 +38,16 @@ impl crate::CommandTrait for Join {
                 return;
             }
         };
-
         let ungus = {
             let bingus = ctx.data.read().await;
             let bungly = bingus.get::<super::VoiceData>();
-
             bungly.cloned()
         };
-
         if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
             let next_step = {
                 let mut v = v.lock().await;
                 v.mutual_channel(ctx, &guild_id, &member.user.id)
             };
-
             match next_step {
                 super::VoiceAction::UserNotConnected => {
                     if let Err(e) = interaction
@@ -82,14 +75,7 @@ impl crate::CommandTrait for Join {
                     return;
                 }
                 super::VoiceAction::InSame(_channel) => {
-                    if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new()
-                                .content("I'm already in the same voice channel as you, what do you want from me?"),
-                        )
-                        .await
-                    {
+                    if let Err(e) = interaction.edit_response(&ctx.http, EditInteractionResponse::new().content("I'm already in the same voice channel as you, what do you want from me?")).await {
                         println!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
@@ -115,7 +101,6 @@ impl crate::CommandTrait for Join {
                                     oneshot::Sender<String>,
                                     AudioPromiseCommand,
                                 )>();
-
                                 let msg = match interaction
                                     .channel_id
                                     .send_message(
@@ -152,18 +137,15 @@ impl crate::CommandTrait for Join {
                                 let cfg = crate::Config::get();
                                 let mut nothing_path = cfg.data_path.clone();
                                 nothing_path.push("override.mp3");
-
                                 let nothing_path = if nothing_path.exists() {
                                     Some(nothing_path)
                                 } else {
                                     None
                                 };
-
                                 let guild_id = match interaction.guild_id {
                                     Some(guild) => guild,
                                     None => return,
                                 };
-
                                 let em = match ctx
                                     .data
                                     .read()
@@ -184,13 +166,10 @@ impl crate::CommandTrait for Join {
                                     }
                                 }
                                 .clone();
-
                                 if let Err(e) = em.lock().await.register(channel).await {
                                     println!("Error registering channel: {:?}", e);
                                 }
-
                                 let http = Arc::clone(&ctx.http);
-
                                 let handle = {
                                     let tx = tx.clone();
                                     tokio::task::spawn(async move {
@@ -207,7 +186,6 @@ impl crate::CommandTrait for Join {
                                         .await;
                                     })
                                 };
-
                                 audio_handler.insert(guild_id.to_string(), handle);
                                 let audio_command_handler = {
                                     let read_lock = ctx.data.read().await;
@@ -218,7 +196,6 @@ impl crate::CommandTrait for Join {
                                 };
                                 let mut audio_command_handler = audio_command_handler.lock().await;
                                 audio_command_handler.insert(guild_id.to_string(), tx);
-
                                 if let Err(e) = interaction.delete_response(&ctx.http).await {
                                     println!("Error deleting interaction: {:?}", e);
                                 }
@@ -256,7 +233,6 @@ impl crate::CommandTrait for Join {
     fn name(&self) -> &str {
         "join"
     }
-
     async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<(), Error> {
         Ok(())
     }

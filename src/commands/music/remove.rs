@@ -1,10 +1,8 @@
 use super::AudioPromiseCommand;
 use anyhow::Error;
 use serenity::all::*;
-
 #[derive(Debug, Clone)]
 pub struct Remove;
-
 #[async_trait]
 impl crate::CommandTrait for Remove {
     fn register(&self) -> CreateCommand {
@@ -46,9 +44,7 @@ impl crate::CommandTrait for Remove {
                 return;
             }
         };
-
         let options = interaction.data.options();
-
         let option = match options.iter().find_map(|o| match o.name {
             "index" => Some(&o.value),
             _ => None,
@@ -67,26 +63,24 @@ impl crate::CommandTrait for Remove {
                 return;
             }
         };
-
         let ungus = {
             let bingus = ctx.data.read().await;
             let bungly = bingus.get::<super::VoiceData>();
-
             bungly.cloned()
         };
-
         if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
             let next_step = {
                 let mut v = v.lock().await;
                 v.mutual_channel(ctx, &guild_id, &member.user.id)
             };
-
-            next_step.send_command_or_respond(
-                ctx,
-                interaction,
-                guild_id,
-                AudioPromiseCommand::Remove(option as usize),
-            );
+            next_step
+                .send_command_or_respond(
+                    ctx,
+                    interaction,
+                    guild_id,
+                    AudioPromiseCommand::Remove(option as usize),
+                )
+                .await;
         } else if let Err(e) = interaction
             .edit_response(
                 &ctx.http,

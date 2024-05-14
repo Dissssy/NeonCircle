@@ -1,10 +1,8 @@
 use super::AudioPromiseCommand;
 use anyhow::Error;
 use serenity::all::*;
-
 #[derive(Debug, Clone)]
 pub struct Volume;
-
 #[async_trait]
 impl crate::CommandTrait for Volume {
     fn register(&self) -> CreateCommand {
@@ -48,7 +46,6 @@ impl crate::CommandTrait for Volume {
             }
         };
         let options = interaction.data.options();
-
         let option = match options.iter().find_map(|o| match o.name {
             "volume" => Some(&o.value),
             _ => None,
@@ -68,26 +65,24 @@ impl crate::CommandTrait for Volume {
             }
         } as f64
             / 100.0;
-
         let ungus = {
             let bingus = ctx.data.read().await;
             let bungly = bingus.get::<super::VoiceData>();
-
             bungly.cloned()
         };
-
         if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
             let next_step = {
                 let mut v = v.lock().await;
                 v.mutual_channel(ctx, &guild_id, &member.user.id)
             };
-
-            next_step.send_command_or_respond(
-                ctx,
-                interaction,
-                guild_id,
-                AudioPromiseCommand::Volume(option),
-            );
+            next_step
+                .send_command_or_respond(
+                    ctx,
+                    interaction,
+                    guild_id,
+                    AudioPromiseCommand::Volume(option),
+                )
+                .await;
         } else if let Err(e) = interaction
             .edit_response(
                 &ctx.http,

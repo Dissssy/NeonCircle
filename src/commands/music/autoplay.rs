@@ -1,20 +1,12 @@
 use super::AudioPromiseCommand;
 use anyhow::Error;
 use serenity::all::*;
-
 #[derive(Debug, Clone)]
 pub struct Autoplay;
-
 #[async_trait]
 impl crate::CommandTrait for Autoplay {
     fn register(&self) -> CreateCommand {
-        CreateCommand::new(self.name())
-            .description("Autoplay with youtube recommendations, only works if the last video was a youtube video")
-            .set_options(vec![CreateCommandOption::new(
-                CommandOptionType::Boolean,
-                "value",
-                "Specific value, otherwise toggle",
-            )])
+        CreateCommand::new(self.name()).description("Autoplay with youtube recommendations, only works if the last video was a youtube video").set_options(vec![CreateCommandOption::new(CommandOptionType::Boolean, "value", "Specific value, otherwise toggle")])
     }
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
         if let Err(e) = interaction
@@ -45,7 +37,6 @@ impl crate::CommandTrait for Autoplay {
             }
         };
         let options = interaction.data.options();
-
         let option = match options.iter().find_map(|o| match o.name {
             "value" => Some(&o.value),
             _ => None,
@@ -64,26 +55,24 @@ impl crate::CommandTrait for Autoplay {
                 return;
             }
         };
-
         let ungus = {
             let bingus = ctx.data.read().await;
             let bungly = bingus.get::<super::VoiceData>();
-
             bungly.cloned()
         };
-
         if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
             let next_step = {
                 let mut v = v.lock().await;
                 v.mutual_channel(ctx, &guild_id, &member.user.id)
             };
-
-            next_step.send_command_or_respond(
-                ctx,
-                interaction,
-                guild_id,
-                AudioPromiseCommand::Autoplay(super::OrToggle::Specific(option)),
-            );
+            next_step
+                .send_command_or_respond(
+                    ctx,
+                    interaction,
+                    guild_id,
+                    AudioPromiseCommand::Autoplay(super::OrToggle::Specific(option)),
+                )
+                .await;
         } else if let Err(e) = interaction
             .edit_response(
                 &ctx.http,

@@ -1,15 +1,11 @@
-use std::{sync::Arc, time::Duration};
-
-use crate::commands::music::{Author, LazyLoadedVideo, MetaVideo};
-
 use super::{AudioCommandHandler, AudioHandler, AudioPromiseCommand};
+use crate::commands::music::{Author, LazyLoadedVideo, MetaVideo};
 use anyhow::Error;
 use serenity::all::*;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, Mutex};
-
 #[derive(Debug, Clone)]
 pub struct Add;
-
 #[async_trait]
 impl crate::CommandTrait for Add {
     fn register(&self) -> CreateCommand {
@@ -51,7 +47,6 @@ impl crate::CommandTrait for Add {
             }
         };
         let options = interaction.data.options();
-
         let option = match options.iter().find_map(|o| match o.name {
             "search" => Some(&o.value),
             _ => None,
@@ -70,20 +65,16 @@ impl crate::CommandTrait for Add {
                 return;
             }
         };
-
         let ungus = {
             let bingus = ctx.data.read().await;
             let bungly = bingus.get::<super::VoiceData>();
-
             bungly.cloned()
         };
-
         if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
             let next_step = {
                 let mut v = v.lock().await;
                 v.mutual_channel(ctx, &guild_id, &member.user.id)
             };
-
             match next_step {
                 super::VoiceAction::UserNotConnected => {
                     if let Err(e) = interaction
@@ -132,7 +123,6 @@ impl crate::CommandTrait for Add {
                                     oneshot::Sender<String>,
                                     AudioPromiseCommand,
                                 )>();
-
                                 let msg = match interaction
                                     .channel_id
                                     .send_message(
@@ -169,18 +159,15 @@ impl crate::CommandTrait for Add {
                                 let cfg = crate::Config::get();
                                 let mut nothing_path = cfg.data_path.clone();
                                 nothing_path.push("override.mp3");
-
                                 let nothing_path = if nothing_path.exists() {
                                     Some(nothing_path)
                                 } else {
                                     None
                                 };
-
                                 let guild_id = match interaction.guild_id {
                                     Some(guild) => guild,
                                     None => return,
                                 };
-
                                 let em = match ctx
                                     .data
                                     .read()
@@ -201,13 +188,10 @@ impl crate::CommandTrait for Add {
                                     }
                                 }
                                 .clone();
-
                                 if let Err(e) = em.lock().await.register(channel).await {
                                     println!("Error registering channel: {:?}", e);
                                 }
-
                                 let http = Arc::clone(&ctx.http);
-
                                 let handle = {
                                     let tx = tx.clone();
                                     tokio::task::spawn(async move {
@@ -224,7 +208,6 @@ impl crate::CommandTrait for Add {
                                         .await;
                                     })
                                 };
-
                                 audio_handler.insert(guild_id.to_string(), handle);
                                 let audio_command_handler = {
                                     let read_lock = ctx.data.read().await;
@@ -235,7 +218,6 @@ impl crate::CommandTrait for Add {
                                 };
                                 let mut audio_command_handler = audio_command_handler.lock().await;
                                 audio_command_handler.insert(guild_id.to_string(), tx);
-
                                 if let Err(e) = interaction.delete_response(&ctx.http).await {
                                     println!("Error deleting interaction: {:?}", e);
                                 }
@@ -260,7 +242,6 @@ impl crate::CommandTrait for Add {
                     }
                 }
             };
-
             let res = {
                 let option = option.to_string();
                 tokio::task::spawn(async move {
@@ -285,7 +266,6 @@ impl crate::CommandTrait for Add {
                             }
                         }
                     };
-
                     if let Some(vid) = t.first() {
                         let th = {
                             let url = vid.url.to_owned();
@@ -323,7 +303,6 @@ impl crate::CommandTrait for Add {
                     return;
                 }
             };
-
             match t {
                 Ok(rawvids) => {
                     let mut truevideos = Vec::new();
@@ -366,7 +345,6 @@ impl crate::CommandTrait for Add {
                         #[cfg(not(feature = "tts"))]
                         truevideos.push(MetaVideo { video: v, title });
                     }
-
                     let data_read = ctx.data.read().await;
                     let audio_command_handler = data_read
                         .get::<AudioCommandHandler>()
@@ -391,7 +369,6 @@ impl crate::CommandTrait for Add {
                                 println!("Failed to edit original interaction response: {:?}", e);
                             }
                         }
-
                         let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
                         if let Ok(Ok(msg)) = timeout {
                             if let Err(e) = interaction
@@ -443,12 +420,10 @@ impl crate::CommandTrait for Add {
     fn name(&self) -> &str {
         "play"
     }
-
     #[allow(unused)]
     async fn autocomplete(&self, ctx: &Context, auto: &CommandInteraction) -> Result<(), Error> {
         // gonna have to fix this...
         println!("{:?}", auto);
-
         // for op in auto.data.options.clone() {
         //     if op.focused && op.name == "url" {
         //         #[cfg(feature = "youtube-search")]
@@ -459,17 +434,16 @@ impl crate::CommandTrait for Add {
         //                     continue;
         //                 }
         //             };
-
         //             if v.starts_with("http://") || v.starts_with("https://") {
         //                 let video = crate::video::Video::get_video(v, false, true).await?;
-
         //                 if let Some(vid) = video.first() {
         //                     auto.create_autocomplete_response(&ctx.http, |c| {
         //                         c.add_string_choice(vid.get_title(), v)
         //                     })
         //                     .await?;
         //                 } else {
-        //                     auto.create_autocomplete_response(&ctx.http, |c| c.add_string_choice("Could not retrieve title, select this option to use url anyways.", v)).await?;
+        //                     auto.create_autocomplete_response(&ctx.http,
+        // |c| c.add_string_choice("Could not retrieve title, select this option to use url anyways.", v)).await?;
         //                 }
         //             } else {
         //                 let query = crate::youtube::youtube_search(

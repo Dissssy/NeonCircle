@@ -1,19 +1,14 @@
 #![allow(dead_code)]
-
-use std::path::PathBuf;
-
-use anyhow::Result;
-
-use serde::Deserialize;
-use serenity::async_trait;
-use ytd_rs::Arg;
-
 #[cfg(feature = "spotify")]
 use crate::youtube::get_spotify_song_title;
 #[cfg(feature = "youtube-search")]
 use crate::youtube::youtube_search;
 use crate::{commands::music::VideoType, youtube::VideoInfo};
-
+use anyhow::Result;
+use serde::Deserialize;
+use serenity::async_trait;
+use std::path::PathBuf;
+use ytd_rs::Arg;
 #[derive(Debug, Clone)]
 pub struct Video {
     pub url: String,
@@ -23,7 +18,6 @@ pub struct Video {
     pub media_type: MediaType,
     pub playlist_index: usize,
 }
-
 #[derive(Deserialize, Debug)]
 pub struct RawVideo {
     #[serde(rename = "webpage_url")]
@@ -31,7 +25,6 @@ pub struct RawVideo {
     pub title: String,
     pub duration: u32,
 }
-
 async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
     let mut bot_path = crate::Config::get().data_path.clone();
     bot_path.push("cookies.txt");
@@ -40,11 +33,9 @@ async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
             return Err(anyhow::anyhow!("Invalid URL found"));
         }
         let vids = crate::youtube::youtube_search(url, 1).await?;
-
         if vids.is_empty() {
             return Err(anyhow::anyhow!("No videos found"));
         }
-
         match vids.first().map(|v| (v.to_raw(), v)) {
             Some((Some(v), _)) => return Ok(vec![v]),
             Some((None, v)) => v.url.to_string(),
@@ -53,12 +44,10 @@ async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
     } else {
         url.to_string()
     };
-
     println!("URL: {}", url);
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(anyhow::anyhow!("Invalid URL found after search query"));
     }
-
     let output = if bot_path.exists() {
         tokio::process::Command::new("yt-dlp")
             .args(["--cookies", bot_path.to_str().expect("No path")])
@@ -77,7 +66,6 @@ async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
             .output()
             .await?
     };
-
     let output = String::from_utf8(output.stdout)?;
     let vids = output
         .split('\n')
@@ -93,9 +81,8 @@ async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
         .collect::<Vec<RawVideo>>();
     Ok(vids)
 }
-
 impl Video {
-    pub fn into_songbird(&self) -> songbird::input::Input {
+    pub fn to_songbird(&self) -> songbird::input::Input {
         songbird::input::File::new(self.path.clone()).into()
     }
     pub async fn get_video(
@@ -130,7 +117,6 @@ impl Video {
     ) -> Result<VideoType> {
         let v = Self::get_video(url, false, false).await?;
         let v = v.first().ok_or(anyhow::anyhow!("No videos found"))?;
-
         match v {
             VideoType::Disk(_) => Err(anyhow::anyhow!("Video already downloaded")),
             VideoType::Url(_) => {
@@ -151,7 +137,6 @@ impl Video {
                     ),
                     Arg::new("--embed-metadata"),
                 ];
-
                 let mut bot_path = crate::Config::get().data_path.clone();
                 bot_path.push("cookies.txt");
                 if bot_path.exists() {
@@ -160,7 +145,6 @@ impl Video {
                         bot_path.to_str().expect("No path"),
                     ));
                 }
-
                 match media_type {
                     MediaType::Audio => {
                         args.push(Arg::new("-x"));
@@ -171,7 +155,6 @@ impl Video {
                         args.push(Arg::new_with_arg("--recode", "mp4"));
                     }
                 }
-
                 let ytd = ytd_rs::YoutubeDL::new(&path, args.clone(), url)?;
                 let response = match tokio::task::spawn_blocking(move || ytd.download()).await? {
                     Ok(r) => r,
@@ -193,9 +176,7 @@ impl Video {
                         }
                     },
                 };
-
                 let file = response.output_dir();
-
                 let mut videos = Vec::new();
                 for entry in std::fs::read_dir(file)? {
                     let entry = entry?;
@@ -208,7 +189,6 @@ impl Video {
                             .ok_or(anyhow::anyhow!("No Path"))?;
                         if file_name.starts_with(id.as_str()) {
                             run_preprocessor(&path).await?;
-
                             videos.push(Self::from_path(
                                 path,
                                 url.to_owned(),
@@ -233,7 +213,6 @@ impl Video {
             }
         }
     }
-
     pub fn delete(&self) -> Result<()> {
         std::fs::remove_file(self.path.clone())?;
         Ok(())
@@ -260,7 +239,6 @@ impl Video {
             .as_ref()
             .and_then(|d| d.parse::<f64>().ok())
             .unwrap_or(0.0);
-
         let playlist_index = file_name
             .split('_')
             .nth(1)
@@ -283,7 +261,6 @@ impl Video {
         Ok(())
     }
 }
-
 #[async_trait]
 impl songbird::EventHandler for Video {
     async fn act(&self, ctx: &songbird::EventContext<'_>) -> Option<songbird::Event> {
@@ -299,7 +276,6 @@ impl songbird::EventHandler for Video {
         None
     }
 }
-
 #[cfg(feature = "spotify")]
 pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>> {
     let id = url
@@ -317,7 +293,6 @@ pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>> {
         let mut vids = Vec::new();
         for video in videos {
             let vid = youtube_search(&video, 1).await?;
-
             if vid.is_empty() {
                 continue;
             } else {
@@ -333,7 +308,6 @@ pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>> {
         Ok(vids)
     }
 }
-
 async fn run_preprocessor(filepath: &PathBuf) -> Result<()> {
     let mut path = crate::Config::get().data_path.clone();
     path.push("preprocessor.sh");
@@ -344,7 +318,6 @@ async fn run_preprocessor(filepath: &PathBuf) -> Result<()> {
     }
     Ok(())
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaType {
     Audio,

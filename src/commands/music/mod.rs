@@ -14,36 +14,26 @@ pub mod skip;
 pub mod stop;
 pub mod transcribe;
 pub mod volume;
-
+use self::mainloop::EmbedData;
+use self::settingsdata::SettingsData;
+use crate::video::Video;
+use crate::youtube::{TTSVoice, VideoInfo};
+use anyhow::Error;
 use serde_json::json;
 use serenity::all::*;
 use songbird::typemap::TypeMapKey;
-use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
-
 use std::collections::HashMap;
-
 use std::fmt::Display;
 use std::sync::Arc;
 use std::time::Duration;
-
-use anyhow::Error;
-
-use crate::video::Video;
-use crate::youtube::{TTSVoice, VideoInfo};
-
-use self::mainloop::EmbedData;
-use self::settingsdata::SettingsData;
-
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
 pub struct AudioHandler;
-
 impl TypeMapKey for AudioHandler {
     type Value = Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>;
 }
-
 pub struct AudioCommandHandler;
-
 impl TypeMapKey for AudioCommandHandler {
     type Value = Arc<
         Mutex<
@@ -51,18 +41,14 @@ impl TypeMapKey for AudioCommandHandler {
         >,
     >;
 }
-
 pub struct VoiceData;
-
 impl TypeMapKey for VoiceData {
     type Value = Arc<Mutex<InnerVoiceData>>;
 }
-
 pub struct InnerVoiceData {
     pub guilds: HashMap<GuildId, GuildVc>,
     pub bot_id: UserId,
 }
-
 impl InnerVoiceData {
     pub fn new(bot_id: UserId) -> Self {
         Self {
@@ -89,11 +75,9 @@ impl InnerVoiceData {
         if bot_id != self.bot_id {
             self.bot_id = bot_id;
         }
-
         let guildstate = self.guilds.entry(*guild).or_insert_with(GuildVc::new);
         let botstate = guildstate.find_user(bot_id);
         let memberstate = guildstate.find_user(*member);
-
         match (botstate, memberstate) {
             (Some(botstate), Some(memberstate)) => {
                 if botstate == memberstate {
@@ -108,7 +92,6 @@ impl InnerVoiceData {
     }
     pub async fn refresh_guild(&mut self, ctx: &Context, guild_id: GuildId) -> Result<(), Error> {
         let mut new = GuildVc::new();
-
         for (_i, channel) in ctx
             .http
             .get_guild(guild_id)
@@ -147,7 +130,6 @@ impl InnerVoiceData {
             None => return false,
         };
         let channel = guild.channels.entry(channel).or_default();
-
         for user in channel.values() {
             if !user.member.user.bot {
                 return false;
@@ -156,14 +138,12 @@ impl InnerVoiceData {
         true
     }
 }
-
 pub enum VoiceAction {
     Join(ChannelId),
     InSame(ChannelId),
     InDifferent(ChannelId),
     UserNotConnected,
 }
-
 impl VoiceAction {
     pub async fn send_command_or_respond(
         self,
@@ -183,7 +163,6 @@ impl VoiceAction {
                 {
                     eprintln!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
             }
             Self::InDifferent(_channel) => {
                 if let Err(e) = interaction
@@ -195,7 +174,6 @@ impl VoiceAction {
                 {
                     eprintln!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
             }
             Self::Join(_channel) => {
                 if let Err(e) = interaction
@@ -209,7 +187,6 @@ impl VoiceAction {
                 {
                     eprintln!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
             }
             Self::InSame(_channel) => {
                 let audio_command_handler = ctx
@@ -219,9 +196,7 @@ impl VoiceAction {
                     .get::<AudioCommandHandler>()
                     .expect("Expected AudioCommandHandler in TypeMap")
                     .clone();
-
                 let mut audio_command_handler = audio_command_handler.lock().await;
-
                 if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
                     let (rtx, rrx) = oneshot::channel::<String>();
                     if tx.send((rtx, command)).is_err() {
@@ -237,7 +212,6 @@ impl VoiceAction {
                         }
                         return;
                     }
-
                     let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
                     if let Ok(Ok(msg)) = timeout {
                         if let Err(e) = interaction
@@ -269,13 +243,11 @@ impl VoiceAction {
         }
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct GuildVc {
     pub channels: HashMap<ChannelId, HashMap<UserId, UserMetadata>>,
     pub bot_connected: bool,
 }
-
 impl GuildVc {
     pub fn new() -> Self {
         Self {
@@ -309,24 +281,20 @@ impl GuildVc {
         None
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct UserMetadata {
     pub member: Member,
 }
-
 impl UserMetadata {
     pub fn new(member: Member, _state: VoiceState) -> Self {
         Self { member }
     }
 }
-
 #[derive(Debug, Clone)]
 pub enum OrToggle {
     Specific(bool),
     Toggle,
 }
-
 impl OrToggle {
     pub fn get_val(&self, current: bool) -> bool {
         match self {
@@ -335,7 +303,6 @@ impl OrToggle {
         }
     }
 }
-
 #[derive(Debug, Clone)]
 pub enum AudioPromiseCommand {
     Play(Vec<MetaVideo>),
@@ -358,13 +325,11 @@ pub enum AudioPromiseCommand {
 
     RetrieveLog(mpsc::Sender<Vec<String>>),
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrAuto {
     Specific(i64),
     Auto,
 }
-
 impl Display for OrAuto {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -373,25 +338,22 @@ impl Display for OrAuto {
         }
     }
 }
-
 #[derive(Debug, Clone)]
 pub enum SpecificVolume {
     Volume(f64),
     RadioVolume(f64),
 }
-
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum VideoType {
     Disk(Video),
     Url(VideoInfo),
 }
-
 impl VideoType {
-    pub fn into_songbird(&self) -> songbird::input::Input {
+    pub fn to_songbird(&self) -> songbird::input::Input {
         match self {
-            VideoType::Disk(v) => v.into_songbird(),
-            VideoType::Url(v) => v.into_songbird(),
+            VideoType::Disk(v) => v.to_songbird(),
+            VideoType::Url(v) => v.to_songbird(),
         }
     }
     pub fn get_duration(&self) -> Option<u64> {
@@ -400,6 +362,7 @@ impl VideoType {
             VideoType::Url(v) => v.duration,
         }
     }
+    #[allow(dead_code)]
     pub fn get_title(&self) -> String {
         match self {
             VideoType::Disk(v) => v.title.clone(),
@@ -413,13 +376,11 @@ impl VideoType {
         Ok(())
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct LazyLoadedVideo {
     handle: Arc<Mutex<Option<JoinHandle<anyhow::Result<Video>>>>>,
     video: Arc<Mutex<Option<Video>>>,
 }
-
 impl LazyLoadedVideo {
     pub fn new(handle: JoinHandle<anyhow::Result<Video>>) -> Self {
         Self {
@@ -453,13 +414,11 @@ impl LazyLoadedVideo {
         }
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct Author {
     pub name: String,
     pub pfp_url: String,
 }
-
 impl Author {
     pub async fn from_user(ctx: &Context, user: &User, guild: Option<GuildId>) -> Option<Self> {
         let name = match guild {
@@ -469,15 +428,12 @@ impl Author {
             }
             None => user.name.clone(),
         };
-
         let pfp_url = user
             .avatar_url()
             .unwrap_or_else(|| user.default_avatar_url());
-
         Some(Self { name, pfp_url })
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct MetaVideo {
     pub video: VideoType,
@@ -486,7 +442,6 @@ pub struct MetaVideo {
     #[cfg(feature = "tts")]
     pub ttsmsg: Option<LazyLoadedVideo>,
 }
-
 impl MetaVideo {
     pub async fn delete(&mut self) -> Result<(), Error> {
         self.video.delete().await?;
@@ -499,7 +454,6 @@ impl MetaVideo {
         Ok(())
     }
 }
-
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct MessageReference {
@@ -517,19 +471,16 @@ pub struct MessageReference {
     resend_next_time: bool,
     transcription_thread: OptionOrFailed<GuildChannel>,
 }
-
 #[derive(Debug, Clone)]
 pub enum OptionOrFailed<T> {
     Some(T),
     None,
     Failed,
 }
-
 impl<T> OptionOrFailed<T> {
     pub fn is_failed(&self) -> bool {
         matches!(self, OptionOrFailed::Failed)
     }
-
     fn take(&mut self) -> Option<T> {
         let mut val = OptionOrFailed::None;
         std::mem::swap(self, &mut val);
@@ -539,7 +490,6 @@ impl<T> OptionOrFailed<T> {
         }
     }
 }
-
 #[allow(dead_code)]
 impl MessageReference {
     fn new(
@@ -560,7 +510,6 @@ impl MessageReference {
             last_settings: None,
             first_time: true,
             edit_delay: 10000,
-
             resend_next_time: false,
             transcription_thread: OptionOrFailed::None,
         }
@@ -569,7 +518,6 @@ impl MessageReference {
         if self.transcription_thread.is_failed() {
             return Ok(());
         }
-
         let webhook = match self.channel_id.webhooks(&self.http).await?.first() {
             Some(webhook) => webhook.clone(),
             None => {
@@ -583,7 +531,6 @@ impl MessageReference {
                     .await?
             }
         };
-
         let thread_id = match self.transcription_thread {
             OptionOrFailed::Some(ref thread) => thread.id,
             OptionOrFailed::Failed => {
@@ -601,24 +548,18 @@ impl MessageReference {
                         ),
                     )
                     .await;
-
                 if thread.is_err() {
                     self.transcription_thread = OptionOrFailed::Failed;
                     return Ok(());
                 }
-
                 let thread = thread?;
-
                 let id = thread.id;
                 self.transcription_thread = OptionOrFailed::Some(thread);
                 id
             }
         };
-
         let author = self.http.get_user(user).await?;
-
         let webhook_url = format!("{}?thread_id={}", webhook.url()?, thread_id);
-
         crate::WEB_CLIENT
             .post(&webhook_url)
             .json(&json!({
@@ -631,7 +572,6 @@ impl MessageReference {
             }))
             .send()
             .await?;
-
         Ok(())
     }
     async fn update(&mut self, settings: SettingsData, content: EmbedData) -> Result<(), Error> {
@@ -647,17 +587,14 @@ impl MessageReference {
                 }
             }
         };
-
         let diff = match self.last_content {
             None => true,
             Some(ref last_content) => last_content != &content,
         };
-
         let forcediff = match self.last_settings {
             None => true,
             Some(ref last_settings) => last_settings != &settings,
         };
-
         let mut messages = match message.channel(&self.http).await? {
             Channel::Guild(channel) => {
                 channel
@@ -672,13 +609,11 @@ impl MessageReference {
             _ => Vec::new(),
         };
         messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-
         for rawmessage in messages {
             if rawmessage.id > message.id {
                 self.resend_next_time = true;
             }
         }
-
         if (diff && ((self.last_edit.elapsed().as_millis() > self.edit_delay) || self.first_time))
             || forcediff
         {
@@ -686,7 +621,6 @@ impl MessageReference {
             let write_content = content.clone();
             self.last_content = Some(content);
             self.last_settings = Some(settings);
-
             if self.resend_next_time {
                 self.resend_next_time = false;
                 if let Err(e) = self.delete().await {
@@ -696,12 +630,11 @@ impl MessageReference {
             } else if let Err(e) = message
                 .edit(&self.http, {
                     let mut m = EditMessage::new()
-                        .embed(write_content.into_serenity())
+                        .embed(write_content.to_serenity())
                         .flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
                     if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
                         m = m.components(ars);
                     }
-
                     m
                 })
                 .await
@@ -709,12 +642,10 @@ impl MessageReference {
                 println!("Error editing message: {:?}", e);
                 self.send_new().await?;
             };
-
             self.last_edit = Instant::now();
         }
         Ok(())
     }
-
     async fn send_new(&mut self) -> Result<(), Error> {
         match self.last_content {
             None => {
@@ -728,11 +659,9 @@ impl MessageReference {
                         if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
                             m = m.components(ars);
                         }
-
                         m
                     })
                     .await?;
-
                 self.message = Some(message);
                 Ok(())
             }
@@ -742,7 +671,7 @@ impl MessageReference {
                     .channel_id
                     .send_message(&self.http, {
                         let mut m = CreateMessage::new()
-                            .embed(write_content.into_serenity())
+                            .embed(write_content.to_serenity())
                             .flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
                         if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
                             m = m.components(ars);
@@ -750,7 +679,6 @@ impl MessageReference {
                         m
                     })
                     .await?;
-
                 self.message = Some(message);
                 Ok(())
             }
@@ -771,7 +699,6 @@ impl MessageReference {
         }
         Ok(())
     }
-
     #[cfg(not(feature = "new-controls"))]
     fn get_ars(settings: &SettingsData) -> Vec<CreateActionRow> {
         vec![
@@ -874,7 +801,6 @@ impl MessageReference {
             ]),
         ]
     }
-
     #[cfg(feature = "new-controls")]
     fn get_ars(settings: &SettingsData) -> Vec<CreateActionRow> {
         let mut options = vec![
@@ -964,18 +890,15 @@ impl MessageReference {
                 OrAuto::Auto => "Auto".to_owned(),
             }),
         ];
-
         if !settings.log_empty {
             options.push(CreateSelectMenuOption::new("Log", "log").description("📜"));
         }
-
         vec![CreateActionRow::SelectMenu(
             CreateSelectMenu::new("::controls", CreateSelectMenuKind::String { options })
                 .max_values(1)
                 .min_values(1),
         )]
     }
-
     fn filter_bar_emojis(string: &str) -> String {
         let mut str = string.to_owned();
         let bar_emojis = vec![
@@ -992,7 +915,6 @@ impl MessageReference {
         str
     }
 }
-
 #[derive(Debug)]
 pub struct RawMessage {
     pub author_id: String,
@@ -1002,7 +924,6 @@ pub struct RawMessage {
     pub timestamp: Timestamp,
     pub tts_audio_handle: Option<tokio::task::JoinHandle<Result<Video, anyhow::Error>>>,
 }
-
 impl RawMessage {
     pub async fn check_tts(
         &mut self,
@@ -1029,33 +950,24 @@ impl RawMessage {
     }
     pub async fn message(ctx: &Context, msg: &Message, voice: &TTSVoice) -> Result<Self, Error> {
         let safecontent = msg.content_safe(&ctx.cache);
-
         let finder = linkify::LinkFinder::new();
         let links: Vec<_> = finder.links(&safecontent).map(|l| l.as_str()).collect();
-
         let mut safecontent = safecontent.replace("#0000", "");
-
         let emojis = detect_emojis(&safecontent);
-
         for emoji in emojis {
             safecontent = safecontent.replace(&emoji.raw_emoji_text, &emoji.name);
         }
-
         let mut filteredcontent = safecontent.to_string();
-
         for link in links {
             filteredcontent = filteredcontent.replace(link, "");
         }
         filteredcontent = filteredcontent.trim().to_lowercase().to_string();
-
         if filteredcontent.is_empty() {
             return Err(anyhow::anyhow!("Message is empty"));
         }
-
         if let Some(othermsg) = msg.referenced_message.as_ref() {
             filteredcontent = format!("Replying to {}:\n{}", othermsg.author.name, filteredcontent)
         }
-
         let channelname = match msg.channel(&ctx).await {
             Ok(Channel::Guild(channel)) => channel.name,
             Ok(Channel::Private(private)) => private.name(),
@@ -1064,17 +976,14 @@ impl RawMessage {
                 return Err(anyhow::anyhow!("Failed to get channel name"));
             }
         };
-
         Ok(Self {
             author_id: msg.author.id.to_string(),
             channel_name: Some(channelname),
             channel_id: msg.channel_id,
             timestamp: msg.timestamp,
-
             tts_audio_handle: Some(Self::audio_handle(filteredcontent, *voice)),
         })
     }
-
     pub fn audio_handle(
         text: String,
         voice: TTSVoice,
@@ -1086,17 +995,13 @@ impl RawMessage {
                     return Err(e);
                 }
             };
-
             crate::youtube::get_tts(text, key, Some(voice)).await
         })
     }
 }
-
 fn detect_emojis(safecontent: &str) -> Vec<EmojiData> {
     let mut emojis: Vec<EmojiData> = Vec::new();
-
     let regex = regex::Regex::new(r"<a?:([^:]+):\d+>").expect("Failed to create regex");
-
     for cap in regex.captures_iter(safecontent) {
         let name = match cap.get(1) {
             Some(name) => name.as_str(),
@@ -1111,13 +1016,10 @@ fn detect_emojis(safecontent: &str) -> Vec<EmojiData> {
             raw_emoji_text: raw_emoji_text.to_string(),
         });
     }
-
     emojis.sort_by(|a, b| a.name.cmp(&b.name));
     emojis.dedup_by(|a, b| a.name == b.name);
-
     emojis
 }
-
 #[derive(Debug, Clone)]
 pub struct EmojiData {
     pub name: String,
