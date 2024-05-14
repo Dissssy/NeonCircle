@@ -45,7 +45,7 @@ lazy_static::lazy_static!(
                 TTSVoice::new("en-US", "en-US-Neural2-J", "MALE"),
             ]
         };
-        // shuffle
+
         use rand::seq::SliceRandom;
         v.shuffle(&mut rand::thread_rng());
 
@@ -76,7 +76,7 @@ lazy_static::lazy_static!(
                 TTSVoice::new("vi-VN", "vi-VN-Neural2-A", "FEMALE"),
             ]
         };
-        // shuffle
+
         use rand::seq::SliceRandom;
         v.shuffle(&mut rand::thread_rng());
 
@@ -118,7 +118,6 @@ async fn get_ids_from_html(text: String, lim: usize, original_id: Option<String>
         .split("/watch?v=")
         .skip(1)
         .map(|s| {
-            // we want to get the video id, so split on the next invalid character
             let mut id = String::new();
             for c in s.chars() {
                 if c == '>' || c == ' ' || c == '/' || c == '\\' || c == '"' || c == '&' {
@@ -173,7 +172,6 @@ pub async fn get_recommendations(url: String, lim: usize) -> Vec<VideoInfo> {
 
 #[allow(dead_code)]
 pub async fn get_video_info(url: String) -> Result<VideoInfo, Error> {
-    // let title = get_url_title(url.clone()).await;
     let info = get_url_video_info(&url).await?;
 
     Ok(VideoInfo { title: info.title, url, duration: info.duration })
@@ -192,47 +190,12 @@ pub async fn get_url_video_info(url: &str) -> Result<RawVidInfo, Error> {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawVidInfo {
     pub title: String,
-    /// The duration of the video in seconds, if None the video is a live stream and could be infinite
     #[serde(default)]
     pub duration: Option<u64>,
 }
 
-// pub async fn get_url_title(url: String) -> Option<String> {
-//     let client = reqwest::Client::new();
-//     let res = client.get(url.as_str()).header(
-//             "User-Agent",
-//             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36",
-//         ).send().await;
-//     match res {
-//         Ok(res) => {
-//             let text = res.text().await;
-//             match text {
-//                 Ok(text) => {
-//                     let title = text.split("<title>").nth(1);
-//                     if let Some(title) = title {
-//                         let title = title.split("</title>").next();
-//                         title.map(|title| title.to_owned())
-//                     } else {
-//                         println!("Could not get title");
-//                         None
-//                     }
-//                 }
-//                 Err(e) => {
-//                     println!("Error getting text: {:?}", e);
-//                     None
-//                 }
-//             }
-//         }
-//         Err(e) => {
-//             println!("Error sending request: {:?}", e);
-//             None
-//         }
-//     }
-// }
-
 #[cfg(feature = "spotify")]
 pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
-    // get the song title from spotify api
     let token = crate::Config::get().spotify_api_key;
     let url = format!("https://api.spotify.com/v1/tracks/{}", id);
     let client = reqwest::Client::new();
@@ -241,12 +204,10 @@ pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
     if let Ok(spoofy) = spoofydata {
         Ok(vec![format!("{} - {}", spoofy.name, spoofy.artists[0].name)])
     } else {
-        // attempt to get the album
         let url = format!("https://api.spotify.com/v1/albums/{}", id);
         let client = reqwest::Client::new();
         let res = client.get(url.as_str()).header("Authorization", format!("Bearer {}", token.clone())).send().await?;
-        // println!("res: {:?}", res.text().await);
-        // return Ok(Vec::new());
+
         let spoofydata = res.json::<RawSpotifyAlbum>().await;
         if let Ok(spoofy) = spoofydata {
             Ok(spoofy.tracks.items.iter().map(|t| format!("{} - {}", t.name, t.artists[0].name)).collect())
@@ -301,24 +262,6 @@ impl VideoInfo {
         };
         #[cfg(feature = "tts")]
         if let Ok(key) = key.as_ref() {
-            // let t = tokio::task::spawn()
-            //     .await
-            //     .unwrap();
-            // if let Ok(tts) = t {
-            //     Ok(MetaVideo {
-            //         video: v,
-            //         ttsmsg: Some(tts),
-            //         title,
-            //     })
-            // } else {
-            //     println!("Error {:?}", t);
-            //     Ok(MetaVideo {
-            //         video: v,
-            //         ttsmsg: None,
-            //         title,
-            //     })
-            // }
-
             Ok(MetaVideo { video: v, ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(title.clone(), key.clone(), None)))), title, author: None })
         } else {
             Ok(MetaVideo { video: v, ttsmsg: None, title, author: None })
@@ -350,36 +293,10 @@ impl TTSVoice {
 #[cfg(feature = "tts")]
 pub async fn get_tts(title: String, key: String, specificvoice: Option<TTSVoice>) -> Result<Video, Error> {
     let mut title = title;
-    // return Err(anyhow::anyhow!("TTS is currently disabled"));
-    // println!("key: {}", key);
 
     use rand::seq::SliceRandom;
 
-    // let voice = {
-    //     let fallback = TTSVoice::new("en-US", "en-US-Wavenet-C", "FEMALE");
-
-    //     if let Some(i) = specificvoice {
-    //         let mut i = i;
-    //         if i >= VOICES.len() {
-    //             i %= VOICES.len();
-    //         }
-    //         VOICES.get(i).unwrap_or(&fallback).clone()
-    //     } else {
-    //         VOICES
-    //             .choose(&mut rand::thread_rng())
-    //             .unwrap_or(&fallback)
-    //             .clone()
-    //     }
-    // };
     let voice = specificvoice.unwrap_or_else(|| *SILLYVOICES.choose(&mut rand::thread_rng()).expect("NO SILLY VOICES AVAILABLE"));
-
-    // body["voice"] = serde_json::json!(
-    //     {
-    //         "languageCode":"en-us",
-    //         "name":"en-US-Wavenet-C",
-    //         "ssmlGender":"FEMALE"
-    //     }
-    // );
 
     if specificvoice.is_none() {
         title = format!("Now playing... {}", title);
@@ -404,13 +321,8 @@ pub async fn get_tts(title: String, key: String, specificvoice: Option<TTSVoice>
     let client = reqwest::Client::new();
     let res = client.post("https://texttospeech.googleapis.com/v1/text:synthesize").header("Content-Type", "application/json; charset=utf-8").header("X-Goog-User-Project", "97417849124").header("Authorization", format!("Bearer {}", key.trim())).body(body.to_string()).send().await?;
 
-    // let res = res?;
-    // let text = res.text().await?;
-    // println!("{}", text);
-    // let mut json: TTSResponse = serde_json::from_str(text.as_str())?;
     let mut json: TTSResponse = res.json().await?;
 
-    // we're using the no_pad decoder so we need to remove the padding google adds
     {
         let mut string = String::with_capacity(json.audio_content.len());
         json.audio_content.trim_end_matches('=').clone_into(&mut string);
@@ -426,13 +338,7 @@ pub async fn get_tts(title: String, key: String, specificvoice: Option<TTSVoice>
     let mut file = tokio::fs::File::create(path.clone()).await?;
     file.write_all(data.as_ref()).await?;
 
-    // Ok(VideoType::Disk(Video::from_path(
-    //     path,
-    //     "GTTS".to_owned(),
-    //     true,
-    //     "GTTS".to_owned(),
-    // )?))
-    Video::from_path(path, "GTTS".to_owned(), true, "GTTS".to_owned())
+    Video::from_path(path, "GTTS".to_owned(), crate::video::MediaType::Audio, "GTTS".to_owned())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -470,45 +376,7 @@ pub async fn get_access_token() -> Result<String, Error> {
 }
 
 #[cfg(feature = "youtube-search")]
-// pub async fn youtube_search(query: String) -> Result<Vec<VideoInfo>, Error> {
-//     let client = reqwest::Client::new();
-//     let res = client
-//         .get("https://www.googleapis.com/youtube/v3/search")
-//         .header("Content-Type", "application/json; charset=utf-8")
-//         .query(&[
-//             ("key", crate::Config::get().youtube_api_key.as_str()),
-//             ("part", "snippet"),
-//             // ("type", "video"),
-//             ("q", query.as_str()),
-//         ])
-//         .send()
-//         .await?;
-//     // println!("res: {:?}", res.json().await?);
-//     // write res.text().await? to youtube.json
-//     // tokio::fs::write("youtube.json", res.text().await?).await?;
-//     // Ok(vec![])
-//     let r: YTSearchResultMeta = res.json().await?;
-//     let mut videos = Vec::new();
-//     for item in r.items {
-//         let video: VideoInfo = if let Some(id) = item.id.video_id {
-//             VideoInfo {
-//                 title: format!("📼 {}", item.snippet.title.replace("&#39;", "\'")),
-//                 url: format!("https://www.youtube.com/watch?v={}", id),
-//                 duration: None,
-//             }
-//         } else if let Some(id) = item.id.playlist_id {
-//             VideoInfo {
-//                 title: format!("📃 {}", item.snippet.title.replace("&#39;", "\'")),
-//                 url: format!("https://www.youtube.com/playlist?list={}", id),
-//                 duration: None,
-//             }
-//         } else {
-//             continue;
-//         };
-//         videos.push(video);
-//     }
-//     Ok(videos)
-// }
+
 pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>, Error> {
     let url = format!("https://www.youtube.com/results?search_query={}", urlencoding::encode(url));
     let lim = lim.to_string();
@@ -517,30 +385,9 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>, Er
     bot_path.push("cookies.txt");
 
     let output = if bot_path.exists() {
-        tokio::process::Command::new("yt-dlp")
-            .args(["--cookies", bot_path.to_str().expect("Could not convert path to str")])
-            // .args(["--default-search", "ytsearch"])
-            // .arg("--dump-json")
-            .args(["-O", "%(.{webpage_url,title,duration,uploader})j"])
-            .arg("--flat-playlist")
-            // .args(["-I", "1"])
-            .args(["--playlist-end", lim.as_str()])
-            .arg("--force-ipv4")
-            .arg(url)
-            .output()
-            .await?
+        tokio::process::Command::new("yt-dlp").args(["--cookies", bot_path.to_str().expect("Could not convert path to str")]).args(["-O", "%(.{webpage_url,title,duration,uploader})j"]).arg("--flat-playlist").args(["--playlist-end", lim.as_str()]).arg("--force-ipv4").arg(url).output().await?
     } else {
-        tokio::process::Command::new("yt-dlp")
-            // .args(["--default-search", "ytsearch"])
-            .args(["-O", "%(.{webpage_url,title,duration,uploader})j"])
-            // .arg("--dump-json")
-            .arg("--flat-playlist")
-            // .args(["-I", "1"])
-            .args(["--playlist-end", lim.as_str()])
-            .arg("--force-ipv4")
-            .arg(url)
-            .output()
-            .await?
+        tokio::process::Command::new("yt-dlp").args(["-O", "%(.{webpage_url,title,duration,uploader})j"]).arg("--flat-playlist").args(["--playlist-end", lim.as_str()]).arg("--force-ipv4").arg(url).output().await?
     };
 
     let output = String::from_utf8(output.stdout)?;

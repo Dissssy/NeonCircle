@@ -1,23 +1,19 @@
 use rand::Rng;
 
-use serenity::futures::{SinkExt, StreamExt};
-use serenity::prelude::Mutex;
-use serenity::utils::Colour;
-use songbird::input::Restartable;
-use songbird::model::id::UserId;
-use songbird::tracks::{LoopState, TrackHandle};
-use songbird::{create_player, Call};
+use serenity::all::*;
 
-use songbird::ffmpeg;
-use songbird::ytdl;
+use futures::SinkExt as _;
+
+use songbird::driver::Bitrate;
+use songbird::tracks::{LoopState, TrackHandle};
+use songbird::Call;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::Instant;
 
 use std::mem;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-
-use serenity::futures::channel::mpsc;
 
 use crate::commands::music::{AudioPromiseCommand, MetaVideo, RawMessage, SpecificVolume, VideoType};
 use crate::radio::AzuraCast;
@@ -28,7 +24,7 @@ use super::{MessageReference, OrAuto};
 
 pub struct ControlData {
     pub call: Arc<Mutex<Call>>,
-    pub rx: mpsc::UnboundedReceiver<(serenity::futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>,
+    pub rx: mpsc::UnboundedReceiver<(futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>,
     pub msg: MessageReference,
     pub nothing_uri: Option<PathBuf>,
     pub transcribe: Arc<Mutex<TranscribeChannelHandler>>,
@@ -37,11 +33,11 @@ pub struct ControlData {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceiver<(serenity::futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>, rawtx: mpsc::UnboundedSender<(serenity::futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>, rawmsg: MessageReference, rawlooptime: u64, rawnothing_uri: Option<PathBuf>, rawtranscribe: Arc<Mutex<TranscribeChannelHandler>>, http: Arc<serenity::http::Http>) {
+pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceiver<(futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>, rawtx: mpsc::UnboundedSender<(futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>, rawmsg: MessageReference, rawlooptime: u64, rawnothing_uri: Option<PathBuf>, rawtranscribe: Arc<Mutex<TranscribeChannelHandler>>, http: Arc<http::Http>) {
     let (transcription_thread, kill_transcription_thread, mut recv_new_transcription) = {
         let transcribe = crate::voice_events::VoiceDataManager::new(Arc::clone(&rawcall), Arc::clone(&http), rawtx).await;
         let (killtranscribe, transcribereturn) = tokio::sync::mpsc::channel::<()>(1);
-        let (transsender, transcribed) = mpsc::unbounded::<(String, UserId)>();
+        let (transsender, transcribed) = mpsc::unbounded_channel::<(String, UserId)>();
         let trans = {
             let call = Arc::clone(&rawcall);
             tokio::task::spawn(crate::voice_events::transcription_thread(transcribe, transcribereturn, transsender, call))
@@ -61,7 +57,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
         let mut cl = control.call.lock().await;
 
         log.log("Setting bitrate").await;
-        cl.set_bitrate(songbird::driver::Bitrate::Auto);
+        cl.set_bitrate(Bitrate::Auto);
         // log.log("Deafening").await; // no longer good, we have audio commands
         // match cl.deafen(true).await {
         //     Ok(_) => {}
@@ -70,8 +66,8 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
         //     }
         // };
     }
-    let (mut msg_updater, update_msg) = serenity::futures::channel::mpsc::channel::<(SettingsData, EmbedData)>(8);
-    let (mut manually_send, send_msg) = mpsc::unbounded::<(String, UserId)>();
+    let (mut msg_updater, update_msg) = futures::channel::mpsc::channel::<(SettingsData, EmbedData)>(8);
+    let (mut manually_send, send_msg) = mpsc::unbounded_channel::<(String, UserId)>();
     let (killmsg, killrx) = tokio::sync::oneshot::channel::<()>();
 
     log.log("Spawning message updater").await;
@@ -107,7 +103,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                     }
                     manmsg = send_msg.next() => {
                         if let Some((manmsg, user)) = manmsg {
-                            if let Err(e) = msg.send_manually(manmsg, serenity::model::id::UserId::from(user.0)).await {
+                            if let Err(e) = msg.send_manually(manmsg, model::id::UserId::from(user.0)).await {
                                 logger.log(&format!("Error sending message: {}", e)).await;
                             }
                         }
@@ -166,7 +162,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
 
     // spawn thread for handling tts with ttshandler, listening for messages, sending them in, etc. provide a "kill" oneshot for shutting down the thread and stopping the ttshandler, the oneshot will contain a oneshot that can be used to return the RawMessage Sender back to us to deregister it
 
-    let (killsubthread, bekilled) = tokio::sync::oneshot::channel::<tokio::sync::oneshot::Sender<serenity::futures::channel::mpsc::Receiver<RawMessage>>>();
+    let (killsubthread, bekilled) = tokio::sync::oneshot::channel::<tokio::sync::oneshot::Sender<futures::channel::mpsc::Receiver<RawMessage>>>();
 
     log.log("Spawning tts thread").await;
     let subthread = {
@@ -497,13 +493,13 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
 
                                 match bitrate {
                                     OrAuto::Auto => {
-                                        cl.set_bitrate(songbird::driver::Bitrate::Auto);
+                                        cl.set_bitrate(Bitrate::Auto);
                                     },
                                     OrAuto::Specific(bitrate) => {
-                                        cl.set_bitrate(songbird::driver::Bitrate::BitsPerSecond(bitrate as i32));
+                                        cl.set_bitrate(Bitrate::BitsPerSecond(bitrate as i32));
                                     }
                                 }
-                                // cl.set_bitrate(songbird::driver::Bitrate::BitsPerSecond(bitrate as i32));
+                                // cl.set_bitrate(Bitrate::BitsPerSecond(bitrate as i32));
                                 let r = snd.send(format!("Bitrate set to `{}`", bitrate));
                                 if let Err(e) = r {
                                     log.log(&format!("Error updating message: {}\n", e)).await;
@@ -544,7 +540,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
 
                         match playmode {
                             Ok(Err(e)) => {
-                                if e == songbird::tracks::TrackError::Finished {
+                                if e == TrackError::Finished {
                                     let url = current_track.as_ref().and_then(|t| match t.video {
                                         VideoType::Disk(_) => None,
                                         VideoType::Url(ref y) => Some(y.url.clone()),
@@ -616,7 +612,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
                         match r {
                             Ok(Ok(_)) => {},
                             Ok(Err(e)) => {
-                                if e == songbird::tracks::TrackError::Finished {
+                                if e == TrackError::Finished {
                                     let calllock = control.call.try_lock();
                                     if let Ok(mut clock) = calllock {
                                         let r = match current.video.clone() {
@@ -1255,7 +1251,7 @@ pub async fn the_lüüp(rawcall: Arc<Mutex<Call>>, rawrx: mpsc::UnboundedReceive
     log.log("SHUTTING DOWN").await;
     // transcribe_handler.stop().await;
 
-    let (returner, gimme) = tokio::sync::oneshot::channel::<serenity::futures::channel::mpsc::Receiver<RawMessage>>();
+    let (returner, gimme) = tokio::sync::oneshot::channel::<futures::channel::mpsc::Receiver<RawMessage>>();
     if killsubthread.send(returner).is_err() {
         log.log("Error sending killsubthread").await;
     }
@@ -1387,37 +1383,54 @@ pub struct EmbedData {
     footer: Option<(String, Option<String>)>,
 }
 impl EmbedData {
-    pub(crate) fn write_into(&self, e: &mut serenity::builder::CreateEmbed) {
-        e.author(|a| {
-            if let Some(ref author) = self.author {
-                a.name(author);
-            }
+    pub(crate) fn into_serenity(&self) -> CreateEmbed {
+        let mut e = CreateEmbed::new();
+        if let Some(ref author) = self.author {
+            let mut author = CreateEmbedAuthor::new(author);
             if let Some(ref author_url) = self.author_url {
-                a.url(author_url);
+                author = author.url(author_url);
             }
             if let Some(ref author_icon_url) = self.author_icon_url {
-                a.icon_url(author_icon_url);
+                author = author.icon_url(author_icon_url);
             }
-            a
-        });
+            e = e.author(author);
+        }
+        // e.author(|a| {
+        //     if let Some(ref author) = self.author {
+        //         a.name(author);
+        //     }
+        //     if let Some(ref author_url) = self.author_url {
+        //         a.url(author_url);
+        //     }
+        //     if let Some(ref author_icon_url) = self.author_icon_url {
+        //         a.icon_url(author_icon_url);
+        //     }
+        //     a
+        // });
         if let Some(color) = self.color {
-            e.color(color);
+            e = e.color(color);
         }
         if let Some(ref body) = self.body {
-            e.description(body);
+            e = e.description(body);
         }
         for (name, value, inline) in self.fields.0.iter() {
-            e.field(name, value, *inline);
+            e = e.field(name, value, *inline);
         }
         if let Some(ref thumbnail) = self.thumbnail {
-            e.thumbnail(thumbnail);
+            e = e.thumbnail(thumbnail);
         }
         if let Some((ref footer, ref footer_img)) = self.footer {
-            e.footer(|f: &mut serenity::builder::CreateEmbedFooter| match footer_img {
-                Some(fimg) => f.text(footer).icon_url(fimg),
-                None => f.text(footer),
-            });
+            // e.footer(|f: &mut builder::CreateEmbedFooter| match footer_img {
+            //     Some(fimg) => f.text(footer).icon_url(fimg),
+            //     None => f.text(footer),
+            // });
+            let mut footer = CreateEmbedFooter::new(footer);
+            if let Some(footer_img) = footer_img {
+                footer = footer.icon_url(footer_img);
+            }
+            e = e.footer(footer);
         }
+        e
     }
 }
 

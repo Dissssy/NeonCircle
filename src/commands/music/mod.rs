@@ -16,13 +16,9 @@ pub mod transcribe;
 pub mod volume;
 
 use serde_json::json;
-use serenity::builder::CreateActionRow;
-use serenity::client::Cache;
-use serenity::http::Http;
-
-use serenity::model::prelude::{ChannelId, GuildId, Member, Message, UserId};
-use serenity::model::voice::VoiceState;
-use serenity::prelude::Mutex;
+use serenity::all::*;
+use songbird::typemap::TypeMapKey;
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -32,10 +28,6 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use anyhow::Error;
-
-use serenity::futures::channel::mpsc;
-
-use serenity::prelude::{Context, TypeMapKey};
 
 use crate::video::Video;
 use crate::youtube::{TTSVoice, VideoInfo};
@@ -52,7 +44,7 @@ impl TypeMapKey for AudioHandler {
 pub struct AudioCommandHandler;
 
 impl TypeMapKey for AudioCommandHandler {
-    type Value = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<(serenity::futures::channel::oneshot::Sender<String>, AudioPromiseCommand)>>>>;
+    type Value = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<(oneshot::Sender<String>, AudioPromiseCommand)>>>>;
 }
 
 pub struct VoiceData;
@@ -80,7 +72,7 @@ impl InnerVoiceData {
         }
     }
     pub fn mutual_channel(&mut self, ctx: &Context, guild: &GuildId, member: &UserId) -> VoiceAction {
-        let bot_id = ctx.cache.current_user_id();
+        let bot_id = ctx.cache.current_user().id;
         if bot_id != self.bot_id {
             self.bot_id = bot_id;
         }
@@ -104,18 +96,17 @@ impl InnerVoiceData {
     pub async fn refresh_guild(&mut self, ctx: &Context, guild_id: GuildId) -> Result<(), Error> {
         let mut new = GuildVc::new();
 
-        for (_i, channel) in ctx.http.get_guild(guild_id.0).await?.channels(&ctx.http).await? {
-            if channel.kind == serenity::model::channel::ChannelType::Voice {
+        for (_i, channel) in ctx.http.get_guild(guild_id).await?.channels(&ctx.http).await? {
+            if channel.kind == ChannelType::Voice {
                 let mut newchannel = HashMap::new();
-                for member in match ctx.http.get_channel(channel.id.0).await {
-                    Ok(serenity::model::channel::Channel::Guild(channel)) => channel,
+                for member in match ctx.http.get_channel(channel.id).await {
+                    Ok(Channel::Guild(channel)) => channel,
                     Err(_) => {
                         continue;
                     }
                     _ => return Err(anyhow::anyhow!("Expected Guild channel")),
                 }
-                .members(&ctx.cache)
-                .await?
+                .members(&ctx.cache)?
                 {
                     newchannel.insert(member.user.id, UserMetadata { member: member.clone() });
                 }
@@ -232,7 +223,7 @@ pub enum AudioPromiseCommand {
     Skip,
     Remove(usize),
 
-    RetrieveLog(serenity::futures::channel::mpsc::Sender<Vec<String>>),
+    RetrieveLog(mpsc::Sender<Vec<String>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,7 +319,7 @@ pub struct Author {
 }
 
 impl Author {
-    pub async fn from_user(ctx: &serenity::client::Context, user: &serenity::model::user::User, guild: Option<GuildId>) -> Option<Self> {
+    pub async fn from_user(ctx: &Context, user: &User, guild: Option<GuildId>) -> Option<Self> {
         let name = match guild {
             Some(g) => {
                 let member = g.member(ctx, user.id).await.ok()?;
@@ -381,7 +372,7 @@ pub struct MessageReference {
 
     resend_next_time: bool,
     client: reqwest::Client,
-    transcription_thread: OptionOrFailed<serenity::model::channel::GuildChannel>,
+    transcription_thread: OptionOrFailed<GuildChannel>,
 }
 
 #[derive(Debug, Clone)]
@@ -433,7 +424,7 @@ impl MessageReference {
 
         let webhook = match self.channel_id.webhooks(&self.http).await?.first() {
             Some(webhook) => webhook.clone(),
-            None => self.channel_id.create_webhook(&self.http, "Music Bot").await?,
+            None => self.channel_id.create_webhook(&self.http, CreateWebhook::new("Music Bot").audit_log_reason("Webhook for logging things said during a voice session")).await?,
         };
 
         let thread_id = match self.transcription_thread {
@@ -442,14 +433,7 @@ impl MessageReference {
                 return Ok(());
             }
             OptionOrFailed::None => {
-                let thread = self
-                    .channel_id
-                    .create_private_thread(&self.http, |t| {
-                        t.name(chrono::Local::now().format("CLOSED CAPTIONS FOR %b %-d, %Y at %-I:%M%p").to_string());
-                        t.kind(serenity::model::channel::ChannelType::PrivateThread);
-                        t
-                    })
-                    .await;
+                let thread = self.channel_id.create_thread(&self.http, CreateThread::new(chrono::Local::now().format("CLOSED CAPTIONS FOR %b %-d, %Y at %-I:%M%p").to_string())).await;
 
                 if thread.is_err() {
                     self.transcription_thread = OptionOrFailed::Failed;
@@ -464,7 +448,7 @@ impl MessageReference {
             }
         };
 
-        let author = self.http.get_user(user.0).await?;
+        let author = self.http.get_user(user).await?;
 
         let webhook_url = format!("{}?thread_id={}", webhook.url()?, thread_id);
 
@@ -508,9 +492,8 @@ impl MessageReference {
         };
 
         let mut messages = match message.channel(&self.http).await? {
-            serenity::model::prelude::Channel::Guild(channel) => channel.messages(&self.http, |retriever| retriever.after(message.id).limit(100)).await?,
-            serenity::model::prelude::Channel::Private(channel) => channel.messages(&self.http, |retriever| retriever.after(message.id).limit(100)).await?,
-            serenity::model::prelude::Channel::Category(_) => Vec::new(),
+            Channel::Guild(channel) => channel.messages(&self.http, GetMessages::new().after(message.id).limit(1)).await?,
+            Channel::Private(channel) => channel.messages(&self.http, GetMessages::new().after(message.id).limit(1)).await?,
             _ => Vec::new(),
         };
         messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
@@ -534,22 +517,13 @@ impl MessageReference {
                 }
                 self.send_new().await?;
             } else if let Err(e) = message
-                .edit(&self.http, |m| {
-                    m.content("".to_string());
-                    m.embed(move |e| {
-                        write_content.write_into(e);
-                        e
-                    });
+                .edit(&self.http, {
+                    let mut m = EditMessage::new().embed(write_content.into_serenity()).flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
                     if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
-                        m.components(|f| {
-                            for ar in ars {
-                                f.add_action_row(ar);
-                            }
-                            f
-                        })
-                    } else {
-                        m
+                        m = m.components(ars);
                     }
+
+                    m
                 })
                 .await
             {
@@ -568,18 +542,13 @@ impl MessageReference {
                 let content = String::from("<a:earloading:979852072998543443>");
                 let message = self
                     .channel_id
-                    .send_message(&self.http, |m| {
-                        m.content(content).flags(serenity::model::channel::MessageFlags::from_bits(1u64 << 12).expect("Failed to create message flags"));
+                    .send_message(&self.http, {
+                        let mut m = CreateMessage::new().content(content).flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
                         if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
-                            m.components(|f| {
-                                for ar in ars {
-                                    f.add_action_row(ar);
-                                }
-                                f
-                            })
-                        } else {
-                            m
+                            m = m.components(ars);
                         }
+
+                        m
                     })
                     .await?;
 
@@ -590,24 +559,12 @@ impl MessageReference {
                 let write_content = content.clone();
                 let message = self
                     .channel_id
-                    .send_message(&self.http, |m| {
-                        m.content("".to_string());
-                        m.embed(move |e| {
-                            write_content.write_into(e);
-                            e
-                        })
-                        .flags(serenity::model::channel::MessageFlags::from_bits(1u64 << 12).expect("Failed to create message flags"));
-
+                    .send_message(&self.http, {
+                        let mut m = CreateMessage::new().embed(write_content.into_serenity()).flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
                         if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
-                            m.components(|f| {
-                                for ar in ars {
-                                    f.add_action_row(ar);
-                                }
-                                f
-                            })
-                        } else {
-                            m
+                            m = m.components(ars);
                         }
+                        m
                     })
                     .await?;
 
@@ -625,7 +582,7 @@ impl MessageReference {
     async fn final_cleanup(&mut self) -> Result<(), Error> {
         self.delete().await?;
         if let Some(thread) = self.transcription_thread.take() {
-            if [serenity::model::channel::ChannelType::PrivateThread, serenity::model::channel::ChannelType::PublicThread].contains(&thread.kind) {
+            if [ChannelType::PrivateThread, ChannelType::PublicThread].contains(&thread.kind) {
                 thread.delete(&self.http).await?;
             }
         }
@@ -634,9 +591,9 @@ impl MessageReference {
 
     #[cfg(not(feature = "new-controls"))]
     fn get_ars(settings: &SettingsData) -> Vec<CreateActionRow> {
-        let (volumestyle, radiostyle) = if settings.something_playing { (serenity::model::application::component::ButtonStyle::Primary, serenity::model::application::component::ButtonStyle::Secondary) } else { (serenity::model::application::component::ButtonStyle::Secondary, serenity::model::application::component::ButtonStyle::Primary) };
+        let (volumestyle, radiostyle) = if settings.something_playing { (ButtonStyle::Primary, ButtonStyle::Secondary) } else { (ButtonStyle::Secondary, ButtonStyle::Primary) };
 
-        let titlestyle = if settings.read_titles { serenity::model::application::component::ButtonStyle::Success } else { serenity::model::application::component::ButtonStyle::Danger };
+        let titlestyle = if settings.read_titles { ButtonStyle::Success } else { ButtonStyle::Danger };
 
         let mut ars = Vec::new();
 
@@ -661,7 +618,7 @@ impl MessageReference {
         ar.create_button(|b| b.style(radiostyle).custom_id("radiovolume").label(format!("📻 {}%", settings.raw_radiovolume() * 100.0)));
 
         ar.create_button(|b| {
-            b.style(serenity::model::application::component::ButtonStyle::Secondary).custom_id("bitrate").label(match settings.bitrate {
+            b.style(ButtonStyle::Secondary).custom_id("bitrate").label(match settings.bitrate {
                 OrAuto::Specific(i) => {
                     if i >= 1000 {
                         format!("{}kbps", i / 1000)
@@ -673,35 +630,35 @@ impl MessageReference {
             })
         });
 
-        ar.create_button(|b| b.style(if settings.log_empty { serenity::model::application::component::ButtonStyle::Secondary } else { serenity::model::application::component::ButtonStyle::Danger }).custom_id("log").label("📜").disabled(settings.log_empty));
+        ar.create_button(|b| b.style(if settings.log_empty { ButtonStyle::Secondary } else { ButtonStyle::Danger }).custom_id("log").label("📜").disabled(settings.log_empty));
 
         ars.push(ar);
 
         let mut ar = CreateActionRow::default();
 
-        ar.create_button(|b| b.style(if settings.pause { serenity::model::application::component::ButtonStyle::Success } else { serenity::model::application::component::ButtonStyle::Danger }).label(if settings.pause { "▶️" } else { "⏸️" }.to_owned()).custom_id("pause").disabled(!settings.something_playing));
+        ar.create_button(|b| b.style(if settings.pause { ButtonStyle::Success } else { ButtonStyle::Danger }).label(if settings.pause { "▶️" } else { "⏸️" }.to_owned()).custom_id("pause").disabled(!settings.something_playing));
 
-        ar.create_button(|b| b.style(serenity::model::application::component::ButtonStyle::Primary).label("⏭️").custom_id("skip").disabled(!settings.something_playing));
+        ar.create_button(|b| b.style(ButtonStyle::Primary).label("⏭️").custom_id("skip").disabled(!settings.something_playing));
 
-        ar.create_button(|b| b.style(serenity::model::application::component::ButtonStyle::Danger).custom_id("stop").label("⏹️"));
-
-        ars.push(ar);
-
-        let mut ar = CreateActionRow::default();
-
-        ar.create_button(|b| b.style(if settings.looped { serenity::model::application::component::ButtonStyle::Primary } else { serenity::model::application::component::ButtonStyle::Secondary }).label("🔁").custom_id("looped"));
-
-        ar.create_button(|b| b.style(if settings.shuffle { serenity::model::application::component::ButtonStyle::Primary } else { serenity::model::application::component::ButtonStyle::Secondary }).custom_id("shuffle").label("🔀"));
-
-        ar.create_button(|b| b.style(if settings.repeat { serenity::model::application::component::ButtonStyle::Primary } else { serenity::model::application::component::ButtonStyle::Secondary }).label("🔄️").custom_id("repeat"));
+        ar.create_button(|b| b.style(ButtonStyle::Danger).custom_id("stop").label("⏹️"));
 
         ars.push(ar);
 
         let mut ar = CreateActionRow::default();
 
-        ar.create_button(|b| b.style(if settings.autoplay { serenity::model::application::component::ButtonStyle::Primary } else { serenity::model::application::component::ButtonStyle::Secondary }).custom_id("autoplay").label("🎲"));
+        ar.create_button(|b| b.style(if settings.looped { ButtonStyle::Primary } else { ButtonStyle::Secondary }).label("🔁").custom_id("looped"));
 
-        ar.create_button(|b| b.style(serenity::model::application::component::ButtonStyle::Danger).custom_id("remove").label("🗑️"));
+        ar.create_button(|b| b.style(if settings.shuffle { ButtonStyle::Primary } else { ButtonStyle::Secondary }).custom_id("shuffle").label("🔀"));
+
+        ar.create_button(|b| b.style(if settings.repeat { ButtonStyle::Primary } else { ButtonStyle::Secondary }).label("🔄️").custom_id("repeat"));
+
+        ars.push(ar);
+
+        let mut ar = CreateActionRow::default();
+
+        ar.create_button(|b| b.style(if settings.autoplay { ButtonStyle::Primary } else { ButtonStyle::Secondary }).custom_id("autoplay").label("🎲"));
+
+        ar.create_button(|b| b.style(ButtonStyle::Danger).custom_id("remove").label("🗑️"));
 
         ar.create_button(|b| b.style(titlestyle).custom_id("read_titles").label("🗣️"));
 
@@ -712,8 +669,6 @@ impl MessageReference {
 
     #[cfg(feature = "new-controls")]
     fn get_ars(settings: &SettingsData) -> Vec<CreateActionRow> {
-        use serenity::builder::CreateSelectMenu;
-
         let mut ars = Vec::new();
 
         let mut ar = CreateActionRow::default();
@@ -812,7 +767,7 @@ pub struct RawMessage {
     pub channel_id: ChannelId,
     pub channel_name: Option<String>,
 
-    pub timestamp: serenity::model::timestamp::Timestamp,
+    pub timestamp: Timestamp,
     pub tts_audio_handle: Option<tokio::task::JoinHandle<Result<Video, anyhow::Error>>>,
 }
 
@@ -862,9 +817,8 @@ impl RawMessage {
         }
 
         let channelname = match msg.channel(&ctx).await {
-            Ok(serenity::model::prelude::Channel::Guild(channel)) => channel.name,
-            Ok(serenity::model::prelude::Channel::Private(_)) => String::from("Private"),
-            Ok(serenity::model::prelude::Channel::Category(_)) => String::from("Category"),
+            Ok(Channel::Guild(channel)) => channel.name,
+            Ok(Channel::Private(private)) => private.name(),
             Ok(_) => String::from("Unknown"),
             Err(_) => {
                 return Err(anyhow::anyhow!("Failed to get channel name"));

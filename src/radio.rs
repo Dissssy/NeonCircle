@@ -51,23 +51,9 @@ impl AzuraCast {
                 Err(e.into())
             }
         }
-
-        // if self.last_update.elapsed().as_secs() > 5 {
-        //     match self.data.lock().await.update(&self.url).await {
-        //         Ok(_) => {}
-        //         Err(e) => {
-        //             self.log
-        //                 .log(&format!("Failed to update azuracast data: {}", e))
-        //                 .await;
-        //         }
-        //     }
-        //     self.last_update = Instant::now();
-        // }
-        // self.data.lock().await.clone()
     }
 
     pub async fn fast_data(&mut self) -> Result<Root, Error> {
-        // dispatch a task to update the data
         if self.last_update.elapsed().as_secs() > 5 {
             let d = self.data.clone();
             let url = self.url.clone();
@@ -93,18 +79,9 @@ impl AzuraCast {
                         log.log(&format!("Timeout getting azuracast data: {}", e)).await;
                     }
                 }
-
-                // match d.lock().await.update(&url).await {
-                //     Ok(()) => {}
-                //     Err(e) => {
-                //         log.log(&format!("Failed to update azuracast data: {}", e))
-                //             .await;
-                //     }
-                // }
             });
             self.last_update = Instant::now();
         }
-        // self.data.lock().await.clone()
 
         let r = tokio::time::timeout(self.timeout, self.data.lock()).await;
 
