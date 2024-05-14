@@ -1,7 +1,6 @@
-use std::io::{BufReader, BufWriter, Cursor};
+use std::io::{BufWriter, Cursor};
 
 use anyhow::Error;
-use image::ImageOutputFormat;
 use serenity::builder::CreateApplicationCommand;
 use serenity::model::application::interaction::InteractionResponseType;
 use serenity::model::prelude::command::CommandOptionType;
@@ -9,7 +8,7 @@ use serenity::model::prelude::PremiumTier;
 
 use image::{
     codecs::gif::{GifDecoder, GifEncoder, Repeat::Infinite},
-    AnimationDecoder, DynamicImage, Frame, GenericImage, GenericImageView, Pixel,
+    AnimationDecoder, DynamicImage, Frame, GenericImage, GenericImageView, ImageFormat, Pixel,
 };
 
 use serenity::model::prelude::interaction::autocomplete::AutocompleteInteraction;
@@ -158,7 +157,7 @@ fn john_the_image(image: DynamicImage) -> anyhow::Result<DynamicImage> {
 
 fn john(image: Vec<u8>, filename: &str) -> Result<Vec<u8>, Error> {
     if filename.ends_with("gif") {
-        let file_in = BufReader::new(image.as_slice());
+        let file_in = Cursor::new(image.as_slice());
         let decoder = GifDecoder::new(file_in)?;
         let frames = decoder.into_frames();
         let frames = frames.collect_frames()?;
@@ -185,7 +184,7 @@ fn john(image: Vec<u8>, filename: &str) -> Result<Vec<u8>, Error> {
         let image = image::load_from_memory(&image)?;
         let no = john_the_image(image)?;
         let mut output = Cursor::new(Vec::new());
-        no.write_to(&mut output, ImageOutputFormat::Png)?;
+        no.write_to(&mut output, ImageFormat::Png)?;
         Ok(output.into_inner())
     }
 }
