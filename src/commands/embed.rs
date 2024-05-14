@@ -88,7 +88,7 @@ impl CommandTrait for John {
             )
             .await
         {
-            println!("Error deferring: {}", e);
+            log::error!("Error deferring: {}", e);
         }
         let options = interaction.data.options();
         let attachment = match options.iter().find(|o| o.name == "image").map(|c| &c.value) {
@@ -102,7 +102,7 @@ impl CommandTrait for John {
                     )
                     .await
                 {
-                    println!("Error editing original interaction response: {}", e);
+                    log::error!("Error editing original interaction response: {}", e);
                 }
                 return;
             }
@@ -116,7 +116,7 @@ impl CommandTrait for John {
                     )
                     .await
                 {
-                    println!("Error editing original interaction response: {}", e);
+                    log::error!("Error editing original interaction response: {}", e);
                 }
                 return;
             }
@@ -143,7 +143,7 @@ impl CommandTrait for John {
                     )
                     .await
                 {
-                    println!("Error editing original interaction response: {}", e);
+                    log::error!("Error editing original interaction response: {}", e);
                 }
             }
         }
@@ -230,7 +230,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
     match interaction.defer_ephemeral(&ctx.http).await {
         Ok(_) => {}
         Err(e) => {
-            println!("Error deferring: {}", e);
+            log::error!("Error deferring: {}", e);
         }
     }
     let options = interaction.data.options();
@@ -254,7 +254,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                 )
                 .await
             {
-                println!("Error editing original interaction response: {}", e);
+                log::error!("Error editing original interaction response: {}", e);
             }
             return;
         }
@@ -276,10 +276,10 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                 _ => {}
             }
         } else {
-            println!("No guild in cache");
+            log::warn!("No guild in cache");
         }
     } else {
-        println!("No guild id");
+        log::warn!("No guild id");
     }
     match crate::video::Video::download_video(option, media_type, spoiler, max_size).await {
         Err(e) => match interaction
@@ -297,7 +297,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
         {
             Ok(_) => {}
             Err(e) => {
-                println!("Fatal error creating followup message: {}", e)
+                log::error!("Fatal error creating followup message: {}", e)
             }
         },
         Ok(video) => {
@@ -323,7 +323,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                             {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    println!("Fatal error creating followup message: {}", e)
+                                    log::error!("Fatal error creating followup message: {}", e)
                                 }
                             }
                             return;
@@ -332,7 +332,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                     match interaction.delete_response(&ctx.http).await {
                         Ok(_) => {}
                         Err(e) => {
-                            println!("Error deleting original interaction response: {}", e)
+                            log::error!("Error deleting original interaction response: {}", e)
                         }
                     };
                     if let Err(e) = interaction
@@ -359,14 +359,14 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                         {
                             Ok(_) => {}
                             Err(e) => {
-                                println!("Fatal error creating followup message: {}", e)
+                                log::error!("Fatal error creating followup message: {}", e)
                             }
                         }
                     };
                     match video.delete() {
                         Ok(_) => {}
                         Err(e) => {
-                            println!("Error deleting video: {}", e)
+                            log::error!("Error deleting video: {}", e)
                         }
                     };
                 }

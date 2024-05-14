@@ -29,7 +29,7 @@ impl crate::CommandTrait for Transcribe {
             )
             .await
         {
-            eprintln!("Failed to create interaction response: {:?}", e);
+            log::error!("Failed to create interaction response: {:?}", e);
         }
         let guild_id = match interaction.guild_id {
             Some(id) => id,
@@ -42,7 +42,7 @@ impl crate::CommandTrait for Transcribe {
                     )
                     .await
                 {
-                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
                 return;
             }
@@ -62,7 +62,7 @@ impl crate::CommandTrait for Transcribe {
                     )
                     .await
                 {
-                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
                 return;
             }
@@ -86,7 +86,7 @@ impl crate::CommandTrait for Transcribe {
                         )
                         .await
                     {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
@@ -99,7 +99,7 @@ impl crate::CommandTrait for Transcribe {
                         )
                         .await
                     {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
@@ -113,7 +113,7 @@ impl crate::CommandTrait for Transcribe {
                         )
                         .await
                     {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
@@ -147,7 +147,7 @@ impl crate::CommandTrait for Transcribe {
                                         )
                                         .await
                                     {
-                                        eprintln!(
+                                        log::error!(
                                             "Failed to edit original interaction response: {:?}",
                                             e
                                         );
@@ -159,7 +159,7 @@ impl crate::CommandTrait for Transcribe {
                                     )
                                     .await
                                 {
-                                    eprintln!(
+                                    log::error!(
                                         "Failed to edit original interaction response: {:?}",
                                         e
                                     );
@@ -173,7 +173,7 @@ impl crate::CommandTrait for Transcribe {
                                     )
                                     .await
                                 {
-                                    eprintln!(
+                                    log::error!(
                                         "Failed to edit original interaction response: {:?}",
                                         e
                                     );
@@ -185,7 +185,10 @@ impl crate::CommandTrait for Transcribe {
                                 )
                                 .await
                             {
-                                eprintln!("Failed to edit original interaction response: {:?}", e);
+                                log::error!(
+                                    "Failed to edit original interaction response: {:?}",
+                                    e
+                                );
                             }
                         }
                         super::OrToggle::Toggle => {
@@ -198,7 +201,7 @@ impl crate::CommandTrait for Transcribe {
                                     )
                                     .await
                                 {
-                                    eprintln!(
+                                    log::error!(
                                         "Failed to edit original interaction response: {:?}",
                                         e
                                     );
@@ -210,7 +213,10 @@ impl crate::CommandTrait for Transcribe {
                                 )
                                 .await
                             {
-                                eprintln!("Failed to edit original interaction response: {:?}", e);
+                                log::error!(
+                                    "Failed to edit original interaction response: {:?}",
+                                    e
+                                );
                             }
                         }
                     }
@@ -223,7 +229,7 @@ impl crate::CommandTrait for Transcribe {
             )
             .await
         {
-            eprintln!("Failed to edit original interaction response: {:?}", e);
+            log::error!("Failed to edit original interaction response: {:?}", e);
         }
     }
     fn name(&self) -> &str {
@@ -375,7 +381,7 @@ impl Handler {
             let v = match m.check_tts().await? {
                 Some(Ok(v)) => Some(v),
                 Some(Err(e)) => {
-                    println!("Error generating audio: {:?}", e);
+                    log::error!("Error generating audio: {:?}", e);
                     None
                 }
                 None => {
@@ -396,16 +402,16 @@ impl Handler {
     pub async fn stop(&mut self) {
         if let Some((handle, v)) = &self.current_handle {
             if let Err(e) = handle.stop() {
-                println!("Error stopping track: {:?}", e);
+                log::error!("Error stopping audio: {:?}", e);
             }
             if let Err(e) = v.delete() {
-                println!("Error deleting video: {:?}", e);
+                log::error!("Error deleting video: {:?}", e);
             }
         }
         self.current_handle = None;
         if let Some(v) = self.prepared_next.take() {
             if let Err(e) = v.delete() {
-                println!("Error deleting video: {:?}", e);
+                log::error!("Error deleting video: {:?}", e);
             }
         }
         self.prepared_next = None;
@@ -415,21 +421,21 @@ impl Handler {
                 match h.await {
                     Ok(Ok(v)) => {
                         if let Err(e) = v.delete() {
-                            println!("Error deleting video: {:?}", e);
+                            log::error!("Error deleting video: {:?}", e);
                         }
                     }
                     Ok(Err(e)) => {
-                        println!("Error getting audio handle: {:?}", e);
+                        log::error!("Error getting audio handle: {:?}", e);
                     }
                     Err(e) => {
-                        println!("Error getting audio handle: {:?}", e);
+                        log::error!("Error getting audio handle: {:?}", e);
                     }
                 }
             }
         }
         for v in self.channel_names.values() {
             if let Err(e) = v.force_delete() {
-                println!("Error deleting video: {:?}", e);
+                log::error!("Error deleting video: {:?}", e);
             }
         }
         self.queue.clear();

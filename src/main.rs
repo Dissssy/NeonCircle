@@ -60,7 +60,7 @@ impl EventHandler for Handler {
                 if let Some(command) = command {
                     command.run(&ctx, rawcommand).await;
                 } else {
-                    println!("Command not found: {command_name}");
+                    log::warn!("Command not found: {}", command_name);
                 }
             }
             Interaction::Autocomplete(autocomplete) => {
@@ -70,11 +70,11 @@ impl EventHandler for Handler {
                     let r = command.autocomplete(&ctx, autocomplete).await;
                     if r.is_err() {}
                 } else {
-                    println!("Command not found: {commandn}");
+                    log::warn!("Command not found: {}", commandn);
                 }
             }
             Interaction::Ping(p) => {
-                println!("Ping: {:?}", p);
+                log::info!("Ping received: {:?}", p);
             }
             Interaction::Component(mci) => {
                 let cmd = match mci.data.kind {
@@ -83,27 +83,22 @@ impl EventHandler for Handler {
                         match values.first() {
                             Some(v) => v.as_str(),
                             None => {
-                                println!("No values in select");
+                                log::error!("No values in string select");
                                 return;
                             }
                         }
                     }
                     _ => {
-                        println!("Unknown component type");
+                        log::error!("Unknown component interaction kind");
                         return;
                     }
                 };
                 if cmd == "controls" {
                     if let Err(e) = mci
-                        .create_response(
-                            &ctx.http,
-                            CreateInteractionResponse::Defer(
-                                CreateInteractionResponseMessage::new().ephemeral(true),
-                            ),
-                        )
+                        .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
                         .await
                     {
-                        eprintln!("Failed to send response: {}", e);
+                        log::error!("Failed to send response: {:?}", e);
                     };
                     return;
                 }
@@ -113,7 +108,7 @@ impl EventHandler for Handler {
                             Some(id) => id,
                             None => {
                                 if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("This can only be used in a server").ephemeral(true))).await {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {:?}", e);
                                 }
                                 return;
                             }
@@ -142,19 +137,19 @@ impl EventHandler for Handler {
                                             "autoplay" => AudioPromiseCommand::Autoplay(OrToggle::Toggle),
                                             "read_titles" => AudioPromiseCommand::ReadTitles(OrToggle::Toggle),
                                             uh => {
-                                                println!("Unknown command: {}", uh);
+                                                log::error!("Unknown command: {}", uh);
                                                 return;
                                             }
                                         },
                                     )) {
                                         if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for {} ERR {}", original_command, e)).ephemeral(true))).await {
-                                            eprintln!("Failed to send response: {}", e);
+                                            log::error!("Failed to send response: {}", e);
                                         }
                                         return;
                                     }
 
-                                    if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await {
-                                        eprintln!("Failed to send response: {}", e);
+                                    if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Acknowledge).await {
+                                        log::error!("Failed to send response: {}", e);
                                     }
                                     let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rrx).await;
 
@@ -163,23 +158,23 @@ impl EventHandler for Handler {
                                             return;
                                         }
                                         Ok(Err(e)) => {
-                                            println!("Failed to issue command for {} ERR: {}", original_command, e);
+                                            log::error!("Failed to issue command for {} ERR: {}", original_command, e);
                                         }
                                         Err(e) => {
-                                            println!("Failed to issue command for {} ERR: {}", original_command, e);
+                                            log::error!("Failed to issue command for {} ERR: {}", original_command, e);
                                         }
                                     }
 
                                     if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for {}", original_command)).ephemeral(true))).await {
-                                        eprintln!("Failed to send response: {}", e);
+                                        log::error!("Failed to send response: {}", e);
                                     }
                                     return;
                                 }
 
-                                println!("{}", _c);
+                                log::trace!("{}", _c);
                             } else {
                                 if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Get on in here, enjoy the tunes!").ephemeral(true))).await {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             }
@@ -190,7 +185,7 @@ impl EventHandler for Handler {
                             Some(id) => id,
                             None => {
                                 if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("This can only be used in a server").ephemeral(true))).await {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             }
@@ -218,12 +213,12 @@ impl EventHandler for Handler {
                                     )
                                     .await
                                 {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             } else {
                                 if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Get on in here, enjoy the tunes!").ephemeral(true))).await {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             }
@@ -234,7 +229,7 @@ impl EventHandler for Handler {
                             Some(id) => id,
                             None => {
                                 if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("This can only be used in a server").ephemeral(true))).await {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             }
@@ -246,12 +241,12 @@ impl EventHandler for Handler {
 
                             if let VoiceAction::InSame(_c) = next_step {
                                 if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Modal(CreateModal::new("bitrate", "Bitrate").components(vec![CreateActionRow::InputText(CreateInputText::new(InputTextStyle::Short, "bps", "bitrate").placeholder("512 - 512000, left blank for auto").required(false))]))).await {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             } else {
                                 if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Get on in here, enjoy the tunes!").ephemeral(true))).await {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             }
@@ -262,7 +257,7 @@ impl EventHandler for Handler {
                             Some(id) => id,
                             None => {
                                 if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("This can only be used in a server").ephemeral(true))).await {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             }
@@ -282,7 +277,7 @@ impl EventHandler for Handler {
                                     let (realrtx, mut realrrx) = mpsc::channel::<Vec<String>>(1);
                                     if let Err(e) = tx.send((rtx, AudioPromiseCommand::RetrieveLog(realrtx))) {
                                         if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for `log` ERR {}", e)).ephemeral(true))).await {
-                                            eprintln!("Failed to send response: {}", e);
+                                            log::error!("Failed to send response: {}", e);
                                         }
                                         return;
                                     }
@@ -296,42 +291,42 @@ impl EventHandler for Handler {
                                             match timeout {
                                                 Ok(Some(log)) => {
                                                     if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Modal(CreateModal::new("log", "Log (Submitting this does nothing)").components(log.iter().enumerate().map(|(i, log)| CreateActionRow::InputText(CreateInputText::new(InputTextStyle::Paragraph, "Log", format!("log{}", i)).value(log))).collect()))).await {
-                                                        eprintln!("Failed to send response: {}", e);
+                                                        log::error!("Failed to send response: {}", e);
                                                     }
                                                     return;
                                                 }
                                                 Ok(None) => {
-                                                    println!("Failed to issue command for `log` ERR: None");
+                                                    log::error!("Failed to get log");
                                                 }
                                                 Err(e) => {
-                                                    println!("Failed to issue command for `log` ERR: {}", e);
+                                                    log::error!("Failed to get log: {}", e);
                                                 }
                                             }
                                         }
                                         Ok(Err(e)) => {
-                                            println!("Failed to issue command for `log` ERR: {}", e);
+                                            log::error!("Failed to issue command for `log` ERR: {}", e);
                                         }
                                         Err(e) => {
-                                            println!("Failed to issue command for `log` ERR: {}", e);
+                                            log::error!("Failed to issue command for `log` ERR: {}", e);
                                         }
                                     }
 
                                     if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Failed to issue command for `log`").ephemeral(true))).await {
-                                        eprintln!("Failed to send response: {}", e);
+                                        log::error!("Failed to send response: {}", e);
                                     }
                                     return;
                                 }
                             } else {
                                 if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Get on in here, enjoy the tunes!").ephemeral(true))).await {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             }
                         }
                     }
                     p => {
-                        if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Modal(CreateModal::new("feedback", "Feedback").components(vec![CreateActionRow::InputText(CreateInputText::new(InputTextStyle::Paragraph, format!("How should clicking `{}` work?\nRead the discord documentation and figure out what i can ACTUALLY do. I can't think of anything.", p), "feedback").required(true))]))).await {
-                            eprintln!("Failed to send response: {}", e);
+                        if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Modal(CreateModal::new("feedback", "Feedback").components(vec![CreateActionRow::InputText(CreateInputText::new(InputTextStyle::Paragraph, format!("How should clicking `{}` work?", p), "feedback").placeholder("Read the discord documentation and figure out what i can ACTUALLY do. I can't think of anything.").required(true))]))).await {
+                            log::error!("Failed to send response: {}", e);
                         }
                     }
                 }
@@ -346,11 +341,11 @@ impl EventHandler for Handler {
                     {
                         Some(ActionRowComponent::InputText(feedback)) => feedback,
                         Some(_) => {
-                            eprintln!("Invalid components in feedback modal");
+                            log::error!("Invalid components in feedback modal");
                             return;
                         }
                         None => {
-                            eprintln!("No components in feedback modal");
+                            log::error!("No components in feedback modal");
                             return;
                         }
                     };
@@ -361,7 +356,7 @@ impl EventHandler for Handler {
                         match i.value {
                             Some(ref v) => v,
                             None => {
-                                eprintln!("No value in feedback modal");
+                                log::error!("No value in feedback modal");
                                 return;
                             }
                         }
@@ -372,12 +367,12 @@ impl EventHandler for Handler {
                                 .dm(&ctx.http, CreateMessage::default().content(&feedback))
                                 .await
                             {
-                                println!("Failed to send feedback: {}", e);
+                                log::error!("Failed to send feedback to developer: {}", e);
                                 content = format!("{}{}\n{}\n{}\n{}", content, "Unfortunately, I failed to send your feedback to the developer.", "If you're able to, be sure to send it to him yourself!", "He's <@156533151198478336> (monkey_d._issy)\n\nHere's a copy if you need it.", feedback);
                             }
                         }
                         Err(e) => {
-                            println!("Failed to get user: {}", e);
+                            log::error!("Failed to get user: {}", e);
                             content = format!("{}{}\n{}\n{}\n{}", content, "Unfortunately, I failed to send your feedback to the developer.", "If you're able to, be sure to send it to him yourself!", "He's <@156533151198478336> (monkey_d._issy)\n\nHere's a copy if you need it.", feedback);
                         }
                     }
@@ -392,7 +387,7 @@ impl EventHandler for Handler {
                         )
                         .await
                     {
-                        eprintln!("Failed to send response: {}", e);
+                        log::error!("Failed to send response: {}", e);
                     }
                 }
                 raw if ["volume", "radiovolume"].iter().any(|a| *a == raw) => {
@@ -405,23 +400,23 @@ impl EventHandler for Handler {
                         Some(ActionRowComponent::InputText(volume)) => match volume.value {
                             Some(ref v) => v,
                             None => {
-                                eprintln!("No value in volume modal");
+                                log::error!("No value in volume modal");
                                 return;
                             }
                         },
                         Some(_) => {
-                            eprintln!("Invalid components in volume modal");
+                            log::error!("Invalid components in volume modal");
                             return;
                         }
                         None => {
-                            eprintln!("No components in volume modal");
+                            log::error!("No components in volume modal");
                             return;
                         }
                     };
                     let val = match val.parse::<f64>() {
                         Ok(v) => v,
                         Err(e) => {
-                            println!("Failed to parse volume: {}", e);
+                            log::info!("Failed to parse volume: {}", e);
                             if let Err(e) = p
                                 .create_response(
                                     &ctx.http,
@@ -433,7 +428,7 @@ impl EventHandler for Handler {
                                 )
                                 .await
                             {
-                                eprintln!("Failed to send response: {}", e);
+                                log::error!("Failed to send response: {}", e);
                             }
                             return;
                         }
@@ -450,7 +445,7 @@ impl EventHandler for Handler {
                             )
                             .await
                         {
-                            eprintln!("Failed to send response: {}", e);
+                            log::error!("Failed to send response: {}", e);
                         }
                         return;
                     }
@@ -468,7 +463,7 @@ impl EventHandler for Handler {
                                 )
                                 .await
                             {
-                                eprintln!("Failed to send response: {}", e);
+                                log::error!("Failed to send response: {}", e);
                                 return;
                             }
                             return;
@@ -501,7 +496,7 @@ impl EventHandler for Handler {
                                             SpecificVolume::RadioVolume(val / 100.0),
                                         ),
                                         uh => {
-                                            println!("Unknown volume to set: {}", uh);
+                                            log::error!("Unknown command: {}", uh);
                                             return;
                                         }
                                     },
@@ -520,7 +515,7 @@ impl EventHandler for Handler {
                                         )
                                         .await
                                     {
-                                        eprintln!("Failed to send response: {}", e);
+                                        log::error!("Failed to send response: {}", e);
                                     }
                                     return;
                                 }
@@ -532,22 +527,27 @@ impl EventHandler for Handler {
                                         if let Err(e) = p
                                             .create_response(
                                                 &ctx.http,
-                                                CreateInteractionResponse::Defer(
-                                                    CreateInteractionResponseMessage::new()
-                                                        .ephemeral(true),
-                                                ),
+                                                CreateInteractionResponse::Acknowledge,
                                             )
                                             .await
                                         {
-                                            eprintln!("Failed to send response: {}", e);
+                                            log::error!("Failed to send response: {}", e);
                                         }
                                         return;
                                     }
                                     Ok(Err(e)) => {
-                                        println!("Failed to issue command for {} ERR: {}", raw, e);
+                                        log::error!(
+                                            "Failed to issue command for {} ERR: {}",
+                                            raw,
+                                            e
+                                        );
                                     }
                                     Err(e) => {
-                                        println!("Failed to issue command for {} ERR: {}", raw, e);
+                                        log::error!(
+                                            "Failed to issue command for {} ERR: {}",
+                                            raw,
+                                            e
+                                        );
                                     }
                                 }
                                 if let Err(e) = p
@@ -564,14 +564,14 @@ impl EventHandler for Handler {
                                     )
                                     .await
                                 {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             }
-                            println!("{}", _c);
+                            log::trace!("{}", _c);
                         } else {
                             if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Why did you leave? I was just about to change the volume!").ephemeral(true))).await {
-                                eprintln!("Failed to send response: {}", e);
+                                log::error!("Failed to send response: {}", e);
                             }
                             return;
                         }
@@ -587,16 +587,16 @@ impl EventHandler for Handler {
                         Some(ActionRowComponent::InputText(bitrate)) => match bitrate.value {
                             Some(ref v) => v,
                             None => {
-                                eprintln!("No value in bitrate modal");
+                                log::error!("No value in bitrate modal");
                                 return;
                             }
                         },
                         Some(_) => {
-                            eprintln!("Invalid components in bitrate modal");
+                            log::error!("Invalid components in bitrate modal");
                             return;
                         }
                         None => {
-                            eprintln!("No components in bitrate modal");
+                            log::error!("No components in bitrate modal");
                             return;
                         }
                     };
@@ -607,7 +607,7 @@ impl EventHandler for Handler {
                             let val = match val.parse::<i64>() {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    println!("Failed to parse bitrate: {}", e);
+                                    log::info!("Failed to parse bitrate: {}", e);
                                     if let Err(e) = p
                                         .create_response(
                                             &ctx.http,
@@ -622,7 +622,7 @@ impl EventHandler for Handler {
                                         )
                                         .await
                                     {
-                                        eprintln!("Failed to send response: {}", e);
+                                        log::error!("Failed to send response: {}", e);
                                     }
                                     return;
                                 }
@@ -639,7 +639,7 @@ impl EventHandler for Handler {
                                     )
                                     .await
                                 {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             }
@@ -660,7 +660,7 @@ impl EventHandler for Handler {
                                 )
                                 .await
                             {
-                                eprintln!("Failed to send response: {}", e);
+                                log::error!("Failed to send response: {}", e);
                                 return;
                             }
                             return;
@@ -686,7 +686,7 @@ impl EventHandler for Handler {
                                 if let Err(e) = tx.send((rtx, AudioPromiseCommand::SetBitrate(val)))
                                 {
                                     if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for bitrate ERR {}", e)).ephemeral(true))).await {
-                                        eprintln!("Failed to send response: {}", e);
+                                        log::error!("Failed to send response: {}", e);
                                     }
                                     return;
                                 }
@@ -698,22 +698,25 @@ impl EventHandler for Handler {
                                         if let Err(e) = p
                                             .create_response(
                                                 &ctx.http,
-                                                CreateInteractionResponse::Defer(
-                                                    CreateInteractionResponseMessage::new()
-                                                        .ephemeral(true),
-                                                ),
+                                                CreateInteractionResponse::Acknowledge,
                                             )
                                             .await
                                         {
-                                            eprintln!("Failed to send response: {}", e);
+                                            log::error!("Failed to send response: {}", e);
                                         }
                                         return;
                                     }
                                     Ok(Err(e)) => {
-                                        println!("Failed to issue command for bitrate ERR: {}", e);
+                                        log::error!(
+                                            "Failed to issue command for bitrate ERR: {}",
+                                            e
+                                        );
                                     }
                                     Err(e) => {
-                                        println!("Failed to issue command for bitrate ERR: {}", e);
+                                        log::error!(
+                                            "Failed to issue command for bitrate ERR: {}",
+                                            e
+                                        );
                                     }
                                 }
                                 if let Err(e) = p
@@ -727,14 +730,14 @@ impl EventHandler for Handler {
                                     )
                                     .await
                                 {
-                                    eprintln!("Failed to send response: {}", e);
+                                    log::error!("Failed to send response: {}", e);
                                 }
                                 return;
                             }
-                            println!("{}", _c);
+                            log::trace!("{}", _c);
                         } else {
                             if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Why did you leave? I was just about to change the bitrate!").ephemeral(true))).await {
-                                eprintln!("Failed to send response: {}", e);
+                                log::error!("Failed to send response: {}", e);
                             }
                             return;
                         }
@@ -742,28 +745,23 @@ impl EventHandler for Handler {
                 }
                 "log" => {
                     if let Err(e) = p
-                        .create_response(
-                            &ctx.http,
-                            CreateInteractionResponse::Defer(
-                                CreateInteractionResponseMessage::new(),
-                            ),
-                        )
+                        .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
                         .await
                     {
-                        eprintln!("Failed to send response: {}", e);
+                        log::error!("Failed to send response: {}", e);
                     }
                 }
                 _ => {
-                    println!("You missed one, idiot: {:?}", p);
+                    log::error!("Unknown modal: {}", p.data.custom_id);
                 }
             },
             _ => {
-                println!("FUCK YOU");
+                log::info!("Unhandled interaction: {:?}", interaction);
             }
         }
     }
     async fn ready(&self, ctx: Context, ready: Ready) {
-        println!("{} is connected!", ready.user.name);
+        log::info!("Refreshing users");
         let mut users = Vec::new();
         let voicedata = ctx
             .data
@@ -776,10 +774,11 @@ impl EventHandler for Handler {
         for guild in ready.guilds {
             match ctx.http.get_guild(guild.id).await {
                 Ok(guild) => {
+                    log::info!("Getting members for guild: {} ({})", guild.name, guild.id);
                     for member in match guild.members(&ctx.http, None, None).await {
                         Ok(members) => members,
                         Err(e) => {
-                            println!("Error getting members: {e}");
+                            log::error!("Error getting members: {e}");
                             Vec::new()
                         }
                     } {
@@ -789,11 +788,11 @@ impl EventHandler for Handler {
                         }
                     }
                     if let Err(e) = voicedata.refresh_guild(&ctx, guild.id).await {
-                        println!("Failed to refresh voice states for guild: {}", e);
+                        log::error!("Failed to refresh guild: {}", e);
                     }
                 }
                 Err(e) => {
-                    println!("Error getting guild: {e}");
+                    log::error!("Error getting guild: {e}");
                 }
             }
         }
@@ -802,15 +801,15 @@ impl EventHandler for Handler {
         for id in users {
             finalusers.push(UserSafe { id });
         }
-        let mut req = WEB_CLIENT
-            .post("http://localhost:16834/api/set/user")
-            .json(&finalusers);
-        if let Some(token) = Config::get().string_api_token {
-            req = req.bearer_auth(token);
-        }
-        if let Err(e) = req.send().await {
-            println!("Failed to send users to api {e}. Users might be out of date");
-        }
+        // let mut req = WEB_CLIENT
+        //     .post("http://localhost:16834/api/set/user")
+        //     .json(&finalusers);
+        // if let Some(token) = Config::get().string_api_token {
+        //     req = req.bearer_auth(token);
+        // }
+        // if let Err(e) = req.send().await {
+        //     log::error!("Failed to send users to api {e}. Users might be out of date");
+        // }
         let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
             .json(&finalusers);
@@ -818,20 +817,24 @@ impl EventHandler for Handler {
             req = req.bearer_auth(token);
         }
         if let Err(e) = req.send().await {
-            println!("Failed to send users to api {e}. Users might be out of date");
+            log::error!("Failed to send users to api {e}. Users might be out of date");
         }
-        println!("Registering commands");
+        log::info!("Registering commands");
         if let Err(e) = Command::set_global_commands(
             &ctx.http,
             self.commands
                 .iter()
-                .map(|command| command.register())
+                .map(|command| {
+                    log::info!("Registering command: {}", command.name());
+                    command.register()
+                })
                 .collect(),
         )
         .await
         {
-            eprintln!("Failed to register commands: {}", e);
+            log::error!("Failed to register commands: {}", e);
         }
+        log::info!("Connected as {}", ready.user.name);
     }
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
         let data = {
@@ -867,7 +870,7 @@ impl EventHandler for Handler {
         if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
             let (rtx, rrx) = oneshot::channel::<String>();
             if let Err(e) = tx.send((rtx, AudioPromiseCommand::Stop(None))) {
-                eprintln!("Failed to send stop command: {}", e);
+                log::error!("Failed to send stop command: {}", e);
             };
             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rrx).await;
             match timeout {
@@ -875,10 +878,10 @@ impl EventHandler for Handler {
                     return;
                 }
                 Ok(Err(e)) => {
-                    println!("Failed to issue command for stop ERR: {}", e);
+                    log::error!("Failed to issue command for stop ERR: {}", e);
                 }
                 Err(e) => {
-                    println!("Failed to issue command for stop ERR: {}", e);
+                    log::error!("Failed to issue command for stop ERR: {}", e);
                 }
             }
         }
@@ -916,7 +919,7 @@ impl EventHandler for Handler {
         for guild in match ctx.http.get_guilds(None, None).await {
             Ok(guilds) => guilds,
             Err(e) => {
-                println!("Error getting guilds: {e}");
+                log::error!("Error getting guilds: {e}");
                 return;
             }
         } {
@@ -925,7 +928,7 @@ impl EventHandler for Handler {
                     for member in match guild.members(&ctx.http, None, None).await {
                         Ok(members) => members,
                         Err(e) => {
-                            println!("Error getting members: {e}");
+                            log::error!("Error getting members: {e}");
                             continue;
                         }
                     } {
@@ -936,7 +939,7 @@ impl EventHandler for Handler {
                     }
                 }
                 Err(e) => {
-                    println!("Error getting guild: {e}");
+                    log::error!("Error getting guild: {e}");
                 }
             }
         }
@@ -944,15 +947,15 @@ impl EventHandler for Handler {
         for id in users {
             finalusers.push(UserSafe { id });
         }
-        let mut req = WEB_CLIENT
-            .post("http://localhost:16834/api/set/user")
-            .json(&finalusers);
-        if let Some(token) = Config::get().string_api_token {
-            req = req.bearer_auth(token);
-        }
-        if let Err(e) = req.send().await {
-            println!("Failed to send users to api {e}. Users might be out of date");
-        }
+        // let mut req = WEB_CLIENT
+        //     .post("http://localhost:16834/api/set/user")
+        //     .json(&finalusers);
+        // if let Some(token) = Config::get().string_api_token {
+        //     req = req.bearer_auth(token);
+        // }
+        // if let Err(e) = req.send().await {
+        //     log::error!("Failed to send users to api {e}. Users might be out of date");
+        // }
         let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
             .json(&finalusers);
@@ -960,20 +963,20 @@ impl EventHandler for Handler {
             req = req.bearer_auth(token);
         }
         if let Err(e) = req.send().await {
-            println!("Failed to send users to api {e}. Users might be out of date");
+            log::error!("Failed to send users to api {e}. Users might be out of date");
         }
     }
     async fn guild_member_addition(&self, _ctx: Context, new_member: Member) {
         let id = new_member.user.id.get().to_string();
-        let mut req = WEB_CLIENT
-            .post("http://localhost:16834/api/add/user")
-            .json(&UserSafe { id: id.clone() });
-        if let Some(token) = Config::get().string_api_token {
-            req = req.bearer_auth(token);
-        }
-        if let Err(e) = req.send().await {
-            println!("Failed to add user to api {e}. Users might be out of date");
-        }
+        // let mut req = WEB_CLIENT
+        //     .post("http://localhost:16834/api/add/user")
+        //     .json(&UserSafe { id: id.clone() });
+        // if let Some(token) = Config::get().string_api_token {
+        //     req = req.bearer_auth(token);
+        // }
+        // if let Err(e) = req.send().await {
+        //     log::error!("Failed to add user to api {e}. Users might be out of date");
+        // }
         let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/add/user")
             .json(&UserSafe { id });
@@ -981,7 +984,7 @@ impl EventHandler for Handler {
             req = req.bearer_auth(token);
         }
         if let Err(e) = req.send().await {
-            println!("Failed to add user to api {e}. Users might be out of date");
+            log::error!("Failed to add user to api {e}. Users might be out of date");
         }
     }
     async fn guild_member_removal(
@@ -992,15 +995,15 @@ impl EventHandler for Handler {
         _member_data_if_available: Option<Member>,
     ) {
         let id = user.id.get().to_string();
-        let mut req = WEB_CLIENT
-            .post("http://localhost:16834/api/remove/user")
-            .json(&UserSafe { id: id.clone() });
-        if let Some(token) = Config::get().string_api_token {
-            req = req.bearer_auth(token);
-        }
-        if let Err(e) = req.send().await {
-            println!("Failed to remove user from api {e}. Users might be out of date");
-        }
+        // let mut req = WEB_CLIENT
+        //     .post("http://localhost:16834/api/remove/user")
+        //     .json(&UserSafe { id: id.clone() });
+        // if let Some(token) = Config::get().string_api_token {
+        //     req = req.bearer_auth(token);
+        // }
+        // if let Err(e) = req.send().await {
+        //     log::error!("Failed to remove user from api {e}. Users might be out of date");
+        // }
         let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/remove/user")
             .json(&UserSafe { id });
@@ -1008,7 +1011,7 @@ impl EventHandler for Handler {
             req = req.bearer_auth(token);
         }
         if let Err(e) = req.send().await {
-            println!("Failed to remove user from api {e}. Users might be out of date");
+            log::error!("Failed to remove user from api {e}. Users might be out of date");
         }
     }
 }
@@ -1019,12 +1022,12 @@ struct Timed<T> {
 }
 #[tokio::main]
 async fn main() {
+    env_logger::init();
     let cfg = Config::get();
     let mut tmp = cfg.data_path.clone();
     tmp.push("tmp");
-    let r = std::fs::remove_dir_all(&tmp);
-    if r.is_err() {
-        println!("Failed to remove tmp folder");
+    if let Err(e) = std::fs::remove_dir_all(&tmp) {
+        log::error!("Failed to remove tmp folder: {:?}", e);
     }
     std::fs::create_dir_all(&tmp).expect("Failed to create tmp folder");
     let token = cfg.token;
@@ -1084,48 +1087,48 @@ async fn main() {
     let exit_code;
     tokio::select! {
         _ = tick.tick() => {
-            println!("Exit code 3 {}", chrono::Local::now());
+            log::info!("Exit code 3 {}", chrono::Local::now());
 
             exit_code = 3;
         }
         Err(why) = client.start() => {
-            println!("Client error: {:?}", why);
-            println!("Exit code 1 {}", chrono::Local::now());
+            log::error!("Client error: {:?}", why);
+            log::info!("Exit code 1 {}", chrono::Local::now());
 
             exit_code = 1;
         }
         _ = tokio::signal::ctrl_c() => {
-            println!("Exit code 2 {}", chrono::Local::now());
+            log::info!("Exit code 2 {}", chrono::Local::now());
 
             exit_code = 2;
         }
     }
-    println!("Getting write lock on data");
+    log::info!("Getting write lock on data");
     let dw = client.data.write().await;
-    println!("Got write lock on data");
+    log::info!("Got write lock on data");
     if let Some(v) = dw.get::<commands::music::AudioCommandHandler>().take() {
         for (i, x) in v.lock().await.values().enumerate() {
-            println!("Sending stop command {}", i);
+            log::info!("Sending stop command {}", i);
             let (tx, rx) = oneshot::channel::<String>();
             if let Err(e) = x.send((tx, commands::music::AudioPromiseCommand::Stop(None))) {
-                println!("Failed to send stop command: {}", e);
+                log::error!("Failed to send stop command: {}", e);
             };
             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rx);
             if let Ok(Ok(msg)) = timeout.await {
-                println!("Stopped playing: {}", msg);
+                log::info!("Stopped playing: {}", msg);
             } else {
-                println!("Failed to stop playing");
+                log::error!("Failed to stop playing");
             }
         }
     }
     if let Some(v) = dw.get::<commands::music::AudioHandler>().take() {
         for (i, x) in v.lock().await.values_mut().enumerate() {
-            println!("Joining handle {}", i);
+            log::info!("Joining handle {}", i);
             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), x);
             if let Ok(Ok(())) = timeout.await {
-                println!("Joined handle");
+                log::info!("Joined handle");
             } else {
-                println!("Failed to join handle");
+                log::error!("Failed to join handle");
             }
         }
     }
@@ -1181,9 +1184,11 @@ impl Config {
     }
     fn onboarding(config_path: &PathBuf, recovered_config: Option<RecoverConfig>) {
         let config = if let Some(rec) = recovered_config {
-            println!("Welcome back to my shitty Rust Music Bot!");
-            println!("It appears that you have run the bot before, but the config got biffed up.");
-            println!("I will take you through a short onboarding process to get you back up and running.");
+            log::error!("Welcome back to my shitty Rust Music Bot!");
+            log::error!(
+                "It appears that you have run the bot before, but the config got biffed up."
+            );
+            log::error!("I will take you through a short onboarding process to get you back up and running.");
             let app_name = if let Some(app_name) = rec.app_name {
                 app_name
             } else {
@@ -1292,9 +1297,9 @@ impl Config {
                 },
             }
         } else {
-            println!("Welcome to my shitty Rust Music Bot!");
-            println!("It appears that this may be the first time you are running the bot.");
-            println!("I will take you through a short onboarding process to get you started.");
+            log::error!("Welcome to my shitty Rust Music Bot!");
+            log::error!("It appears that this may be the first time you are running the bot.");
+            log::error!("I will take you through a short onboarding process to get you started.");
             let app_name: String = Self::safe_read("\nPlease enter your application name:");
             let mut data_path = config_path
                 .parent()
@@ -1333,11 +1338,11 @@ impl Config {
                 .unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path)),
         )
         .expect("Failed to write config.json");
-        println!("Config written to {:?}", config_path);
+        log::info!("Config written to {:?}", config_path);
     }
     fn safe_read<T: std::str::FromStr>(prompt: &str) -> T {
         loop {
-            println!("{}", prompt);
+            log::error!("{}", prompt);
             let mut input = String::new();
             std::io::stdin()
                 .read_line(&mut input)
@@ -1345,7 +1350,7 @@ impl Config {
             let input = input.trim();
             match input.parse::<T>() {
                 Ok(input) => return input,
-                Err(_) => println!("Invalid input"),
+                Err(_) => log::error!("Invalid input"),
             }
         }
     }
@@ -1359,7 +1364,7 @@ impl Config {
             if let Ok(x) = x {
                 x
             } else {
-                println!("Failed to parse config.json, Attempting recovery");
+                log::error!("Failed to parse config.json, Attempting recovery");
                 let recovered = serde_json::from_str(&config);
                 if let Ok(recovered) = recovered {
                     Self::onboarding(&path, Some(recovered));
@@ -1369,7 +1374,7 @@ impl Config {
                 Self::get()
             }
         } else {
-            println!("Failed to read config.json");
+            log::error!("Failed to read config.json");
             Self::onboarding(&path, None);
             Self::get_from_path(path)
         }

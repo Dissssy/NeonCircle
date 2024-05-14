@@ -16,6 +16,7 @@ impl crate::CommandTrait for Add {
                 "search",
                 "Search youtube or provide a url (non youtube works as well)",
             )
+            .set_autocomplete(true)
             .required(true)])
     }
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
@@ -28,7 +29,7 @@ impl crate::CommandTrait for Add {
             )
             .await
         {
-            println!("Failed to create interaction response: {:?}", e);
+            log::error!("Failed to create interaction response: {:?}", e);
         }
         let guild_id = match interaction.guild_id {
             Some(id) => id,
@@ -41,7 +42,7 @@ impl crate::CommandTrait for Add {
                     )
                     .await
                 {
-                    println!("Failed to edit original interaction response: {:?}", e);
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
                 return;
             }
@@ -60,7 +61,7 @@ impl crate::CommandTrait for Add {
                     )
                     .await
                 {
-                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
                 return;
             }
@@ -84,7 +85,7 @@ impl crate::CommandTrait for Add {
                         )
                         .await
                     {
-                        println!("Failed to edit original interaction response: {:?}", e);
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
@@ -97,7 +98,7 @@ impl crate::CommandTrait for Add {
                         )
                         .await
                     {
-                        println!("Failed to edit original interaction response: {:?}", e);
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
@@ -135,7 +136,7 @@ impl crate::CommandTrait for Add {
                                 {
                                     Ok(msg) => msg,
                                     Err(e) => {
-                                        println!("Failed to send message: {:?}", e);
+                                        log::error!("Failed to send message: {:?}", e);
                                         if let Err(e) = interaction
                                             .edit_response(
                                                 &ctx.http,
@@ -144,7 +145,7 @@ impl crate::CommandTrait for Add {
                                             )
                                             .await
                                         {
-                                            println!("Failed to edit original interaction response: {:?}", e);
+                                            log::error!("Failed to edit original interaction response: {:?}", e);
                                         }
                                         return;
                                     }
@@ -189,7 +190,7 @@ impl crate::CommandTrait for Add {
                                 }
                                 .clone();
                                 if let Err(e) = em.lock().await.register(channel).await {
-                                    println!("Error registering channel: {:?}", e);
+                                    log::error!("Error registering channel: {:?}", e);
                                 }
                                 let http = Arc::clone(&ctx.http);
                                 let handle = {
@@ -218,12 +219,9 @@ impl crate::CommandTrait for Add {
                                 };
                                 let mut audio_command_handler = audio_command_handler.lock().await;
                                 audio_command_handler.insert(guild_id.to_string(), tx);
-                                if let Err(e) = interaction.delete_response(&ctx.http).await {
-                                    println!("Error deleting interaction: {:?}", e);
-                                }
                             }
                             Err(e) => {
-                                println!("Failed to join channel: {:?}", e);
+                                log::error!("Failed to join channel: {:?}", e);
                                 if let Err(e) = interaction
                                     .edit_response(
                                         &ctx.http,
@@ -232,7 +230,7 @@ impl crate::CommandTrait for Add {
                                     )
                                     .await
                                 {
-                                    println!(
+                                    log::error!(
                                         "Failed to edit original interaction response: {:?}",
                                         e
                                     );
@@ -261,7 +259,7 @@ impl crate::CommandTrait for Add {
                         {
                             Ok(t) => t,
                             Err(e) => {
-                                eprintln!("Error: {:?}", e);
+                                log::error!("Error: {:?}", e);
                                 return;
                             }
                         }
@@ -276,7 +274,7 @@ impl crate::CommandTrait for Add {
                             {
                                 Ok(t) => t,
                                 Err(e) => {
-                                    eprintln!("Error: {:?}", e);
+                                    log::error!("Error: {:?}", e);
                                     return;
                                 }
                             }
@@ -298,7 +296,7 @@ impl crate::CommandTrait for Add {
                         )
                         .await
                     {
-                        println!("Failed to edit original interaction response: {:?}", e);
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
@@ -315,7 +313,7 @@ impl crate::CommandTrait for Add {
                         };
                         #[cfg(feature = "tts")]
                         if let Ok(key) = key.as_ref() {
-                            println!("Getting tts for {}", title);
+                            log::trace!("Getting tts for {}", title);
                             truevideos.push(MetaVideo {
                                 video: v,
                                 ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(
@@ -366,7 +364,10 @@ impl crate::CommandTrait for Add {
                                 )
                                 .await
                             {
-                                println!("Failed to edit original interaction response: {:?}", e);
+                                log::error!(
+                                    "Failed to edit original interaction response: {:?}",
+                                    e
+                                );
                             }
                         }
                         let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
@@ -378,7 +379,10 @@ impl crate::CommandTrait for Add {
                                 )
                                 .await
                             {
-                                println!("Failed to edit original interaction response: {:?}", e);
+                                log::error!(
+                                    "Failed to edit original interaction response: {:?}",
+                                    e
+                                );
                             }
                         } else if let Err(e) = interaction
                             .edit_response(
@@ -388,7 +392,7 @@ impl crate::CommandTrait for Add {
                             )
                             .await
                         {
-                            println!("Failed to edit original interaction response: {:?}", e);
+                            log::error!("Failed to edit original interaction response: {:?}", e);
                         }
                     } else {
                         audio_command_handler.remove(&guild_id.to_string());
@@ -402,7 +406,7 @@ impl crate::CommandTrait for Add {
                         )
                         .await
                     {
-                        println!("Failed to edit original interaction response: {:?}", e);
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
@@ -414,90 +418,82 @@ impl crate::CommandTrait for Add {
             )
             .await
         {
-            println!("Failed to edit original interaction response: {:?}", e);
+            log::error!("Failed to edit original interaction response: {:?}", e);
         }
     }
     fn name(&self) -> &str {
-        "play"
+        "add"
     }
     #[allow(unused)]
     async fn autocomplete(&self, ctx: &Context, auto: &CommandInteraction) -> Result<(), Error> {
-        // gonna have to fix this...
-        println!("{:?}", auto);
-        // for op in auto.data.options.clone() {
-        //     if op.focused && op.name == "url" {
-        //         #[cfg(feature = "youtube-search")]
-        //         {
-        //             let v = match op.value.as_ref().and_then(|v| v.as_str()) {
-        //                 Some(v) => v,
-        //                 None => {
-        //                     continue;
-        //                 }
-        //             };
-        //             if v.starts_with("http://") || v.starts_with("https://") {
-        //                 let video = crate::video::Video::get_video(v, false, true).await?;
-        //                 if let Some(vid) = video.first() {
-        //                     auto.create_autocomplete_response(&ctx.http, |c| {
-        //                         c.add_string_choice(vid.get_title(), v)
-        //                     })
-        //                     .await?;
-        //                 } else {
-        //                     auto.create_autocomplete_response(&ctx.http,
-        // |c| c.add_string_choice("Could not retrieve title, select this option to use url anyways.", v)).await?;
-        //                 }
-        //             } else {
-        //                 let query = crate::youtube::youtube_search(
-        //                     v,
-        //                     crate::Config::get().autocomplete_limit,
-        //                 )
-        //                 .await;
-        //                 if let Ok(query) = query {
-        //                     if query.is_empty() {
-        //                         auto.create_autocomplete_response(&ctx.http, |c| {
-        //                             c.add_string_choice("Invalid url", "")
-        //                         })
-        //                         .await?;
-        //                     } else {
-        //                         auto.create_autocomplete_response(&ctx.http, |c| {
-        //                             let mut c = c;
-        //                             for (i, q) in query.iter().enumerate() {
-        //                                 if i > 25 {
-        //                                     break;
-        //                                 }
-        //                                 c = c.add_string_choice(
-        //                                     format!(
-        //                                         "{} {}{}",
-        //                                         if q.duration.is_some() { "🎵" } else { "📼" },
-        //                                         q.title,
-        //                                         match q.uploader.as_ref() {
-        //                                             Some(u) => format!(" - {}", u),
-        //                                             None => "".to_string(),
-        //                                         }
-        //                                     ),
-        //                                     q.url.clone(),
-        //                                 );
-        //                             }
-        //                             c
-        //                         })
-        //                         .await?;
-        //                     }
-        //                 } else {
-        //                     auto.create_autocomplete_response(&ctx.http, |c| {
-        //                         c.add_string_choice("Invalid url", "")
-        //                     })
-        //                     .await?;
-        //                 }
-        //             }
-        //         }
-        //         #[cfg(not(feature = "youtube-search"))]
-        //         {
-        //             auto.create_autocomplete_response(&ctx.http, |c| {
-        //                 c.add_string_choice("Live search functionality not enabled.", "")
-        //             })
-        //             .await?;
-        //         }
-        //     }
-        // }
+        let options = auto.data.options();
+        let initial_query = match options.iter().find_map(|o| match o.name {
+            "search" => Some(o.value.clone()),
+            _ => None,
+        }) {
+            Some(ResolvedValue::Autocomplete { value, .. }) => value,
+            _ => {
+                return Ok(());
+            }
+        };
+        #[cfg(feature = "youtube-search")]
+        {
+            let mut completions = CreateAutocompleteResponse::default();
+            if initial_query.starts_with("http://") || initial_query.starts_with("https://") {
+                let video = crate::video::Video::get_video(initial_query, false, true).await?;
+                if let Some(vid) = video.first() {
+                    completions = completions.add_string_choice(vid.get_title(), initial_query);
+                } else {
+                    completions = completions.add_string_choice(
+                        "Could not retrieve title. Is the URL valid?",
+                        initial_query,
+                    );
+                }
+            } else {
+                let query = crate::youtube::youtube_search(
+                    initial_query,
+                    crate::Config::get().autocomplete_limit,
+                )
+                .await;
+                if let Ok(query) = query {
+                    if query.is_empty() {
+                        completions =
+                            completions.add_string_choice("No results found", initial_query);
+                    } else {
+                        for (i, q) in query.iter().enumerate() {
+                            if i > 25 {
+                                break;
+                            }
+                            let mut title = format!(
+                                "{} {}{}",
+                                if q.duration.is_some() { "🎵" } else { "📼" },
+                                match q.uploader.as_ref() {
+                                    Some(u) => format!("{} - ", u),
+                                    None => "".to_string(),
+                                },
+                                q.title,
+                            );
+                            if title.len() > 100 {
+                                title = title[..97].to_string() + "...";
+                            }
+                            completions = completions.add_string_choice(title, q.url.clone());
+                        }
+                    }
+                } else {
+                    completions =
+                        completions.add_string_choice("Error fetching results", initial_query);
+                }
+            }
+            if let Err(e) = auto
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(completions),
+                )
+                .await
+            {
+                log::error!("Failed to create interaction response: {:?}", e);
+            }
+        }
         Ok(())
     }
 }

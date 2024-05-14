@@ -161,7 +161,7 @@ impl VoiceAction {
                     )
                     .await
                 {
-                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
             }
             Self::InDifferent(_channel) => {
@@ -172,7 +172,7 @@ impl VoiceAction {
                     )
                     .await
                 {
-                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
             }
             Self::Join(_channel) => {
@@ -185,7 +185,7 @@ impl VoiceAction {
                     )
                     .await
                 {
-                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
             }
             Self::InSame(_channel) => {
@@ -208,7 +208,7 @@ impl VoiceAction {
                             )
                             .await
                         {
-                            eprintln!("Failed to edit original interaction response: {:?}", e);
+                            log::error!("Failed to edit original interaction response: {:?}", e);
                         }
                         return;
                     }
@@ -218,7 +218,7 @@ impl VoiceAction {
                             .edit_response(&ctx.http, EditInteractionResponse::new().content(msg))
                             .await
                         {
-                            eprintln!("Failed to edit original interaction response: {:?}", e);
+                            log::error!("Failed to edit original interaction response: {:?}", e);
                         }
                     } else if let Err(e) = interaction
                         .edit_response(
@@ -227,7 +227,7 @@ impl VoiceAction {
                         )
                         .await
                     {
-                        eprintln!("Failed to edit original interaction response: {:?}", e);
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                 } else if let Err(e) = interaction
                     .edit_response(
@@ -237,7 +237,7 @@ impl VoiceAction {
                     )
                     .await
                 {
-                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
             }
         }
@@ -624,7 +624,7 @@ impl MessageReference {
             if self.resend_next_time {
                 self.resend_next_time = false;
                 if let Err(e) = self.delete().await {
-                    println!("Error deleting message: {:?}", e);
+                    log::error!("Error deleting message: {:?}", e);
                 }
                 self.send_new().await?;
             } else if let Err(e) = message
@@ -639,7 +639,7 @@ impl MessageReference {
                 })
                 .await
             {
-                println!("Error editing message: {:?}", e);
+                log::error!("Error editing message: {:?}", e);
                 self.send_new().await?;
             };
             self.last_edit = Instant::now();

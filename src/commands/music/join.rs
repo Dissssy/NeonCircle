@@ -20,7 +20,7 @@ impl crate::CommandTrait for Join {
             )
             .await
         {
-            println!("Failed to create interaction response: {:?}", e);
+            log::error!("Failed to create interaction response: {:?}", e);
         }
         let guild_id = match interaction.guild_id {
             Some(id) => id,
@@ -33,7 +33,7 @@ impl crate::CommandTrait for Join {
                     )
                     .await
                 {
-                    println!("Failed to edit original interaction response: {:?}", e);
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
                 return;
             }
@@ -57,7 +57,7 @@ impl crate::CommandTrait for Join {
                         )
                         .await
                     {
-                        println!("Failed to edit original interaction response: {:?}", e);
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
@@ -70,13 +70,13 @@ impl crate::CommandTrait for Join {
                         )
                         .await
                     {
-                        println!("Failed to edit original interaction response: {:?}", e);
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
                 super::VoiceAction::InSame(_channel) => {
                     if let Err(e) = interaction.edit_response(&ctx.http, EditInteractionResponse::new().content("I'm already in the same voice channel as you, what do you want from me?")).await {
-                        println!("Failed to edit original interaction response: {:?}", e);
+                        log::error!("Failed to edit original interaction response: {:?}", e);
                     }
                     return;
                 }
@@ -113,7 +113,7 @@ impl crate::CommandTrait for Join {
                                 {
                                     Ok(msg) => msg,
                                     Err(e) => {
-                                        println!("Failed to send message: {:?}", e);
+                                        log::error!("Failed to send message: {:?}", e);
                                         if let Err(e) = interaction
                                             .edit_response(
                                                 &ctx.http,
@@ -122,7 +122,7 @@ impl crate::CommandTrait for Join {
                                             )
                                             .await
                                         {
-                                            println!("Failed to edit original interaction response: {:?}", e);
+                                            log::error!("Failed to edit original interaction response: {:?}", e);
                                         }
                                         return;
                                     }
@@ -167,7 +167,7 @@ impl crate::CommandTrait for Join {
                                 }
                                 .clone();
                                 if let Err(e) = em.lock().await.register(channel).await {
-                                    println!("Error registering channel: {:?}", e);
+                                    log::error!("Error registering channel: {:?}", e);
                                 }
                                 let http = Arc::clone(&ctx.http);
                                 let handle = {
@@ -197,11 +197,11 @@ impl crate::CommandTrait for Join {
                                 let mut audio_command_handler = audio_command_handler.lock().await;
                                 audio_command_handler.insert(guild_id.to_string(), tx);
                                 if let Err(e) = interaction.delete_response(&ctx.http).await {
-                                    println!("Error deleting interaction: {:?}", e);
+                                    log::error!("Error deleting interaction: {:?}", e);
                                 }
                             }
                             Err(e) => {
-                                println!("Failed to join channel: {:?}", e);
+                                log::error!("Failed to join channel: {:?}", e);
                                 if let Err(e) = interaction
                                     .edit_response(
                                         &ctx.http,
@@ -210,7 +210,7 @@ impl crate::CommandTrait for Join {
                                     )
                                     .await
                                 {
-                                    println!(
+                                    log::error!(
                                         "Failed to edit original interaction response: {:?}",
                                         e
                                     );
@@ -227,7 +227,7 @@ impl crate::CommandTrait for Join {
             )
             .await
         {
-            println!("Failed to edit original interaction response: {:?}", e);
+            log::error!("Failed to edit original interaction response: {:?}", e);
         }
     }
     fn name(&self) -> &str {

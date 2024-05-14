@@ -49,7 +49,7 @@ impl songbird::EventHandler for VoiceEventSender {
             }
 
             e => {
-                println!("unhandled type: {}", get_name(e));
+                log::error!("unhandled type: {}", get_name(e));
             }
         }
         None
@@ -147,7 +147,7 @@ impl VoiceDataManager {
                             user.bot
                         }
                         Err(e) => {
-                            eprintln!("Error getting user: {:?}", e);
+                            log::error!("Error getting user: {:?}", e);
                             true
                         }
                     }
@@ -228,19 +228,19 @@ pub async fn transcription_thread(
                                     );
                                 }
                                 Ok(Ok(RequestResponse::Error { error })) => {
-                                    eprintln!("Issue with audio: {}", error);
+                                    log::error!("Issue with audio: {}", error);
                                 }
                                 Ok(Err(e)) => {
-                                    eprintln!("Error deserializing response: {:?}", e);
+                                    log::error!("Error deserializing response: {:?}", e);
                                 }
                                 Err(e) => {
-                                    eprintln!("Error getting id from transcription service: {:?}", e);
+                                    log::error!("Error getting id from transcription service: {:?}", e);
                                     break;
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("Error sending audio to transcription service: {:?}", e);
+                            log::error!("Error sending audio to transcription service: {:?}", e);
                             break;
                         }
                     }
@@ -253,12 +253,12 @@ pub async fn transcription_thread(
                 match response {
                     Ok(string) => {
                         if let Err(e) = recvtext.send((string, transcribe.http.get_current_user().await.expect("Current user is none?").id)) {
-                            eprintln!("Error sending text: {:?}", e);
+                            log::error!("Error sending text: {:?}", e);
                             break;
                         }
                     }
                     Err(e) => {
-                        eprintln!("Error getting response: {:?}", e);
+                        log::error!("Error getting response: {:?}", e);
                     }
                 }
             }
@@ -276,21 +276,21 @@ pub async fn transcription_thread(
                     Ok((Ok(TranscriptionResponse::Pending { status }), _))  => {
                         match status {
                             PendingStatus::Pending { position } => {
-                                println!("Transcription is pending, position: {}", position);
+                                log::info!("Transcription is pending, position: {}", position);
                             }
                             PendingStatus::InProgress => {
-                                println!("Transcription is in progress");
+                                log::info!("Transcription is in progress");
                             }
                         }
                     }
                     Ok((Ok(TranscriptionResponse::Error { error }), _)) => {
-                        eprintln!("Error getting transcription result: {}", error);
+                        log::error!("Error getting transcription result: {}", error);
                     }
                     Ok((Err(e), _)) => {
-                        eprintln!("Error deserializing transcription response: {:?}", e);
+                        log::error!("Error deserializing transcription response: {:?}", e);
                     }
                     Err(e) => {
-                        eprintln!("Error getting transcription result: {:?}", e);
+                        log::error!("Error getting transcription result: {:?}", e);
                     }
                 }
             }
@@ -300,7 +300,7 @@ pub async fn transcription_thread(
                 let (result, user, WithFeedback { command, feedback }) = match result {
                     Ok((result, user, with_feedback)) => (result, user, with_feedback),
                     Err(e) => {
-                        eprintln!("Error parsing command: {:?}", e);
+                        log::error!("Error parsing command: {:?}", e);
                         continue;
                     }
                 };
@@ -311,7 +311,7 @@ pub async fn transcription_thread(
                     let handle = call.play_input(feedback.to_songbird());
                     let _ = handle.set_volume(0.8);
                     if let Err(e) = feedback.delete_when_finished(handle).await {
-                        eprintln!("Error deleting feedback: {:?}", e);
+                        log::error!("Error deleting feedback: {:?}", e);
                     }
                 }
 
@@ -326,7 +326,7 @@ pub async fn transcription_thread(
                             "bye.", "thank you."
                         ].contains(&result.to_lowercase().as_str()) {
                             if let Err(e) = recvtext.send((result, user)) {
-                                eprintln!("Error sending text: {:?}", e);
+                                log::error!("Error sending text: {:?}", e);
                                 break;
                             }
                         }
@@ -335,7 +335,7 @@ pub async fn transcription_thread(
                         match command {
                             Command::NoConsent => {
                                 if let Err(e) = recvtext.send((format!("{} opted out.", user.mention()), transcribe.http.get_current_user().await.expect("Current user is none?").id)) {
-                                    eprintln!("Error sending text: {:?}", e);
+                                    log::error!("Error sending text: {:?}", e);
                                     break;
                                 }
                                 transcribe.disabled_for.insert(user, true);
@@ -345,7 +345,7 @@ pub async fn transcription_thread(
                     Ok(ParsedCommand::Command(command)) => {
                         let (tx, rx) = oneshot::channel();
                         if let Err(e) = transcribe.command.send((tx, command.clone())) {
-                            eprintln!("Error sending command: {:?}", e);
+                            log::error!("Error sending command: {:?}", e);
                         }
                         responses_to_await.push(rx);
                     }
@@ -357,10 +357,10 @@ pub async fn transcription_thread(
                             let handle = call.play_input(feedback.to_songbird());
                             let _ = handle.set_volume(0.8);
                             if let Err(e) = feedback.delete_when_finished(handle).await {
-                                eprintln!("Error deleting feedback: {:?}", e);
+                                log::error!("Error deleting feedback: {:?}", e);
                             }
                         } else {
-                            eprintln!("Error getting error speech for {:?}", e);
+                            log::error!("Error getting error speech for {:?}", e);
                         }
                     }
                 }
@@ -845,7 +845,7 @@ fn attempt_to_parse_number(args: &[&str]) -> Option<usize> {
 
             n if let Ok(n) = n.parse::<usize>() => num += n,
             _ => {
-                eprintln!("Error parsing number: {:?} from {}", word, args.join(" "));
+                log::error!("Error parsing number: {:?} from {}", word, args.join(" "));
                 return None;
             }
         }
@@ -926,7 +926,7 @@ async fn get_speech(text: &str) -> Option<Video> {
     match crate::sam::get_speech(&text) {
         Ok(vid) => Some(vid),
         Err(e) => {
-            eprintln!("Error getting speech: {:?}", e);
+            log::error!("Error getting speech: {:?}", e);
             None
         }
     }
@@ -984,7 +984,7 @@ async fn get_videos(
             Ok(truevideos)
         }
         Err(e) => {
-            eprintln!("Error getting video: {:?}", e);
+            log::error!("Error getting video: {:?}", e);
             Err(anyhow::anyhow!("Error getting audio."))
         }
     }

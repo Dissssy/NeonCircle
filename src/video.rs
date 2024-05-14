@@ -44,7 +44,7 @@ async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
     } else {
         url.to_string()
     };
-    println!("URL: {}", url);
+    log::trace!("URL: {}", url);
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(anyhow::anyhow!("Invalid URL found after search query"));
     }
@@ -73,7 +73,7 @@ async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
             Ok(v) => Some(v),
             Err(e) => {
                 if !line.trim().is_empty() {
-                    println!("Error: {}", e);
+                    log::error!("Failed to parse line: {}\nError: {}", line, e);
                 }
                 None
             }
@@ -92,7 +92,7 @@ impl Video {
     ) -> Result<Vec<VideoType>> {
         let now = std::time::Instant::now();
         let mut v = get_videos(url, allow_search).await?;
-        println!("Took {}ms to get videos", now.elapsed().as_millis());
+        log::info!("Took {}ms to get videos", now.elapsed().as_millis());
         if v.is_empty() {
             return Err(anyhow::anyhow!("No videos found"));
         }
@@ -268,7 +268,7 @@ impl songbird::EventHandler for Video {
             for (state, _handle) in *track {
                 if state.playing.is_done() {
                     if let Err(e) = self.delete() {
-                        println!("Failed to delete file: {}", e);
+                        log::error!("Failed to delete video: {}", e);
                     }
                 }
             }

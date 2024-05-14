@@ -998,7 +998,7 @@ pub async fn the_lüüp(
     }
     log.log("Gracefully exited").await;
     if !log.is_empty().await {
-        eprintln!("Final log:\n{}", log.get().await);
+        log::info!("Final log:\n{}", log.get().await);
     }
 }
 fn get_bar(percent_done: f64, length: usize) -> String {

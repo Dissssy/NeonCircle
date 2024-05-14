@@ -189,7 +189,7 @@ pub async fn get_url_video_info(url: &str) -> Result<RawVidInfo, Error> {
     let info = dl.download()?;
     let output = info.output();
     Ok(serde_json::from_str(output).map_err(|e| {
-        println!("{}", output);
+        log::error!("{}", output);
         e
     })?)
 }
@@ -230,7 +230,7 @@ pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
                 .map(|t| format!("{} - {}", t.name, t.artists[0].name))
                 .collect())
         } else {
-            println!("spoofydata: {:?}", spoofydata);
+            log::info!("spoofydata: {:?}", spoofydata);
             Err(anyhow::anyhow!("Could not get spotify song title"))
         }
     }
@@ -415,7 +415,7 @@ pub async fn get_access_token() -> Result<String, Error> {
             .await?;
         let t = String::from_utf8(output.stdout)? + &String::from_utf8(output.stderr)?;
         if t.contains(' ') {
-            println!("{}", t);
+            log::error!("{}", t);
             Err(anyhow::anyhow!(t))
         } else {
             Ok(t)
@@ -461,7 +461,7 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>, Er
             Ok(v) => Some(v),
             Err(e) => {
                 if !line.trim().is_empty() {
-                    println!("Error: {}", e);
+                    log::error!("Error: {}", e);
                 }
                 None
             }

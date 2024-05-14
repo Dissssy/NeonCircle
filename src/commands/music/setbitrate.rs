@@ -26,7 +26,7 @@ impl crate::CommandTrait for SetBitrate {
             )
             .await
         {
-            eprintln!("Failed to create interaction response: {:?}", e);
+            log::error!("Failed to create interaction response: {:?}", e);
         }
         let guild_id = match interaction.guild_id {
             Some(id) => id,
@@ -39,7 +39,7 @@ impl crate::CommandTrait for SetBitrate {
                     )
                     .await
                 {
-                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
                 return;
             }
@@ -59,7 +59,7 @@ impl crate::CommandTrait for SetBitrate {
                     )
                     .await
                 {
-                    eprintln!("Failed to edit original interaction response: {:?}", e);
+                    log::error!("Failed to edit original interaction response: {:?}", e);
                 }
                 return;
             }
@@ -89,7 +89,7 @@ impl crate::CommandTrait for SetBitrate {
             )
             .await
         {
-            eprintln!("Failed to edit original interaction response: {:?}", e);
+            log::error!("Failed to edit original interaction response: {:?}", e);
         }
     }
     fn name(&self) -> &str {
