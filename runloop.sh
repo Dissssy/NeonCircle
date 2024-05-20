@@ -11,8 +11,13 @@ export RUST_LOG="alrightguysnewprojecttime=trace"
 while true; do
     # yt-dlp --update-to nightly
     python -m pip install --upgrade yt-dlp
-    # run the application
-    cargo run --release --features experimental # --features misogyny
+    if [ "$1" = "release" ]; then
+        echo "Running in release mode"
+        cargo run --release --features experimental
+    else
+        echo "Running in debug mode"
+        cargo run --features experimental
+    fi
 
     # save the return code
     ret=$?

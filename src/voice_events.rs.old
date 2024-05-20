@@ -1,0 +1,1146 @@
+// #![allow(dead_code)]
+// use crate::{
+//     commands::music::{transcribe::TranscriptionMessage, AudioPromiseCommand, OrToggle},
+//     video::Video,
+// };
+// use anyhow::Result;
+// use serde::Deserialize as _;
+// use serenity::{
+//     all::*,
+//     futures::{stream::FuturesUnordered, StreamExt as _},
+// };
+// use songbird::{
+//     events::context_data::{VoiceData, VoiceTick},
+//     model::payload::Speaking,
+//     Call, CoreEvent, Event, EventContext,
+// };
+// use std::{collections::HashMap, pin::Pin, sync::Arc};
+// use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+// const MILLISECONDS_TO_CHECK: u64 = 1000;
+// lazy_static::lazy_static!(
+//     static ref PACKETS_WITHOUT_TALKING: usize = PacketDuration::new(std::time::Duration::from_millis(MILLISECONDS_TO_CHECK)).to_packet_count();
+// );
+// const AVERAGE_WEIGHT: f64 = 1.0;
+// const PEAK_WEIGHT: f64 = 1.0;
+// const PERCENT_OF_AVERAGE_TO_TALK: f64 = 0.20;
+// const PERCENT_OF_TALKING_PACKETS: f64 = 0.9;
+// fn get_name(e: &EventContext) -> &'static str {
+//     match e {
+//         EventContext::Track(_) => "Track",
+//         EventContext::SpeakingStateUpdate(_) => "SpeakingStateUpdate",
+//         EventContext::VoiceTick(_) => "VoiceTick",
+//         EventContext::DriverConnect(_) => "DriverConnect",
+//         EventContext::DriverReconnect(_) => "DriverReconnect",
+//         EventContext::DriverDisconnect(_) => "DriverDisconnect",
+//         _ => "Unknown",
+//     }
+// }
+// type PacketSender = mpsc::UnboundedSender<PacketData>;
+// pub struct VoiceDataManager {
+//     user_streams: HashMap<UserId, BufWithRollingAvg>,
+//     receiver: mpsc::UnboundedReceiver<PacketData>,
+//     enabled_for: std::collections::HashMap<UserId, bool>,
+//     http: Arc<Http>,
+//     command: mpsc::UnboundedSender<(
+//         oneshot::Sender<String>,
+//         crate::commands::music::AudioPromiseCommand,
+//     )>,
+// }
+// struct AudioPacket {
+//     audio: Vec<i16>,
+//     received: std::time::Instant,
+//     average: f64,
+//     peak: f64,
+// }
+// impl AudioPacket {
+//     fn new(audio: Vec<i16>) -> Self {
+//         let average = Self::average(&audio);
+//         let peak = Self::peak(&audio);
+//         Self {
+//             audio,
+//             received: std::time::Instant::now(),
+//             average,
+//             peak,
+//         }
+//     }
+//     fn average(audio: &[i16]) -> f64 {
+//         let val = audio
+//             .iter()
+//             .map(|a| a.checked_abs().unwrap_or(0) as f64)
+//             .sum::<f64>()
+//             / audio.len() as f64;
+//         if val.is_nan() {
+//             0.0
+//         } else {
+//             val
+//         }
+//     }
+//     fn peak(audio: &[i16]) -> f64 {
+//         let val = audio
+//             .iter()
+//             .map(|a| a.checked_abs().unwrap_or(0) as f64)
+//             .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+//             .unwrap_or_default();
+//         if val.is_nan() {
+//             0.0
+//         } else {
+//             val
+//         }
+//     }
+//     fn average_cmp(&self, average: f64) -> bool {
+//         // average must be over PERCENT_OF_AVERAGE_TO_TALK% of the average of the last packets
+//         // self.inner_average_cmp() > average
+//         average > (self.inner_average() * PERCENT_OF_AVERAGE_TO_TALK)
+//     }
+//     fn inner_average(&self) -> f64 {
+//         (self.average * AVERAGE_WEIGHT + self.peak * PEAK_WEIGHT) / (AVERAGE_WEIGHT + PEAK_WEIGHT)
+//     }
+// }
+// struct BufWithRollingAvg {
+//     buf: Vec<AudioPacket>,
+//     average: f64,
+// }
+// impl BufWithRollingAvg {
+//     fn new() -> Self {
+//         Self {
+//             buf: Vec::new(),
+//             average: 0.0,
+//         }
+//     }
+//     // fn average(&self) -> f64 {
+//     //     self.buf.iter().map(|a| a.average()).sum::<f64>() / self.buf.len() as f64
+//     // }
+//     fn append(&mut self, audio: Vec<i16>) {
+//         // let sum: f64 = audio.iter().map(|a| a.abs() as f64).sum();
+//         // self.buf.push(audio);
+//         // if self.average == 0.0 {
+//         //     self.average = sum;
+//         // } else {
+//         //     let unpacked_average = self.average * (self.buf.len() as f64 - 1.0);
+//         //     self.average = (unpacked_average + sum) / self.buf.len() as f64;
+//         // }
+//         let packet = AudioPacket::new(audio);
+//         let avg = packet.average;
+//         let unpacked_average = self.average * (self.buf.len() as f64);
+//         self.buf.push(packet);
+//         // we're gonna do a rolling average so we don't have to sum all the elements every time, so multiply the average by the number of elements and add the new average, then divide by the number of elements
+//         self.average = (unpacked_average + avg) / self.buf.len() as f64;
+//     }
+//     fn user_talking(&self) -> bool {
+//         let n = PACKETS_WITHOUT_TALKING.min(self.buf.len());
+//         let t = self
+//             .buf
+//             .iter()
+//             .rev()
+//             .take(n)
+//             .map(|a| a.average_cmp(self.average) as u32)
+//             .sum::<u32>();
+//         log::trace!("Packets that are talking: {}", t);
+//         log::trace!("Average: {}", self.average);
+//         log::trace!(
+//             "From last {} elements: {}",
+//             n,
+//             self.buf
+//                 .iter()
+//                 .rev()
+//                 .take(n)
+//                 .map(|a| a.inner_average())
+//                 .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+//                 .unwrap_or_default()
+//         );
+//         // t is the count of talking packets in the last (up to PACKETS_WITHOUT_TALKING) packets
+//         // we want to return true if the percentage of talking packets is greater than PERCENT_OF_TALKING_PACKETS
+//         let t = (t as f64 / n as f64) > PERCENT_OF_TALKING_PACKETS;
+//         log::trace!("Talking: {}", t);
+//         t
+//     }
+//     fn most_recent_time(&self) -> Option<std::time::Instant> {
+//         self.buf.last().map(|a| a.received)
+//     }
+//     fn take_buf(&mut self) -> Vec<AudioPacket> {
+//         std::mem::take(&mut self.buf)
+//     }
+//     fn replace_buf(&mut self, buf: Vec<AudioPacket>) {
+//         self.buf = buf;
+//     }
+//     fn clear_avg(&mut self) {
+//         self.average = 0.0;
+//     }
+// }
+// impl Default for BufWithRollingAvg {
+//     fn default() -> Self {
+//         Self::new()
+//     }
+// }
+// static EVENTS: &[CoreEvent] = &[CoreEvent::SpeakingStateUpdate, CoreEvent::VoiceTick];
+// impl VoiceDataManager {
+//     pub async fn new(
+//         call: Arc<Mutex<Call>>,
+//         http: Arc<Http>,
+//         command: mpsc::UnboundedSender<(
+//             oneshot::Sender<String>,
+//             crate::commands::music::AudioPromiseCommand,
+//         )>,
+//     ) -> Self {
+//         let ssrc_to_user_id = Arc::new(RwLock::new(HashMap::new()));
+//         let (sender, receiver) = mpsc::unbounded_channel::<PacketData>();
+//         for event in EVENTS {
+//             call.lock().await.add_global_event(
+//                 (*event).into(),
+//                 VoiceEventSender {
+//                     ssrc_to_user_id: ssrc_to_user_id.clone(),
+//                     sender: sender.clone(),
+//                 },
+//             );
+//         }
+//         Self {
+//             user_streams: HashMap::new(),
+//             receiver,
+//             enabled_for: HashMap::new(),
+//             http,
+//             command,
+//         }
+//     }
+//     pub async fn get_streams(&mut self) -> Vec<(UserId, Vec<i16>)> {
+//         self.consume_packets().await;
+//         let mut streams: Vec<(UserId, Vec<i16>)> = Vec::new();
+//         let now = std::time::Instant::now();
+//         for (user_id, audio) in self.user_streams.iter_mut() {
+//             // if match last_received {
+//             //     Some(last_received) => now.duration_since(*last_received).as_secs_f64() > 0.2,
+//             //     None => false,
+//             // }
+//             if audio
+//                 .most_recent_time()
+//                 .map(|l| now.duration_since(l).as_secs_f64() > 2.0)
+//                 .unwrap_or_default()
+//             {
+//                 // let audio = std::mem::take(audio);
+//                 // let buf = audio.take_buf();
+//                 // let bytes = buf.iter().flat_map(|p| &p.audio).collect::<Vec<&i16>>();
+//                 // let buf_size = bytes.len().saturating_mul(std::mem::size_of::<i16>());
+//                 let bytes = audio
+//                     .buf
+//                     .iter()
+//                     .map(|p| p.audio.len())
+//                     .sum::<usize>()
+//                     .saturating_mul(std::mem::size_of::<i16>());
+//                 log::info!(
+//                     "Consumed buf size: {} from ({})",
+//                     human_readable_size(bytes),
+//                     user_id
+//                 );
+//                 if bytes < 120 * 1024 {
+//                     continue;
+//                 }
+//                 // let max = bytes.iter().map(|a| a.abs()).max().unwrap_or(0);
+//                 // log::trace!("Max: {}", max);
+//                 // log::trace!("Rolling avg: {}", audio.average);
+//                 // if max < 1000 {
+//                 //     continue;
+//                 // }
+//                 streams.push((
+//                     *user_id,
+//                     audio.take_buf().into_iter().flat_map(|p| p.audio).collect(),
+//                 ));
+//                 audio.clear_avg();
+//             }
+//         }
+//         streams
+//     }
+//     async fn consume_packets(&mut self) {
+//         while let Ok(packet) = self.receiver.try_recv() {
+//             let (user_id, audio) = (packet.user_id, packet.audio);
+//             if match self.enabled_for.entry(user_id) {
+//                 std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+//                 std::collections::hash_map::Entry::Vacant(entry) => {
+//                     let v = match self.http.get_user(user_id).await {
+//                         Ok(user) => {
+//                             if user.bot {
+//                                 false
+//                             } else {
+//                                 *crate::CONSENT_DATABASE
+//                                     .read()
+//                                     .await
+//                                     .get(&user_id)
+//                                     .unwrap_or(&false)
+//                             }
+//                         }
+//                         Err(e) => {
+//                             log::error!("Error getting user: {:?}", e);
+//                             true
+//                         }
+//                     };
+//                     entry.insert(v);
+//                     v
+//                 }
+//             } {
+//                 log::trace!("{} is enabled", user_id);
+//                 let audio_buf = self.user_streams.entry(user_id).or_default();
+//                 let recieved = audio_buf.most_recent_time();
+//                 if let Some(recieved) = recieved {
+//                     let bytes_to_fill = ((packet.received.duration_since(recieved).as_millis_f64()
+//                         * SAMPLES_PER_MILLISECOND)
+//                         .floor() as usize)
+//                         .saturating_sub(audio.len());
+//                     // if we're writing over 750ms of audio, we're way too far behind and we should discard all data and start over
+//                     if bytes_to_fill > (SAMPLES_PER_MILLISECOND * 750.0) as usize {
+//                         audio_buf.clear_avg();
+//                         audio_buf.replace_buf(Vec::new());
+//                         continue;
+//                     } else if bytes_to_fill > (SAMPLES_PER_MILLISECOND * 50.0) as usize {
+//                         let padding = std::iter::repeat(0i16)
+//                             .take(bytes_to_fill)
+//                             .collect::<Vec<i16>>();
+//                         audio_buf.append(padding);
+//                     }
+//                 }
+//                 audio_buf.append(audio);
+//             }
+//         }
+//     }
+// }
+// pub async fn transcription_thread(
+//     mut transcribe: VoiceDataManager,
+//     mut transcribecommand: mpsc::UnboundedReceiver<TranscriptionMessage>,
+//     recvtext: mpsc::UnboundedSender<(String, UserId)>,
+//     call: Arc<Mutex<Call>>,
+// ) {
+//     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+//     let mut sync_db = tokio::time::interval(std::time::Duration::from_millis(750));
+//     let (url, key) = {
+//         let config = crate::Config::get();
+//         (config.transcribe_url, config.transcribe_token)
+//     };
+//     let mut pending_responses = FuturesUnordered::new();
+//     let mut responses_to_await = FuturesUnordered::new();
+//     let mut pending_parse = FuturesUnordered::new();
+//     let current_user = match transcribe.http.get_current_user().await {
+//         Ok(user) => user,
+//         Err(e) => {
+//             log::error!("Error getting current user: {:?}", e);
+//             return;
+//         }
+//     };
+//     loop {
+//         tokio::select! {
+//             _ = sync_db.tick() => {
+//                 let db = crate::CONSENT_DATABASE.read().await;
+//                 for (user, enabled) in transcribe.enabled_for.iter_mut() {
+//                     if let Some(consent) = db.get(user) {
+//                         if consent != enabled {
+//                             log::info!("{} has opted {}", user, if *consent { "in" } else { "out" });
+//                         }
+//                         *enabled = *consent;
+//                     }
+//                 }
+//             }
+//             Some(command) = transcribecommand.recv() => {
+//                 match command {
+//                     TranscriptionMessage::Stop => {
+//                         log::info!("Stopping transcription thread");
+//                         break;
+//                     }
+//                     // TranscriptionMessage::Consent { user_id, consent, ret } => {
+//                     //     log::info!("{} has opted {}", user_id, if consent { "in" } else { "out" });
+//                     //     transcribe.enabled_for.insert(user_id, consent);
+//                     //     if let Err(e) = ret.send(format!("You have opted {}", if consent { "in" } else { "out" })) {
+//                     //         log::error!("Error sending consent response: {:?}", e);
+//                     //     }
+//                     // }
+//                 }
+//             }
+//             Some(response) = responses_to_await.next() => {
+//                 match response {
+//                     Ok(string) => {
+//                         if let Err(e) = recvtext.send((string, current_user.id)) {
+//                             log::error!("Error sending text: {:?}", e);
+//                             break;
+//                         }
+//                     }
+//                     Err(e) => {
+//                         log::error!("Error getting response: {:?}", e);
+//                     }
+//                 }
+//             }
+//             Some(response) = pending_responses.next() => {
+//                 match response {
+//                     Ok((Ok(TranscriptionResponse::Success { result }), user)) => {
+//                         let result = format!("{}", result).trim().to_string();
+//                         let http = Arc::clone(&transcribe.http);
+//                         pending_parse.push(tokio::spawn(async move {
+//                             parse_commands(result, user, http).await
+//                         }));
+//                     }
+//                     Ok((Ok(TranscriptionResponse::Pending { status }), _)) => match status {
+//                         PendingStatus::Pending { position } => {
+//                             log::info!("Transcription is pending, position: {}", position);
+//                         }
+//                         PendingStatus::InProgress => {
+//                             log::info!("Transcription is in progress");
+//                         }
+//                     },
+//                     Ok((Ok(TranscriptionResponse::Error { error }), _)) => {
+//                         log::error!("Error getting transcription result: {}", error);
+//                     }
+//                     Ok((Err(e), _)) => {
+//                         log::error!("Error deserializing transcription response: {:?}", e);
+//                     }
+//                     Err(e) => {
+//                         log::error!("Error getting transcription result: {:?}", e);
+//                     }
+//                 }
+//             }
+//             Some(result) = pending_parse.next() => {
+//                 let (result, user, WithFeedback { command, feedback }) = match result {
+//                     Ok((result, user, with_feedback)) => (result, user, with_feedback),
+//                     Err(e) => {
+//                         log::error!("Error parsing command: {:?}", e);
+//                         continue;
+//                     }
+//                 };
+//                 if let Some(feedback) = feedback {
+//                     let mut call = call.lock().await;
+//                     let handle = call.play_input(feedback.to_songbird());
+//                     let _ = handle.set_volume(0.8);
+//                     if let Err(e) = feedback.delete_when_finished(handle).await {
+//                         log::error!("Error deleting feedback: {:?}", e);
+//                     }
+//                 }
+//                 match command.await {
+//                     Ok(ParsedCommand::None) => {
+//                         if !["bye.", "thank you."].contains(&result.to_lowercase().as_str()) {
+//                             if let Err(e) = recvtext.send((result, user)) {
+//                                 log::error!("Error sending text: {:?}", e);
+//                                 break;
+//                             }
+//                         }
+//                     }
+//                     Ok(ParsedCommand::MetaCommand(command)) => match command {
+//                         Command::NoConsent => {
+//                             if let Err(e) = recvtext.send((
+//                                 format!("{} opted out.", user.mention()),
+//                                 current_user
+//                                 .id,
+//                             )) {
+//                                 log::error!("Error sending text: {:?}", e);
+//                                 break;
+//                             }
+//                             transcribe.enabled_for.insert(user, true);
+//                         }
+//                     },
+//                     Ok(ParsedCommand::Command(command)) => {
+//                         let (tx, rx) = oneshot::channel();
+//                         if let Err(e) = transcribe.command.send((tx, command.clone())) {
+//                             log::error!("Error sending command: {:?}", e);
+//                         }
+//                         responses_to_await.push(rx);
+//                     }
+//                     Err(e) => {
+//                         if let Some(feedback) = get_speech(&format!("Error: {:?}", e)).await {
+//                             let mut call = call.lock().await;
+//                             let handle = call.play_input(feedback.to_songbird());
+//                             let _ = handle.set_volume(0.8);
+//                             if let Err(e) = feedback.delete_when_finished(handle).await {
+//                                 log::error!("Error deleting feedback: {:?}", e);
+//                             }
+//                         } else {
+//                             log::error!("Error getting error speech for {:?}", e);
+//                         }
+//                     }
+//                 }
+//             }
+//             _ = interval.tick() => {
+//                 let now = std::time::Instant::now();
+//                 for (user, audio) in transcribe.get_streams().await {
+//                     let audio = audio
+//                         .chunks(2)
+//                         .map(|c| {
+//                             let first = c.first().copied().unwrap_or_default() as f64;
+//                             ((c.get(1).map(|c1| (first + *c1 as f64) / 2.)).unwrap_or(first))
+//                                 .floor() as i16
+//                         })
+//                         .collect::<Vec<i16>>();
+//                     let response = crate::WEB_CLIENT
+//                         .post(format!(
+//                             "{}/transcribe/raw?format=s16le&sample_rate=48000&channels=1",
+//                             url
+//                         ))
+//                         .header("x-token", key.clone())
+//                         .header("Content-Type", "multipart/form-data")
+//                         .body(
+//                             audio
+//                                 .iter()
+//                                 .flat_map(|i| i.to_le_bytes().to_vec())
+//                                 .collect::<Vec<u8>>(),
+//                         )
+//                         .send()
+//                         .await;
+//                     match response {
+//                         Ok(response) => {
+//                             match response.text().await.map(|b| {
+//                                 serde_json::from_str::<RequestResponse>(&b)
+//                                     .map_err(|e| format!("{:?}\n{}", e, b))
+//                             }) {
+//                                 Ok(Ok(RequestResponse::Success { request_id })) => {
+//                                     pending_responses.push(wait_for_transcription(
+//                                         crate::WEB_CLIENT.clone(),
+//                                         url.clone(),
+//                                         key.clone(),
+//                                         request_id,
+//                                         user,
+//                                     ));
+//                                 }
+//                                 Ok(Ok(RequestResponse::Error { error })) => {
+//                                     log::error!("Issue with audio: {}", error);
+//                                 }
+//                                 Ok(Err(e)) => {
+//                                     log::error!("Error deserializing response: {:?}", e);
+//                                 }
+//                                 Err(e) => {
+//                                     log::error!("Error getting id from transcription service: {:?}", e);
+//                                     break;
+//                                 }
+//                             }
+//                         }
+//                         Err(e) => {
+//                             log::error!("Error sending audio to transcription service: {:?}", e);
+//                             break;
+//                         }
+//                     }
+//                 }
+//                 let millis = now.elapsed().as_millis();
+//                 if millis > 10 {
+//                     log::trace!("Transcription took: {}ms", millis);
+//                 }
+//             }
+//         }
+//     }
+// }
+// #[derive(Debug, Clone, serde::Deserialize)]
+// #[serde(untagged)]
+// enum RequestResponse {
+//     Error { error: String },
+//     Success { request_id: String },
+// }
+// #[derive(Debug, Clone, serde::Deserialize)]
+// #[serde(untagged)]
+// enum TranscriptionResponse {
+//     Error {
+//         error: String,
+//     },
+//     #[serde(deserialize_with = "deserialize_pending")]
+//     Pending {
+//         status: PendingStatus,
+//     },
+//     Success {
+//         result: TranscriptionResult,
+//     },
+// }
+// #[derive(Debug, Clone, serde::Deserialize)]
+// pub struct TranscriptionResult {
+//     segments: Vec<TranscriptionSegment>,
+// }
+// impl std::fmt::Display for TranscriptionResult {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         let mut segments = self.segments.clone();
+//         segments.sort_by(|a, b| {
+//             a.start
+//                 .partial_cmp(&b.start)
+//                 .unwrap_or(std::cmp::Ordering::Equal)
+//         });
+//         for segment in segments.iter() {
+//             write!(f, "{}", segment.text)?;
+//         }
+//         Ok(())
+//     }
+// }
+// #[derive(Debug, Clone, serde::Deserialize)]
+// pub struct TranscriptionSegment {
+//     start: f64,
+//     text: String,
+// }
+// #[derive(Debug, Clone)]
+// enum PendingStatus {
+//     Pending { position: u32 },
+//     InProgress,
+// }
+// fn deserialize_pending<'de, D>(deserializer: D) -> Result<PendingStatus, D::Error>
+// where
+//     D: serde::Deserializer<'de>,
+// {
+//     let value = serde_json::Value::deserialize(deserializer)?;
+//     if let serde_json::Value::Object(map) = value {
+//         if let Some(serde_json::Value::String(status)) = map.get("status") {
+//             if status == "pending" {
+//                 if let Some(serde_json::Value::Number(position)) = map.get("position") {
+//                     if let Some(position) = position.as_u64() {
+//                         return Ok(PendingStatus::Pending {
+//                             position: position as u32,
+//                         });
+//                     }
+//                 }
+//             } else if status == "in-progress" {
+//                 return Ok(PendingStatus::InProgress);
+//             }
+//         }
+//     }
+//     Err(serde::de::Error::custom("Invalid pending status"))
+// }
+// async fn wait_for_transcription(
+//     reqwest: reqwest::Client,
+//     url: String,
+//     key: String,
+//     request_id: String,
+//     user: UserId,
+// ) -> Result<(Result<TranscriptionResponse, String>, UserId), reqwest::Error> {
+//     let url = format!("{}/result/{}/wait", url, request_id);
+//     let response = reqwest
+//         .get(url)
+//         .header("x-token", key)
+//         .send()
+//         .await?
+//         .text()
+//         .await
+//         .map(|b| {
+//             serde_json::from_str::<TranscriptionResponse>(&b).map_err(|e| format!("{:?}\n{}", e, b))
+//         });
+//     response.map(|r| (r, user))
+// }
+// fn filter_input(s: &str) -> String {
+//     s.to_lowercase()
+//         .chars()
+//         .filter(|c| c.is_ascii_alphanumeric() || c.is_whitespace())
+//         .collect::<String>()
+//         .split_whitespace()
+//         .filter(|w| !w.is_empty())
+//         .collect::<Vec<&str>>()
+//         .join(" ")
+// }
+// lazy_static::lazy_static!(
+//     pub static ref ALERT_PHRASES: Alerts = {
+//         let file = crate::Config::get().alert_phrases_path;
+//         let text = match std::fs::read_to_string(file) {
+//             Ok(text) => text,
+//             Err(e) => {
+//                 log::error!("Error reading alert phrases: {:?}", e);
+//                 panic!("Error reading alert phrases: {:?}", e);
+//             }
+//         };
+//         let mut the = match serde_json::from_str::<Alerts>(&text) {
+//             Ok(the) => the,
+//             Err(e) => {
+//                 log::error!("Error deserializing alert phrases: {:?}", e);
+//                 panic!("Error deserializing alert phrases: {:?}", e);
+//             }
+//         };
+//         for alert in &mut the.phrases {
+//             alert.main.push(' ');
+//             for alias in &mut alert.aliases {
+//                 alias.push(' ');
+//             }
+//         }
+//         the
+//     };
+// );
+// #[derive(Debug, serde::Deserialize)]
+// pub struct Alerts {
+//     phrases: Vec<Alert>,
+// }
+// impl std::fmt::Display for Alerts {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         for alert in &self.phrases {
+//             writeln!(f, "{}", alert)?;
+//         }
+//         Ok(())
+//     }
+// }
+// impl Alerts {
+//     fn filter(&self, s: String) -> String {
+//         let mut s = s;
+//         for alert in &self.phrases {
+//             for alias in &alert.aliases {
+//                 s = s.replace(alias, &alert.main);
+//             }
+//         }
+//         s
+//     }
+//     fn get_alert(&'static self, s: &str) -> Option<&'static Alert> {
+//         self.phrases.iter().find(|a| s.contains(&a.main))
+//     }
+// }
+// #[derive(Debug, serde::Deserialize)]
+// pub struct Alert {
+//     main: String,
+//     aliases: Vec<String>,
+// }
+// impl std::fmt::Display for Alert {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(f, "{}: [{}]", self.main, self.aliases.join(", "))
+//     }
+// }
+// async fn parse_commands(s: String, u: UserId, http: Arc<Http>) -> (String, UserId, WithFeedback) {
+//     if s.is_empty() {
+//         return (
+//             s,
+//             u,
+//             WithFeedback::new_without_feedback(Box::pin(async move { Ok(ParsedCommand::None) }))
+//                 .await,
+//         );
+//     }
+//     let filtered = filter_input(&s);
+//     if filtered.is_empty() {
+//         return (
+//             s,
+//             u,
+//             WithFeedback::new_without_feedback(Box::pin(async move { Ok(ParsedCommand::None) }))
+//                 .await,
+//         );
+//     }
+//     if filtered.contains("i do not consent to being recorded") {
+//         return (
+//             s,
+//             u,
+//             WithFeedback::new_without_feedback(Box::pin(async move {
+//                 Ok(ParsedCommand::MetaCommand(Command::NoConsent))
+//             }))
+//             .await,
+//         );
+//     }
+//     let with_aliases = ALERT_PHRASES.filter(filtered);
+//     let (command, args): (&str, Vec<&str>) = {
+//         if let Some(alert) = ALERT_PHRASES.get_alert(&with_aliases) {
+//             let mut split = with_aliases.split(&alert.main);
+//             split.next();
+//             let rest = split.next().unwrap_or("");
+//             let mut split = rest.split_whitespace();
+//             let command = match split.next() {
+//                 Some(command) => command,
+//                 None => {
+//                     return (
+//                         s,
+//                         u,
+//                         WithFeedback::new_with_feedback(
+//                             Box::pin(async move { Ok(ParsedCommand::None) }),
+//                             "You need to say a command",
+//                         )
+//                         .await,
+//                     )
+//                 }
+//             };
+//             let args = split.collect();
+//             (command, args)
+//         } else {
+//             return (
+//                 s,
+//                 u,
+//                 WithFeedback::new_without_feedback(Box::pin(
+//                     async move { Ok(ParsedCommand::None) },
+//                 ))
+//                 .await,
+//             );
+//         }
+//     };
+//     match command {
+//         t if ["play", "add", "queue", "played"].contains(&t) => {
+//             let query = args.join(" ");
+//             let http = Arc::clone(&http);
+//             if query.replace(' ', "").contains("wonderwall") {
+//                 (
+//                     s,
+//                     u,
+//                     WithFeedback::new_with_feedback(
+//                         Box::pin(async move {
+//                             Ok(ParsedCommand::Command(AudioPromiseCommand::Play(
+//                                 get_videos(query, http, u).await?,
+//                             )))
+//                         }),
+//                         "Anyway, here's wonderwall",
+//                     )
+//                     .await,
+//                 )
+//             } else {
+//                 let response = format!("Adding {} to the queue", query);
+//                 (
+//                     s,
+//                     u,
+//                     WithFeedback::new_with_feedback(
+//                         Box::pin(async move {
+//                             Ok(ParsedCommand::Command(AudioPromiseCommand::Play(
+//                                 get_videos(query, http, u).await?,
+//                             )))
+//                         }),
+//                         &response,
+//                     )
+//                     .await,
+//                 )
+//             }
+//         }
+//         t if ["stop", "leave", "disconnect"].contains(&t) => (
+//             s,
+//             u,
+//             WithFeedback::new_with_feedback(
+//                 Box::pin(async move {
+//                     Ok(ParsedCommand::Command(AudioPromiseCommand::Stop(Some(
+//                         tokio::time::Duration::from_millis(2500),
+//                     ))))
+//                 }),
+//                 "Goodbuy, my friend",
+//             )
+//             .await,
+//         ),
+//         t if ["skip", "next"].contains(&t) => (
+//             s,
+//             u,
+//             WithFeedback::new_with_feedback(
+//                 Box::pin(async move { Ok(ParsedCommand::Command(AudioPromiseCommand::Skip)) }),
+//                 "Skipping",
+//             )
+//             .await,
+//         ),
+//         t if ["pause"].contains(&t) => (
+//             s,
+//             u,
+//             WithFeedback::new_with_feedback(
+//                 Box::pin(async move {
+//                     Ok(ParsedCommand::Command(AudioPromiseCommand::Paused(
+//                         OrToggle::Specific(true),
+//                     )))
+//                 }),
+//                 "Pausing",
+//             )
+//             .await,
+//         ),
+//         t if ["resume", "unpause"].contains(&t) => (
+//             s,
+//             u,
+//             WithFeedback::new_with_feedback(
+//                 Box::pin(async move {
+//                     Ok(ParsedCommand::Command(AudioPromiseCommand::Paused(
+//                         OrToggle::Specific(false),
+//                     )))
+//                 }),
+//                 "Resuming",
+//             )
+//             .await,
+//         ),
+//         t if ["volume", "vol"].contains(&t) => {
+//             if let Some(vol) = attempt_to_parse_number(&args) {
+//                 if vol <= 100 {
+//                     (
+//                         s,
+//                         u,
+//                         WithFeedback::new_with_feedback(
+//                             Box::pin(async move {
+//                                 Ok(ParsedCommand::Command(AudioPromiseCommand::Volume(
+//                                     vol.clamp(0, 100) as f64 / 100.0,
+//                                 )))
+//                             }),
+//                             &format!("Setting volyume to {}%", humanize_number(vol)),
+//                         )
+//                         .await,
+//                     )
+//                 } else {
+//                     (
+//                         s,
+//                         u,
+//                         WithFeedback::new_with_feedback(
+//                             Box::pin(async move { Ok(ParsedCommand::None) }),
+//                             "Volyume must be between zero and one hundred",
+//                         )
+//                         .await,
+//                     )
+//                 }
+//             } else {
+//                 (
+//                     s,
+//                     u,
+//                     WithFeedback::new_with_feedback(
+//                         Box::pin(async move { Ok(ParsedCommand::None) }),
+//                         "You need to say a number for the volyume",
+//                     )
+//                     .await,
+//                 )
+//             }
+//         }
+//         t if ["remove", "delete"].contains(&t) => {
+//             if let Some(index) = attempt_to_parse_number(&args) {
+//                 (
+//                     s,
+//                     u,
+//                     WithFeedback::new_with_feedback(
+//                         Box::pin(async move {
+//                             Ok(ParsedCommand::Command(AudioPromiseCommand::Remove(index)))
+//                         }),
+//                         &format!("Removing song {} from queue", index),
+//                     )
+//                     .await,
+//                 )
+//             } else {
+//                 (
+//                     s,
+//                     u,
+//                     WithFeedback::new_with_feedback(
+//                         Box::pin(async move { Ok(ParsedCommand::None) }),
+//                         "You need to say a number for the index",
+//                     )
+//                     .await,
+//                 )
+//             }
+//         }
+//         t if ["say", "echo"].contains(&t) => (
+//             s,
+//             u,
+//             WithFeedback::new_with_feedback(
+//                 Box::pin(async move { Ok(ParsedCommand::None) }),
+//                 &args.join(" "),
+//             )
+//             .await,
+//         ),
+//         unknown => (
+//             s,
+//             u,
+//             WithFeedback::new_with_feedback(
+//                 Box::pin(async move { Ok(ParsedCommand::None) }),
+//                 &format!("Unknown command. {}", unknown),
+//             )
+//             .await,
+//         ),
+//     }
+// }
+// #[derive(Debug)]
+// enum ParsedCommand {
+//     None,
+//     MetaCommand(Command),
+//     Command(AudioPromiseCommand),
+// }
+// struct WithFeedback {
+//     command: Pin<Box<dyn std::future::Future<Output = Result<ParsedCommand>> + Send>>,
+//     feedback: Option<Video>,
+// }
+// impl std::fmt::Debug for WithFeedback {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         f.debug_struct("WithFeedback")
+//             .field("command", &"Future")
+//             .field("feedback", &self.feedback)
+//             .finish()
+//     }
+// }
+// impl WithFeedback {
+//     async fn new_with_feedback(
+//         command: Pin<Box<dyn std::future::Future<Output = Result<ParsedCommand>> + Send>>,
+//         feedback: &str,
+//     ) -> Self {
+//         Self {
+//             command,
+//             feedback: get_speech(feedback).await,
+//         }
+//     }
+//     async fn new_without_feedback(
+//         command: Pin<Box<dyn std::future::Future<Output = Result<ParsedCommand>> + Send>>,
+//     ) -> Self {
+//         Self {
+//             command,
+//             feedback: None,
+//         }
+//     }
+// }
+// #[derive(Debug)]
+// enum Command {
+//     NoConsent,
+// }
+// fn attempt_to_parse_number(args: &[&str]) -> Option<usize> {
+//     let mut num = 0;
+//     for word in args {
+//         match *word {
+//             "zero" => num += 0,
+//             "one" => num += 1,
+//             "two" => num += 2,
+//             "three" => num += 3,
+//             "four" => num += 4,
+//             "five" => num += 5,
+//             "six" => num += 6,
+//             "seven" => num += 7,
+//             "eight" => num += 8,
+//             "nine" => num += 9,
+//             "ten" => num += 10,
+//             "eleven" => num += 11,
+//             "twelve" => num += 12,
+//             "thirteen" => num += 13,
+//             "fourteen" => num += 14,
+//             "fifteen" => num += 15,
+//             "sixteen" => num += 16,
+//             "seventeen" => num += 17,
+//             "eighteen" => num += 18,
+//             "nineteen" => num += 19,
+//             "twenty" => num += 20,
+//             "thirty" => num += 30,
+//             "forty" => num += 40,
+//             "fifty" => num += 50,
+//             "sixty" => num += 60,
+//             "seventy" => num += 70,
+//             "eighty" => num += 80,
+//             "ninety" => num += 90,
+//             "hundred" => num *= 100,
+//             "thousand" => num *= 1000,
+//             "million" => num *= 1000000,
+//             "billion" => num *= 1000000000,
+//             "trillion" => num *= 1000000000000,
+//             "quadrillion" => num *= 1000000000000000,
+//             "quintillion" => num *= 1000000000000000000,
+//             n if let Ok(n) = n.parse::<usize>() => num += n,
+//             _ => {
+//                 log::error!("Error parsing number: {:?} from {}", word, args.join(" "));
+//                 return None;
+//             }
+//         }
+//     }
+//     Some(num)
+// }
+// pub fn humanize_number(n: usize) -> String {
+//     if n == 0 {
+//         return "zero".to_owned();
+//     }
+//     let mut n = n;
+//     let mut words = Vec::new();
+//     if n >= 1000 {
+//         words.push(humanize_number(n / 1000));
+//         words.push("thousand".to_owned());
+//         n %= 1000;
+//     }
+//     if n >= 100 {
+//         words.push(humanize_number(n / 100));
+//         words.push("hundred".to_owned());
+//         n %= 100;
+//     }
+//     if !words.is_empty() && n > 0 {
+//         words.push("and".to_owned());
+//     }
+//     if n >= 20 {
+//         match n / 10 {
+//             2 => words.push("twenty".to_owned()),
+//             3 => words.push("thirty".to_owned()),
+//             4 => words.push("forty".to_owned()),
+//             5 => words.push("fifty".to_owned()),
+//             6 => words.push("sixty".to_owned()),
+//             7 => words.push("seventy".to_owned()),
+//             8 => words.push("eighty".to_owned()),
+//             9 => words.push("ninety".to_owned()),
+//             _ => unreachable!(),
+//         }
+//         n %= 10;
+//     }
+//     if n >= 10 {
+//         match n {
+//             10 => words.push("ten".to_owned()),
+//             11 => words.push("eleven".to_owned()),
+//             12 => words.push("twelve".to_owned()),
+//             13 => words.push("thirteen".to_owned()),
+//             14 => words.push("fourteen".to_owned()),
+//             15 => words.push("fifteen".to_owned()),
+//             16 => words.push("sixteen".to_owned()),
+//             17 => words.push("seventeen".to_owned()),
+//             18 => words.push("eighteen".to_owned()),
+//             19 => words.push("nineteen".to_owned()),
+//             _ => unreachable!(),
+//         }
+//         n = 0;
+//     }
+//     if n > 0 {
+//         match n {
+//             1 => words.push("one".to_owned()),
+//             2 => words.push("two".to_owned()),
+//             3 => words.push("three".to_owned()),
+//             4 => words.push("four".to_owned()),
+//             5 => words.push("five".to_owned()),
+//             6 => words.push("six".to_owned()),
+//             7 => words.push("seven".to_owned()),
+//             8 => words.push("eight".to_owned()),
+//             9 => words.push("nine".to_owned()),
+//             _ => unreachable!(),
+//         }
+//     }
+//     words.join(" ")
+// }
+// async fn get_speech(text: &str) -> Option<Video> {
+//     let text = if text.ends_with('.') {
+//         text.to_owned()
+//     } else {
+//         format!("{}.", text)
+//     };
+//     match crate::sam::get_speech(&text) {
+//         Ok(vid) => Some(vid),
+//         Err(e) => {
+//             log::error!("Error getting speech: {:?}", e);
+//             None
+//         }
+//     }
+// }
+// async fn get_videos(
+//     query: String,
+//     http: Arc<Http>,
+//     u: UserId,
+// ) -> Result<Vec<crate::commands::music::MetaVideo>> {
+//     let vids = crate::video::Video::get_video(&query, true, true).await;
+//     match vids {
+//         Ok(vids) => {
+//             let mut truevideos = Vec::new();
+//             #[cfg(feature = "tts")]
+//             let key = crate::youtube::get_access_token().await;
+//             for v in vids {
+//                 let title = match v.clone() {
+//                     crate::commands::music::VideoType::Disk(v) => v.title,
+//                     crate::commands::music::VideoType::Url(v) => v.title,
+//                 };
+//                 #[cfg(feature = "tts")]
+//                 if let Ok(key) = key.as_ref() {
+//                     truevideos.push(crate::commands::music::MetaVideo {
+//                         video: v,
+//                         ttsmsg: Some(crate::commands::music::LazyLoadedVideo::new(tokio::spawn(
+//                             crate::youtube::get_tts(title.clone(), key.clone(), None),
+//                         ))),
+//                         title,
+//                         author: http.get_user(u).await.ok().map(|u| {
+//                             crate::commands::music::Author {
+//                                 name: u.name.clone(),
+//                                 pfp_url: u
+//                                     .avatar_url()
+//                                     .clone()
+//                                     .unwrap_or(u.default_avatar_url().clone()),
+//                             }
+//                         }),
+//                     })
+//                 } else {
+//                     truevideos.push(crate::commands::music::MetaVideo {
+//                         video: v,
+//                         ttsmsg: None,
+//                         title,
+//                         author: http.get_user(u).await.ok().map(|u| {
+//                             crate::commands::music::Author {
+//                                 name: u.name.clone(),
+//                                 pfp_url: u.avatar_url().unwrap_or(u.default_avatar_url().clone()),
+//                             }
+//                         }),
+//                     });
+//                 }
+//                 #[cfg(not(feature = "tts"))]
+//                 truevideos.push(MetaVideo { video: v, title });
+//             }
+//             Ok(truevideos)
+//         }
+//         Err(e) => {
+//             log::error!("Error getting video: {:?}", e);
+//             Err(anyhow::anyhow!("Error getting audio."))
+//         }
+//     }
+// }
+// fn human_readable_size(size: usize) -> String {
+//     let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+//     let mut size = size as f64;
+//     let mut i = 0;
+//     while size >= 1024.0 {
+//         size /= 1024.0;
+//         i += 1;
+//     }
+//     format!("{:.2} {}", size, units.get(i).unwrap_or(&"??"))
+// }

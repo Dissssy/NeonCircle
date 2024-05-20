@@ -1,8 +1,12 @@
-#![deny(clippy::unwrap_used)]
-#![feature(try_blocks)]
-#![feature(duration_millis_float)]
-#![feature(if_let_guard)]
+#![feature(if_let_guard, try_blocks, duration_millis_float)]
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    // clippy::arithmetic_side_effects
+)]
 mod commands;
+mod consent;
 mod radio;
 mod sam;
 mod video;
@@ -13,13 +17,15 @@ use std::sync::Arc;
 mod context_menu;
 mod voice_events;
 use crate::commands::music::{AudioCommandHandler, AudioPromiseCommand, OrToggle};
-use anyhow::Error;
-use commands::music::transcribe::{TranscribeChannelHandler, TranscribeData};
+use anyhow::Result;
 use commands::music::{OrAuto, SpecificVolume, VoiceAction, VoiceData};
 use serde::{Deserialize, Serialize};
-use serenity::all::*;
+use serenity::{
+    all::*,
+    futures::{stream::FuturesUnordered, StreamExt},
+};
 use songbird::SerenityInit;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, RwLock};
 struct Handler {
     commands: Vec<Box<dyn CommandTrait>>,
 }
@@ -29,7 +35,16 @@ impl Handler {
     }
 }
 lazy_static::lazy_static! {
-    static ref WHITELIST: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(serde_json::from_reader(std::fs::File::open(Config::get().whitelist_path).expect("Failed to open whitelist path file")).expect("Failed to parse whitelist path file")));
+    static ref WHITELIST: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new({
+        let file = match std::fs::File::open(Config::get().whitelist_path) {
+            Ok(f) => f,
+            Err(e) => panic!("Failed to open whitelist file: {}", e)
+        };
+        match serde_json::from_reader(file) {
+            Ok(r) => r,
+            Err(e) => panic!("Failed to read whitelist file: {}", e)
+        }
+    }));
     static ref WEB_CLIENT: reqwest::Client = reqwest::Client::new();
 }
 #[async_trait]
@@ -40,13 +55,9 @@ where
     fn register(&self) -> CreateCommand;
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction);
     fn name(&self) -> &str;
-    async fn autocomplete(
-        &self,
-        ctx: &Context,
-        interaction: &CommandInteraction,
-    ) -> Result<(), Error>;
+    async fn autocomplete(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()>;
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UserSafe {
     pub id: String,
 }
@@ -115,13 +126,21 @@ impl EventHandler for Handler {
                         };
 
                         if let (Some(v), Some(member)) = (ctx.data.read().await.get::<VoiceData>().cloned(), mci.member.as_ref()) {
-                            let mut v = v.lock().await;
-                            let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
+                            let next_step = v.write().await.mutual_channel(&ctx, &guild_id, &member.user.id);
 
                             if let VoiceAction::InSame(_c) = next_step {
-                                let audio_command_handler = ctx.data.read().await.get::<AudioCommandHandler>().expect("Expected AudioCommandHandler in TypeMap").clone();
+                                let audio_command_handler = match ctx.data.read().await.get::<AudioCommandHandler>() {
+                                    Some(a) => Arc::clone(a),
+                                    None => {
+                                        log::error!("Expected AudioCommandHandler in TypeMap");
+                                        if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Failed to get audio command handler").ephemeral(true))).await {
+                                            log::error!("Failed to send response: {:?}", e);
+                                        }
+                                        return;
+                                    }
+                                };
 
-                                let mut audio_command_handler = audio_command_handler.lock().await;
+                                let mut audio_command_handler = audio_command_handler.write().await;
 
                                 if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
                                     let (rtx, rrx) = oneshot::channel::<String>();
@@ -179,6 +198,12 @@ impl EventHandler for Handler {
                                 return;
                             }
                         }
+                        else {
+                            log::error!("Failed to get voice data");
+                            if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Failed to get voice data").ephemeral(true))).await {
+                                log::error!("Failed to send response: {}", e);
+                            }
+                        }
                     }
                     raw if ["volume", "radiovolume"].iter().any(|a| *a == raw) => {
                         let guild_id = match mci.guild_id {
@@ -192,7 +217,7 @@ impl EventHandler for Handler {
                         };
 
                         if let (Some(v), Some(member)) = (ctx.data.read().await.get::<VoiceData>().cloned(), mci.member.as_ref()) {
-                            let mut v = v.lock().await;
+                            let mut v = v.write().await;
                             let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
 
                             if let VoiceAction::InSame(_c) = next_step {
@@ -205,7 +230,13 @@ impl EventHandler for Handler {
                                                 match raw {
                                                     "volume" => "Volume",
                                                     "radiovolume" => "Radio Volume",
-                                                    _ => unreachable!(),
+                                                    _ => {
+                                                        log::error!("Unknown command: {}", raw);
+                                                        if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Unknown command: {}", raw)).ephemeral(true))).await {
+                                                            log::error!("Failed to send response: {}", e);
+                                                        }
+                                                        return;
+                                                    }
                                                 },
                                             )
                                             .components(vec![CreateActionRow::InputText(CreateInputText::new(InputTextStyle::Short, "%", "volume"))]),
@@ -222,6 +253,11 @@ impl EventHandler for Handler {
                                 }
                                 return;
                             }
+                        } else {
+                            log::error!("Failed to get voice data");
+                            if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Failed to get voice data").ephemeral(true))).await {
+                                log::error!("Failed to send response: {}", e);
+                            }
                         }
                     }
                     "bitrate" => {
@@ -236,7 +272,7 @@ impl EventHandler for Handler {
                         };
 
                         if let (Some(v), Some(member)) = (ctx.data.read().await.get::<VoiceData>().cloned(), mci.member.as_ref()) {
-                            let mut v = v.lock().await;
+                            let mut v = v.write().await;
                             let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
 
                             if let VoiceAction::InSame(_c) = next_step {
@@ -249,6 +285,11 @@ impl EventHandler for Handler {
                                     log::error!("Failed to send response: {}", e);
                                 }
                                 return;
+                            }
+                        } else {
+                            log::error!("Failed to get voice data");
+                            if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Failed to get voice data").ephemeral(true))).await {
+                                log::error!("Failed to send response: {}", e);
                             }
                         }
                     }
@@ -264,13 +305,22 @@ impl EventHandler for Handler {
                         };
 
                         if let (Some(v), Some(member)) = (ctx.data.read().await.get::<VoiceData>().cloned(), mci.member.as_ref()) {
-                            let mut v = v.lock().await;
+                            let mut v = v.write().await;
                             let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
 
                             if let VoiceAction::InSame(_c) = next_step {
-                                let audio_command_handler = ctx.data.read().await.get::<AudioCommandHandler>().expect("Expected AudioCommandHandler in TypeMap").clone();
+                                let audio_command_handler = match ctx.data.read().await.get::<AudioCommandHandler>() {
+                                    Some(a) => Arc::clone(a),
+                                    None => {
+                                        log::error!("Expected AudioCommandHandler in TypeMap");
+                                        if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Failed to get audio command handler").ephemeral(true))).await {
+                                            log::error!("Failed to send response: {}", e);
+                                        }
+                                        return;
+                                    }
+                                };
 
-                                let mut audio_command_handler = audio_command_handler.lock().await;
+                                let mut audio_command_handler = audio_command_handler.write().await;
 
                                 if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
                                     let (rtx, rrx) = oneshot::channel::<String>();
@@ -321,6 +371,11 @@ impl EventHandler for Handler {
                                     log::error!("Failed to send response: {}", e);
                                 }
                                 return;
+                            }
+                        } else {
+                            log::error!("Failed to get voice data");
+                            if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Failed to get voice data").ephemeral(true))).await {
+                                log::error!("Failed to send response: {}", e);
                             }
                         }
                     }
@@ -473,17 +528,33 @@ impl EventHandler for Handler {
                         ctx.data.read().await.get::<VoiceData>().cloned(),
                         p.member.as_ref(),
                     ) {
-                        let mut v = v.lock().await;
+                        let mut v = v.write().await;
                         let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
                         if let VoiceAction::InSame(_c) = next_step {
-                            let audio_command_handler = ctx
-                                .data
-                                .read()
-                                .await
-                                .get::<AudioCommandHandler>()
-                                .expect("Expected AudioCommandHandler in TypeMap")
-                                .clone();
-                            let mut audio_command_handler = audio_command_handler.lock().await;
+                            let audio_command_handler =
+                                match ctx.data.read().await.get::<AudioCommandHandler>() {
+                                    Some(a) => Arc::clone(a),
+                                    None => {
+                                        log::error!("Expected AudioCommandHandler in TypeMap");
+                                        if let Err(e) = p
+                                            .create_response(
+                                                &ctx.http,
+                                                CreateInteractionResponse::Message(
+                                                    CreateInteractionResponseMessage::new()
+                                                        .content(
+                                                            "Failed to get audio command handler",
+                                                        )
+                                                        .ephemeral(true),
+                                                ),
+                                            )
+                                            .await
+                                        {
+                                            log::error!("Failed to send response: {}", e);
+                                        }
+                                        return;
+                                    }
+                                };
+                            let mut audio_command_handler = audio_command_handler.write().await;
                             if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
                                 let (rtx, rrx) = oneshot::channel::<String>();
                                 if let Err(e) = tx.send((
@@ -574,6 +645,21 @@ impl EventHandler for Handler {
                                 log::error!("Failed to send response: {}", e);
                             }
                             return;
+                        }
+                    } else {
+                        log::error!("Failed to get voice data");
+                        if let Err(e) = p
+                            .create_response(
+                                &ctx.http,
+                                CreateInteractionResponse::Message(
+                                    CreateInteractionResponseMessage::new()
+                                        .content("Failed to get voice data")
+                                        .ephemeral(true),
+                                ),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to send response: {}", e);
                         }
                     }
                 }
@@ -670,17 +756,33 @@ impl EventHandler for Handler {
                         ctx.data.read().await.get::<VoiceData>().cloned(),
                         p.member.as_ref(),
                     ) {
-                        let mut v = v.lock().await;
+                        let mut v = v.write().await;
                         let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
                         if let VoiceAction::InSame(_c) = next_step {
-                            let audio_command_handler = ctx
-                                .data
-                                .read()
-                                .await
-                                .get::<AudioCommandHandler>()
-                                .expect("Expected AudioCommandHandler in TypeMap")
-                                .clone();
-                            let mut audio_command_handler = audio_command_handler.lock().await;
+                            let audio_command_handler =
+                                match ctx.data.read().await.get::<AudioCommandHandler>() {
+                                    Some(a) => Arc::clone(a),
+                                    None => {
+                                        log::error!("Expected AudioCommandHandler in TypeMap");
+                                        if let Err(e) = p
+                                            .create_response(
+                                                &ctx.http,
+                                                CreateInteractionResponse::Message(
+                                                    CreateInteractionResponseMessage::new()
+                                                        .content(
+                                                            "Failed to get audio command handler",
+                                                        )
+                                                        .ephemeral(true),
+                                                ),
+                                            )
+                                            .await
+                                        {
+                                            log::error!("Failed to send response: {}", e);
+                                        }
+                                        return;
+                                    }
+                                };
+                            let mut audio_command_handler = audio_command_handler.write().await;
                             if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
                                 let (rtx, rrx) = oneshot::channel::<String>();
                                 if let Err(e) = tx.send((rtx, AudioPromiseCommand::SetBitrate(val)))
@@ -741,6 +843,21 @@ impl EventHandler for Handler {
                             }
                             return;
                         }
+                    } else {
+                        log::error!("Failed to get voice data");
+                        if let Err(e) = p
+                            .create_response(
+                                &ctx.http,
+                                CreateInteractionResponse::Message(
+                                    CreateInteractionResponseMessage::new()
+                                        .content("Failed to get voice data")
+                                        .ephemeral(true),
+                                ),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to send response: {}", e);
+                        }
                     }
                 }
                 "log" => {
@@ -762,54 +879,93 @@ impl EventHandler for Handler {
     }
     async fn ready(&self, ctx: Context, ready: Ready) {
         log::info!("Refreshing users");
-        let mut users = Vec::new();
-        let voicedata = ctx
-            .data
-            .read()
-            .await
-            .get::<VoiceData>()
-            .expect("Expected VoiceData in TypeMap.")
-            .clone();
-        let mut voicedata = voicedata.lock().await;
+        let voicedata = match ctx.data.read().await.get::<VoiceData>() {
+            Some(v) => Arc::clone(v),
+            None => {
+                log::error!("Expected VoiceData in TypeMap");
+                return;
+            }
+        };
+        let mut lazy_users = FuturesUnordered::new();
+        let mut lazy_voicedata = FuturesUnordered::new();
         for guild in ready.guilds {
             match ctx.http.get_guild(guild.id).await {
                 Ok(guild) => {
-                    log::info!("Getting members for guild: {} ({})", guild.name, guild.id);
-                    for member in match guild.members(&ctx.http, None, None).await {
-                        Ok(members) => members,
-                        Err(e) => {
-                            log::error!("Error getting members: {e}");
-                            Vec::new()
+                    lazy_users.push({
+                        let guild = guild.clone();
+                        let ctx = ctx.clone();
+                        async move {
+                            let mut users = Vec::new();
+                            let mut after = None;
+                            loop {
+                                for member in match guild.members(&ctx.http, None, after).await {
+                                    Ok(members) => {
+                                        if let Some(last) = members.last() {
+                                            after = Some(last.user.id);
+                                        } else {
+                                            break;
+                                        }
+                                        members
+                                    }
+                                    Err(e) => {
+                                        log::error!("Error getting members: {e}");
+                                        Vec::new()
+                                    }
+                                } {
+                                    let id = member.user.id.get().to_string();
+                                    if !users.contains(&id) {
+                                        users.push(id);
+                                    }
+                                }
+                            }
+                            (users, format!("{} ({})", guild.name, guild.id))
                         }
-                    } {
-                        let id = member.user.id.get().to_string();
-                        if !users.contains(&id) {
-                            users.push(id);
+                    });
+                    lazy_voicedata.push({
+                        let voicedata = Arc::clone(&voicedata);
+                        let ctx = ctx.clone();
+                        async move {
+                            let voicedata = voicedata.read().await;
+                            voicedata
+                                .lazy_refresh_guild(&ctx, guild.id)
+                                .await
+                                .map(|d| (d, format!("{} ({})", guild.name, guild.id)))
                         }
-                    }
-                    if let Err(e) = voicedata.refresh_guild(&ctx, guild.id).await {
-                        log::error!("Failed to refresh guild: {}", e);
-                    }
+                    });
                 }
                 Err(e) => {
                     log::error!("Error getting guild: {e}");
                 }
             }
         }
-        drop(voicedata);
         let mut finalusers = Vec::new();
-        for id in users {
-            finalusers.push(UserSafe { id });
+        while let Some((users, guildinfo)) = lazy_users.next().await {
+            log::info!("Retrieved {} users from {}", users.len(), guildinfo);
+            for user in users {
+                let user = UserSafe { id: user };
+                if !finalusers.contains(&user) {
+                    finalusers.push(user);
+                }
+            }
         }
-        // let mut req = WEB_CLIENT
-        //     .post("http://localhost:16834/api/set/user")
-        //     .json(&finalusers);
-        // if let Some(token) = Config::get().string_api_token {
-        //     req = req.bearer_auth(token);
-        // }
-        // if let Err(e) = req.send().await {
-        //     log::error!("Failed to send users to api {e}. Users might be out of date");
-        // }
+        let mut final_voice_data = Vec::new();
+        while let Some(result) = lazy_voicedata.next().await {
+            match result {
+                Ok((data, logstr)) => {
+                    final_voice_data.push(data);
+                    log::info!("Refreshed voice data for {}", logstr);
+                }
+                Err(e) => {
+                    log::error!("Failed to refresh voice data: {e}");
+                }
+            }
+        }
+        {
+            let mut data = voicedata.write().await;
+            for (guild_id, voice_data) in final_voice_data {
+                data.write_guild(guild_id, voice_data)
+            }
+        }
         let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
             .json(&finalusers);
@@ -824,10 +980,7 @@ impl EventHandler for Handler {
             &ctx.http,
             self.commands
                 .iter()
-                .map(|command| {
-                    log::info!("Registering command: {}", command.name());
-                    command.register()
-                })
+                .map(|command| command.register())
                 .collect(),
         )
         .await
@@ -839,12 +992,16 @@ impl EventHandler for Handler {
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
         let data = {
             let uh = ctx.data.read().await;
-            uh.get::<VoiceData>()
-                .expect("Expected VoiceData in TypeMap.")
-                .clone()
+            match uh.get::<VoiceData>() {
+                Some(v) => Arc::clone(v),
+                None => {
+                    log::error!("Expected VoiceData in TypeMap");
+                    return;
+                }
+            }
         };
         {
-            let mut data = data.lock().await;
+            let mut data = data.write().await;
             data.update(old.clone(), new.clone());
         }
         let guild_id = match (old.and_then(|o| o.guild_id), new.guild_id) {
@@ -853,20 +1010,20 @@ impl EventHandler for Handler {
             _ => return,
         };
         let leave = {
-            let mut data = data.lock().await;
+            let mut data = data.write().await;
             data.bot_alone(&guild_id)
         };
         if !leave {
             return;
         }
-        let audio_command_handler = ctx
-            .data
-            .read()
-            .await
-            .get::<AudioCommandHandler>()
-            .expect("Expected AudioCommandHandler in TypeMap")
-            .clone();
-        let mut audio_command_handler = audio_command_handler.lock().await;
+        let audio_command_handler = match ctx.data.read().await.get::<AudioCommandHandler>() {
+            Some(a) => Arc::clone(a),
+            None => {
+                log::error!("Expected AudioCommandHandler in TypeMap");
+                return;
+            }
+        };
+        let mut audio_command_handler = audio_command_handler.write().await;
         if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
             let (rtx, rrx) = oneshot::channel::<String>();
             if let Err(e) = tx.send((rtx, AudioPromiseCommand::Stop(None))) {
@@ -887,56 +1044,101 @@ impl EventHandler for Handler {
         }
     }
     async fn message(&self, ctx: Context, new_message: Message) {
-        if new_message.content.trim().is_empty() {
+        if new_message.author.bot || new_message.content.trim().is_empty() {
             return;
         }
         let guild_id = match new_message.guild_id {
             Some(guild) => guild,
             None => return,
         };
-        let em = match ctx
-            .data
-            .write()
-            .await
-            .get_mut::<TranscribeData>()
-            .expect("Expected TranscribeData in TypeMap.")
-            .lock()
-            .await
-            .entry(guild_id)
-        {
-            std::collections::hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
-            std::collections::hash_map::Entry::Vacant(e) => {
-                let uh = TranscribeChannelHandler::new();
-                e.insert(Arc::new(Mutex::new(uh)))
-            }
-        }
-        .clone();
-        let mut e = em.lock().await;
-        e.send_tts(&ctx, &new_message).await;
-    }
-    async fn resume(&self, ctx: Context, _: ResumedEvent) {
-        let mut users = Vec::new();
-        for guild in match ctx.http.get_guilds(None, None).await {
-            Ok(guilds) => guilds,
+        let em = match commands::music::get_transcribe_channel_handler(&ctx, &guild_id).await {
+            Ok(e) => e,
             Err(e) => {
-                log::error!("Error getting guilds: {e}");
+                log::error!("Failed to get transcribe channel handler: {}", e);
                 return;
             }
-        } {
+        };
+        em.write().await.send_tts(&ctx, &new_message).await;
+    }
+    async fn resume(&self, ctx: Context, _: ResumedEvent) {
+        log::info!("Refreshing users");
+        let mut guilds = Vec::new();
+        let mut after = None;
+        loop {
+            for guild in match ctx.http.get_guilds(after.take(), None).await {
+                Ok(g) => {
+                    if let Some(last) = g.last() {
+                        after = Some(GuildPagination::After(last.id));
+                    } else {
+                        break;
+                    }
+                    g
+                }
+                Err(e) => {
+                    log::error!("Error getting guilds: {e}");
+                    Vec::new()
+                }
+            } {
+                // because of the guild pagination not being copy, we might take it and start over, so ensure there are no duplicate guilds before pushing, if there are, break
+                if guilds.iter().any(|g: &GuildInfo| g.id == guild.id) {
+                    break;
+                }
+                guilds.push(guild);
+            }
+        }
+        let voicedata = match ctx.data.read().await.get::<VoiceData>() {
+            Some(v) => Arc::clone(v),
+            None => {
+                log::error!("Expected VoiceData in TypeMap");
+                return;
+            }
+        };
+        let mut lazy_users = FuturesUnordered::new();
+        let mut lazy_voicedata = FuturesUnordered::new();
+        for guild in guilds {
             match ctx.http.get_guild(guild.id).await {
                 Ok(guild) => {
-                    for member in match guild.members(&ctx.http, None, None).await {
-                        Ok(members) => members,
-                        Err(e) => {
-                            log::error!("Error getting members: {e}");
-                            continue;
+                    lazy_users.push({
+                        let guild = guild.clone();
+                        let ctx = ctx.clone();
+                        async move {
+                            let mut users = Vec::new();
+                            let mut after = None;
+                            loop {
+                                for member in match guild.members(&ctx.http, None, after).await {
+                                    Ok(members) => {
+                                        if let Some(last) = members.last() {
+                                            after = Some(last.user.id);
+                                        } else {
+                                            break;
+                                        }
+                                        members
+                                    }
+                                    Err(e) => {
+                                        log::error!("Error getting members: {e}");
+                                        Vec::new()
+                                    }
+                                } {
+                                    let id = member.user.id.get().to_string();
+                                    if !users.contains(&id) {
+                                        users.push(id);
+                                    }
+                                }
+                            }
+                            (users, format!("{} ({})", guild.name, guild.id))
                         }
-                    } {
-                        let id = member.user.id.get().to_string();
-                        if !users.contains(&id) {
-                            users.push(id);
+                    });
+                    lazy_voicedata.push({
+                        let voicedata = Arc::clone(&voicedata);
+                        let ctx = ctx.clone();
+                        async move {
+                            let mut voicedata = voicedata.write().await;
+                            if let Err(e) = voicedata.refresh_guild(&ctx, guild.id).await {
+                                log::error!("Failed to refresh guild: {}", e);
+                            }
+                            format!("{} ({})", guild.name, guild.id)
                         }
-                    }
+                    });
                 }
                 Err(e) => {
                     log::error!("Error getting guild: {e}");
@@ -944,18 +1146,18 @@ impl EventHandler for Handler {
             }
         }
         let mut finalusers = Vec::new();
-        for id in users {
-            finalusers.push(UserSafe { id });
+        while let Some((users, guildinfo)) = lazy_users.next().await {
+            log::info!("Retrieved {} users from {}", users.len(), guildinfo);
+            for user in users {
+                let user = UserSafe { id: user };
+                if !finalusers.contains(&user) {
+                    finalusers.push(user);
+                }
+            }
         }
-        // let mut req = WEB_CLIENT
-        //     .post("http://localhost:16834/api/set/user")
-        //     .json(&finalusers);
-        // if let Some(token) = Config::get().string_api_token {
-        //     req = req.bearer_auth(token);
-        // }
-        // if let Err(e) = req.send().await {
-        //     log::error!("Failed to send users to api {e}. Users might be out of date");
-        // }
+        while let Some(guildinfo) = lazy_voicedata.next().await {
+            log::info!("Refreshed voice data for {}", guildinfo);
+        }
         let mut req = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
             .json(&finalusers);
@@ -1014,6 +1216,56 @@ impl EventHandler for Handler {
             log::error!("Failed to remove user from api {e}. Users might be out of date");
         }
     }
+    async fn guild_create(&self, ctx: Context, guild: Guild, is_new: Option<bool>) {
+        if is_new.unwrap_or(true) {
+            // resync the data for this guild
+            let voicedata = match ctx.data.read().await.get::<VoiceData>() {
+                Some(v) => Arc::clone(v),
+                None => {
+                    log::error!("Expected VoiceData in TypeMap");
+                    return;
+                }
+            };
+            let mut voicedata = voicedata.write().await;
+            if let Err(e) = voicedata.refresh_guild(&ctx, guild.id).await {
+                log::error!("Failed to refresh guild: {}", e);
+            }
+            // resync the users for this guild
+            let mut users = Vec::new();
+            let mut after = None;
+            loop {
+                for member in match guild.members(&ctx.http, None, after).await {
+                    Ok(members) => {
+                        if let Some(last) = members.last() {
+                            after = Some(last.user.id);
+                        } else {
+                            break;
+                        }
+                        members
+                    }
+                    Err(e) => {
+                        log::error!("Error getting members: {e}");
+                        Vec::new()
+                    }
+                } {
+                    let id = member.user.id.get().to_string();
+                    if !users.contains(&id) {
+                        users.push(id);
+                    }
+                    log::info!("Retrieved {} users from {}", users.len(), guild.name);
+                }
+            }
+            let mut req = WEB_CLIENT
+                .post("http://localhost:16835/api/set/user")
+                .json(&users);
+            if let Some(token) = Config::get().string_api_token {
+                req = req.bearer_auth(token);
+            }
+            if let Err(e) = req.send().await {
+                log::error!("Failed to send users to api {e}. Users might be out of date");
+            }
+        }
+    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Timed<T> {
@@ -1023,13 +1275,20 @@ struct Timed<T> {
 #[tokio::main]
 async fn main() {
     env_logger::init();
+    consent::init();
     let cfg = Config::get();
     let mut tmp = cfg.data_path.clone();
     tmp.push("tmp");
     if let Err(e) = std::fs::remove_dir_all(&tmp) {
         log::error!("Failed to remove tmp folder: {:?}", e);
     }
-    std::fs::create_dir_all(&tmp).expect("Failed to create tmp folder");
+    match std::fs::create_dir_all(&tmp) {
+        Ok(_) => {}
+        Err(e) => {
+            log::error!("Failed to create tmp folder: {:?}", e);
+            return;
+        }
+    }
     let token = cfg.token;
     let handler = Handler::new(vec![
         Box::new(commands::music::transcribe::Transcribe),
@@ -1046,6 +1305,7 @@ async fn main() {
         Box::new(commands::music::stop::Stop),
         Box::new(commands::music::volume::Volume),
         Box::new(commands::music::autoplay::Autoplay),
+        Box::new(commands::music::consent::Consent),
         Box::new(commands::embed::Video),
         Box::new(commands::embed::Audio),
         Box::new(commands::embed::John),
@@ -1054,29 +1314,37 @@ async fn main() {
         .preallocated_tracks(2)
         .decode_mode(songbird::driver::DecodeMode::Decode)
         .crypto_mode(songbird::driver::CryptoMode::Lite);
-    let mut client = Client::builder(token, GatewayIntents::all())
+    let mut client = match Client::builder(token, GatewayIntents::all())
         .register_songbird_from_config(config)
         .event_handler(handler)
         .await
-        .expect("Error creating client");
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to create client: {:?}", e);
+            return;
+        }
+    };
     {
         let mut data = client.data.write().await;
-        data.insert::<commands::music::AudioHandler>(Arc::new(Mutex::new(HashMap::new())));
-        data.insert::<commands::music::AudioCommandHandler>(Arc::new(Mutex::new(HashMap::new())));
-        data.insert::<commands::music::VoiceData>(Arc::new(Mutex::new(
+        data.insert::<commands::music::AudioHandler>(Arc::new(RwLock::new(HashMap::new())));
+        data.insert::<commands::music::AudioCommandHandler>(Arc::new(RwLock::new(HashMap::new())));
+        data.insert::<commands::music::VoiceData>(Arc::new(RwLock::new(
             commands::music::InnerVoiceData::new(client.cache.current_user().id),
         )));
-        data.insert::<commands::music::transcribe::TranscribeData>(Arc::new(Mutex::new(
+        data.insert::<commands::music::transcribe::TranscribeData>(Arc::new(RwLock::new(
             HashMap::new(),
         )));
     }
     let mut tick = tokio::time::interval({
         let now = chrono::Local::now();
-        let mut next = chrono::Local::now()
-            .date_naive()
-            .and_hms_opt(8, 0, 0)
-            .expect("Failed to get next 8 am, wtf? did time end?")
-            .and_utc();
+        let mut next = match chrono::Local::now().date_naive().and_hms_opt(8, 0, 0) {
+            Some(v) => v.and_utc(),
+            None => {
+                log::error!("Failed to get next 8am, did time stop?");
+                return;
+            }
+        };
         if next < now {
             next += chrono::Duration::days(1);
         }
@@ -1104,10 +1372,10 @@ async fn main() {
         }
     }
     log::info!("Getting write lock on data");
-    let dw = client.data.write().await;
+    let dw = client.data.read().await;
     log::info!("Got write lock on data");
     if let Some(v) = dw.get::<commands::music::AudioCommandHandler>().take() {
-        for (i, x) in v.lock().await.values().enumerate() {
+        for (i, x) in v.read().await.values().enumerate() {
             log::info!("Sending stop command {}", i);
             let (tx, rx) = oneshot::channel::<String>();
             if let Err(e) = x.send((tx, commands::music::AudioPromiseCommand::Stop(None))) {
@@ -1122,7 +1390,7 @@ async fn main() {
         }
     }
     if let Some(v) = dw.get::<commands::music::AudioHandler>().take() {
-        for (i, x) in v.lock().await.values_mut().enumerate() {
+        for (i, x) in v.write().await.values_mut().enumerate() {
             log::info!("Joining handle {}", i);
             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), x);
             if let Ok(Ok(())) = timeout.await {
@@ -1136,9 +1404,23 @@ async fn main() {
         .get::<commands::music::transcribe::TranscribeData>()
         .take()
     {
-        v.lock().await.clear();
+        v.write().await.clear();
     }
     client.shard_manager.shutdown_all().await;
+    // write the consent data to disk
+    consent::save();
+    // {
+    //     match std::fs::File::create(&cfg.consent_path) {
+    //         Ok(f) => {
+    //             if let Err(e) = serde_json::to_writer(&f, &*CONSENT_DATABASE) {
+    //                 log::error!("Failed to write consent data: {:?}", e);
+    //             }
+    //         }
+    //         Err(e) => {
+    //             log::error!("Failed to create consent file: {:?}", e);
+    //         }
+    //     };
+    // }
     std::process::exit(exit_code);
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1170,6 +1452,8 @@ struct Config {
     alert_phrases_path: PathBuf,
     #[cfg(feature = "transcribe")]
     sam_path: PathBuf,
+    #[cfg(feature = "transcribe")]
+    consent_path: PathBuf,
 }
 impl Config {
     pub fn get() -> Self {
@@ -1194,10 +1478,13 @@ impl Config {
             } else {
                 Self::safe_read("\nPlease enter your application name:")
             };
-            let mut data_path = config_path
-                .parent()
-                .expect("Failed to get parent, this should never happen.")
-                .to_path_buf();
+            let mut data_path = match config_path.parent() {
+                Some(p) => p.to_path_buf(),
+                None => {
+                    log::error!("Failed to get parent, this should never happen.");
+                    return;
+                }
+            };
             data_path.push(app_name.clone());
             Config {
                 token: if let Some(token) = rec.token {
@@ -1295,16 +1582,24 @@ impl Config {
                 } else {
                     Self::safe_read("\nPlease enter your sam path:")
                 },
+                consent_path: if let Some(consent_path) = rec.consent_path {
+                    consent_path
+                } else {
+                    Self::safe_read("\nPlease enter your consent path:")
+                },
             }
         } else {
             log::error!("Welcome to my shitty Rust Music Bot!");
             log::error!("It appears that this may be the first time you are running the bot.");
             log::error!("I will take you through a short onboarding process to get you started.");
             let app_name: String = Self::safe_read("\nPlease enter your application name:");
-            let mut data_path = config_path
-                .parent()
-                .expect("Failed to get parent, this should never happen.")
-                .to_path_buf();
+            let mut data_path = match config_path.parent() {
+                Some(p) => p.to_path_buf(),
+                None => {
+                    log::error!("Failed to get parent, this should never happen.");
+                    return;
+                }
+            };
             data_path.push(app_name.clone());
             Config {
                 token: Self::safe_read("\nPlease enter your bot token:"),
@@ -1330,23 +1625,35 @@ impl Config {
                 transcribe_url: Self::safe_read("\nPlease enter your transcribe url:"),
                 alert_phrases_path: Self::safe_read("\nPlease enter your alert phrase path:"),
                 sam_path: Self::safe_read("\nPlease enter your sam path:"),
+                consent_path: Self::safe_read("\nPlease enter your consent path:"),
             }
         };
-        std::fs::write(
+        match std::fs::write(
             config_path.clone(),
-            serde_json::to_string_pretty(&config)
-                .unwrap_or_else(|_| panic!("Failed to write\n{:?}", config_path)),
-        )
-        .expect("Failed to write config.json");
-        log::info!("Config written to {:?}", config_path);
+            match serde_json::to_string_pretty(&config) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("Failed to serialize config: {}", e);
+                    return;
+                }
+            },
+        ) {
+            Ok(_) => {
+                log::info!("Config written to {:?}", config_path);
+            }
+            Err(e) => {
+                log::error!("Failed to write config to {:?}: {}", config_path, e);
+            }
+        }
     }
     fn safe_read<T: std::str::FromStr>(prompt: &str) -> T {
         loop {
             log::error!("{}", prompt);
             let mut input = String::new();
-            std::io::stdin()
-                .read_line(&mut input)
-                .expect("Failed to read line");
+            if let Err(e) = std::io::stdin().read_line(&mut input) {
+                log::error!("Failed to read input: {}", e);
+                continue;
+            }
             let input = input.trim();
             match input.parse::<T>() {
                 Ok(input) => return input,
@@ -1409,4 +1716,6 @@ struct RecoverConfig {
     alert_phrase_path: Option<PathBuf>,
     #[cfg(feature = "transcribe")]
     sam_path: Option<PathBuf>,
+    #[cfg(feature = "transcribe")]
+    consent_path: Option<PathBuf>,
 }

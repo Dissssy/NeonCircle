@@ -16,3 +16,5 @@ ex.html
 src/commands/emulate.rs.old
 sam
 alerts.json
+consent.json
+log.txt

@@ -1,10 +1,10 @@
 use crate::commands::music::mainloop::Log;
-use anyhow::Error;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
-use tokio::{sync::Mutex, time::Instant};
+use tokio::{sync::RwLock, time::Instant};
 pub struct AzuraCast {
-    data: Arc<Mutex<Root>>,
+    data: Arc<RwLock<Root>>,
     log: Log,
     last_update: Instant,
     url: String,
@@ -19,16 +19,15 @@ impl AzuraCast {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let data = reqwest::get(url).await?.json::<Root>().await?;
         Ok(Self {
-            data: Arc::new(Mutex::new(data)),
+            data: Arc::new(RwLock::new(data)),
             last_update: Instant::now(),
             url: url.to_string(),
             log,
             timeout,
         })
     }
-    pub async fn slow_data(&mut self) -> Result<Root, Error> {
-        let r = tokio::time::timeout(self.timeout, self.data.lock()).await;
-        match r {
+    pub async fn slow_data(&mut self) -> Result<Root> {
+        match tokio::time::timeout(self.timeout, self.data.write()).await {
             Ok(mut i) => {
                 let r = tokio::time::timeout(self.timeout, i.update(&self.url)).await;
                 match r {
@@ -51,7 +50,7 @@ impl AzuraCast {
                     .await;
             }
         }
-        let r = tokio::time::timeout(self.timeout, self.data.lock()).await;
+        let r = tokio::time::timeout(self.timeout, self.data.read()).await;
         match r {
             Ok(i) => Ok(i.clone()),
             Err(e) => {
@@ -62,15 +61,14 @@ impl AzuraCast {
             }
         }
     }
-    pub async fn fast_data(&mut self) -> Result<Root, Error> {
+    pub async fn fast_data(&mut self) -> Result<Root> {
         if self.last_update.elapsed().as_secs() > 5 {
             let d = self.data.clone();
             let url = self.url.clone();
             let log = self.log.clone();
             let timeout = self.timeout;
             tokio::spawn(async move {
-                let r = tokio::time::timeout(timeout, d.lock()).await;
-                match r {
+                match tokio::time::timeout(timeout, d.write()).await {
                     Ok(mut i) => {
                         let r = tokio::time::timeout(timeout, i.update(&url)).await;
                         match r {
@@ -93,7 +91,7 @@ impl AzuraCast {
             });
             self.last_update = Instant::now();
         }
-        let r = tokio::time::timeout(self.timeout, self.data.lock()).await;
+        let r = tokio::time::timeout(self.timeout, self.data.read()).await;
         match r {
             Ok(i) => Ok(i.clone()),
             Err(e) => {
@@ -121,7 +119,7 @@ pub struct Root {
     pub is_online: bool,
 }
 impl Root {
-    pub async fn update(&mut self, url: &str) -> Result<(), Error> {
+    pub async fn update(&mut self, url: &str) -> Result<()> {
         let data = reqwest::get(url).await?.json::<Root>().await?;
         *self = data;
         Ok(())

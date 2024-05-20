@@ -1,11 +1,11 @@
-use super::RawMessage;
-use crate::{video::Video, youtube::TTSVoice};
-use anyhow::Error;
+use super::{AudioPromiseCommand, RawMessage};
+use crate::{video::Video, voice_events::PostSomething, youtube::TTSVoice};
+use anyhow::Result;
 use rand::seq::SliceRandom;
 use serenity::all::*;
 use songbird::{input::Input, tracks::TrackHandle, typemap::TypeMapKey, Call};
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 #[derive(Debug, Clone)]
 pub struct Transcribe;
 #[async_trait]
@@ -74,8 +74,9 @@ impl crate::CommandTrait for Transcribe {
         };
         if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
             let next_step = {
-                let mut v = v.lock().await;
-                v.mutual_channel(ctx, &guild_id, &member.user.id)
+                v.write()
+                    .await
+                    .mutual_channel(ctx, &guild_id, &member.user.id)
             };
             match next_step {
                 super::VoiceAction::UserNotConnected => {
@@ -118,27 +119,31 @@ impl crate::CommandTrait for Transcribe {
                     return;
                 }
                 super::VoiceAction::InSame(_channel) => {
-                    let em = match ctx
-                        .data
-                        .read()
-                        .await
-                        .get::<TranscribeData>()
-                        .expect("Expected TranscribeData in TypeMap.")
-                        .lock()
-                        .await
-                        .entry(guild_id)
-                    {
-                        std::collections::hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            e.insert(Arc::new(Mutex::new(TranscribeChannelHandler::new())))
+                    let em = match super::get_transcribe_channel_handler(ctx, &guild_id).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            log::error!("Failed to get transcribe channel handler: {:?}", e);
+                            if let Err(e) = interaction
+                                .edit_response(
+                                    &ctx.http,
+                                    EditInteractionResponse::new().content("Failed to get handler"),
+                                )
+                                .await
+                            {
+                                log::error!(
+                                    "Failed to edit original interaction response: {:?}",
+                                    e
+                                );
+                            }
+                            return;
                         }
-                    }
-                    .clone();
-                    let mut e = em.lock().await;
+                    };
                     match option {
                         super::OrToggle::Specific(option) => {
                             if option {
-                                if let Err(res) = e.register(interaction.channel_id).await {
+                                if let Err(res) =
+                                    em.write().await.register(interaction.channel_id).await
+                                {
                                     if let Err(e) = interaction
                                         .edit_response(
                                             &ctx.http,
@@ -164,7 +169,9 @@ impl crate::CommandTrait for Transcribe {
                                         e
                                     );
                                 }
-                            } else if let Err(res) = e.unregister(interaction.channel_id).await {
+                            } else if let Err(res) =
+                                em.write().await.unregister(interaction.channel_id).await
+                            {
                                 if let Err(e) = interaction
                                     .edit_response(
                                         &ctx.http,
@@ -192,7 +199,8 @@ impl crate::CommandTrait for Transcribe {
                             }
                         }
                         super::OrToggle::Toggle => {
-                            if let Err(res) = e.toggle(interaction.channel_id).await {
+                            if let Err(res) = em.write().await.toggle(interaction.channel_id).await
+                            {
                                 if let Err(e) = interaction
                                     .edit_response(
                                         &ctx.http,
@@ -235,7 +243,7 @@ impl crate::CommandTrait for Transcribe {
     fn name(&self) -> &str {
         "transcribe"
     }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<(), Error> {
+    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<()> {
         Ok(())
     }
 }
@@ -254,13 +262,13 @@ pub enum Deleteable {
     Keep(Video),
 }
 impl Deleteable {
-    pub fn delete(&self) -> Result<(), Error> {
+    pub fn delete(&self) -> Result<()> {
         match self {
             Self::Delete(v) => v.delete(),
             Self::Keep(_) => Ok(()),
         }
     }
-    pub fn force_delete(&self) -> Result<(), Error> {
+    pub fn force_delete(&self) -> Result<()> {
         self.get_video().delete()
     }
     pub fn get_video(&self) -> &Video {
@@ -288,19 +296,19 @@ impl Handler {
             last_channel_name: String::new(),
         }
     }
-    pub async fn update(&mut self, messages: Vec<RawMessage>) -> Result<(), Error> {
+    pub async fn update(&mut self, messages: Vec<RawMessage>) -> Result<()> {
         self.queue.extend(messages);
         self.queue.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
         self.shift().await?;
         Ok(())
     }
-    pub async fn shift(&mut self) -> Result<(), Error> {
+    pub async fn shift(&mut self) -> Result<()> {
         self.check_current_handle().await?;
         self.check_next_tts().await?;
         self.prepare_next_tts().await?;
         Ok(())
     }
-    pub async fn check_current_handle(&mut self) -> Result<(), Error> {
+    pub async fn check_current_handle(&mut self) -> Result<()> {
         if let Some((handle, v)) = &self.current_handle {
             match tokio::time::timeout(tokio::time::Duration::from_secs(1), handle.get_info()).await
             {
@@ -323,11 +331,13 @@ impl Handler {
         self.current_handle = None;
         Ok(())
     }
-    pub async fn check_next_tts(&mut self) -> Result<(), Error> {
+    pub async fn check_next_tts(&mut self) -> Result<()> {
         if let Some(v) = &self.prepared_next {
             if self.current_handle.is_none() {
-                let mut call = self.call.lock().await;
-                let handle = call.play_input(v.to_songbird());
+                let handle = {
+                    let mut call = self.call.lock().await;
+                    call.play_input(v.to_songbird())
+                };
                 let _ = handle.set_volume(2.0);
                 self.current_handle = Some((handle, v.clone()));
                 self.prepared_next = None;
@@ -335,7 +345,7 @@ impl Handler {
         }
         Ok(())
     }
-    pub async fn prepare_next_tts(&mut self) -> Result<(), Error> {
+    pub async fn prepare_next_tts(&mut self) -> Result<()> {
         if self.prepared_next.is_some() {
             return Ok(());
         }
@@ -443,14 +453,14 @@ impl Handler {
 }
 pub struct TranscribeData;
 impl TypeMapKey for TranscribeData {
-    type Value = Amh<GuildId, Arc<Mutex<TranscribeChannelHandler>>>;
+    type Value = Arh<GuildId, Arc<RwLock<TranscribeChannelHandler>>>;
 }
-type Amh<K, V> = Arc<Mutex<HashMap<K, V>>>;
+type Arh<K, V> = Arc<RwLock<HashMap<K, V>>>;
 pub struct TranscribeChannelHandler {
-    channels: Amh<ChannelId, mpsc::Sender<RawMessage>>,
+    channels: Arh<ChannelId, mpsc::Sender<RawMessage>>,
     sender: mpsc::Sender<RawMessage>,
     receiver: Option<mpsc::Receiver<RawMessage>>,
-    assigned_voice: Amh<String, crate::youtube::TTSVoice>,
+    assigned_voice: Arh<String, crate::youtube::TTSVoice>,
     voice_cycle: Vec<crate::youtube::TTSVoice>,
 }
 impl TranscribeChannelHandler {
@@ -459,38 +469,38 @@ impl TranscribeChannelHandler {
         let mut v = crate::youtube::VOICES.clone();
         v.shuffle(&mut rand::thread_rng());
         Self {
-            channels: Arc::new(Mutex::new(HashMap::new())),
+            channels: Arc::new(RwLock::new(HashMap::new())),
             sender,
             receiver: Some(receiver),
-            assigned_voice: Arc::new(Mutex::new(HashMap::new())),
+            assigned_voice: Arc::new(RwLock::new(HashMap::new())),
             voice_cycle: v,
         }
     }
-    pub fn lock(&mut self) -> Result<mpsc::Receiver<RawMessage>, Error> {
+    pub fn lock(&mut self) -> Result<mpsc::Receiver<RawMessage>> {
         self.receiver
             .take()
             .ok_or_else(|| anyhow::anyhow!("Receiver already taken"))
     }
-    pub async fn unlock(&mut self, receiver: mpsc::Receiver<RawMessage>) -> Result<(), Error> {
+    pub async fn unlock(&mut self, receiver: mpsc::Receiver<RawMessage>) -> Result<()> {
         self.receiver = Some(receiver);
-        self.channels.lock().await.clear();
-        self.assigned_voice.lock().await.clear();
+        self.channels.write().await.clear();
+        self.assigned_voice.write().await.clear();
         self.voice_cycle.shuffle(&mut rand::thread_rng());
         Ok(())
     }
-    pub async fn register(&mut self, channel: ChannelId) -> Result<(), Error> {
+    pub async fn register(&mut self, channel: ChannelId) -> Result<()> {
         let tx = self.sender.clone();
-        let mut channels = self.channels.lock().await;
+        let mut channels = self.channels.write().await;
         channels.insert(channel, tx);
         Ok(())
     }
-    pub async fn unregister(&mut self, channel: ChannelId) -> Result<(), Error> {
-        let mut channels = self.channels.lock().await;
+    pub async fn unregister(&mut self, channel: ChannelId) -> Result<()> {
+        let mut channels = self.channels.write().await;
         channels.remove(&channel);
         Ok(())
     }
-    pub async fn toggle(&mut self, channel: ChannelId) -> Result<(), Error> {
-        let mut channels = self.channels.lock().await;
+    pub async fn toggle(&mut self, channel: ChannelId) -> Result<()> {
+        let mut channels = self.channels.write().await;
         if let std::collections::hash_map::Entry::Vacant(e) = channels.entry(channel) {
             let tx = self.sender.clone();
             e.insert(tx);
@@ -500,7 +510,7 @@ impl TranscribeChannelHandler {
         Ok(())
     }
     pub async fn send(&mut self, msg: RawMessage) -> Result<(), RawMessage> {
-        let mut channels = self.channels.lock().await;
+        let mut channels = self.channels.write().await;
         let tx = match channels.get_mut(&msg.channel_id) {
             Some(tx) => tx,
             None => return Err(msg),
@@ -516,7 +526,7 @@ impl TranscribeChannelHandler {
     pub async fn get_tts(&mut self, ctx: &Context, msg: &Message) -> Vec<RawMessage> {
         let mut messages = Vec::new();
         let voice = {
-            let mut assigned_voice = self.assigned_voice.lock().await;
+            let mut assigned_voice = self.assigned_voice.write().await;
             match assigned_voice.get(&msg.author.name) {
                 Some(v) => *v,
                 None => {
@@ -540,7 +550,7 @@ impl TranscribeChannelHandler {
     pub async fn send_tts(&mut self, ctx: &Context, msg: &Message) {
         let undo_voice = {
             self.assigned_voice
-                .lock()
+                .read()
                 .await
                 .get(&msg.author.name)
                 .is_none()
@@ -556,7 +566,73 @@ impl TranscribeChannelHandler {
             }
         }
         if errored && undo_voice {
-            self.assigned_voice.lock().await.remove(&msg.author.name);
+            self.assigned_voice.write().await.remove(&msg.author.name);
         }
     }
+}
+pub struct TranscriptionThread {
+    pub thread: tokio::task::JoinHandle<()>,
+    pub message: mpsc::UnboundedSender<TranscriptionMessage>,
+    pub receiver: mpsc::UnboundedReceiver<(PostSomething, UserId)>,
+}
+impl TranscriptionThread {
+    pub async fn new(
+        call: Arc<Mutex<Call>>,
+        http: Arc<http::Http>,
+        otx: mpsc::UnboundedSender<(oneshot::Sender<String>, AudioPromiseCommand)>,
+    ) -> Self {
+        let (message, messagerx) = mpsc::unbounded_channel();
+        let (tx, receiver) = mpsc::unbounded_channel::<(PostSomething, UserId)>();
+        // let transcribe =
+        //     crate::voice_events::VoiceDataManager::new(Arc::clone(&call), http, otx).await;
+        // let thread = tokio::task::spawn(async move {
+        //     crate::voice_events::transcription_thread(transcribe, messagerx, tx, call).await
+        // });
+        let thread = tokio::task::spawn(crate::voice_events::transcription_thread(
+            call, http, otx, messagerx, tx,
+        ));
+        Self {
+            thread,
+            message,
+            receiver,
+        }
+    }
+    // pub async fn consent(
+    //     &self,
+    //     user_id: UserId,
+    //     consent: bool,
+    //     ret: oneshot::Sender<String>,
+    // ) -> Result<()> {
+    //     if let Err(e) = self.message.send(TranscriptionMessage::Consent {
+    //         user_id,
+    //         consent,
+    //         ret,
+    //     }) {
+    //         if let TranscriptionMessage::Consent { ret, consent, .. } = e.0 {
+    //             ret.send(format!("The database was successfully updated, however we were unable to update the consent state for the voice reader.\nNeon circle may {} be able to process your audio data for this session.", if consent { "not" } else { "still" })).ok();
+    //         }
+    //         Err(anyhow::anyhow!("Failed to send consent message"))
+    //     } else {
+    //         log::trace!("Sent consent message");
+    //         Ok(())
+    //     }
+    // }
+    pub async fn stop(self) -> Result<()> {
+        self.message.send(TranscriptionMessage::Stop)?;
+        // await the thread to finish with a timeout of 5 seconds
+        match tokio::time::timeout(tokio::time::Duration::from_secs(5), self.thread).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => Err(anyhow::anyhow!("Timeout")),
+        }
+    }
+}
+#[derive(Debug)]
+pub enum TranscriptionMessage {
+    Stop,
+    // Consent {
+    //     user_id: UserId,
+    //     consent: bool,
+    //     ret: oneshot::Sender<String>,
+    // },
 }

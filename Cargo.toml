@@ -50,10 +50,11 @@ log = "0.4.21"
 powershell_script = "1.1.0"
 
 
-# [profile.release]
-# lto = true
-# codegen-units = 1
-# panic = "abort"
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
 
 [features]
 default = ["all"]

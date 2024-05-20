@@ -3,7 +3,7 @@ use crate::commands::music::{LazyLoadedVideo, MetaVideo};
 use crate::video::RawVideo;
 #[cfg(feature = "tts")]
 use crate::{commands::music::VideoType, video::Video};
-use anyhow::Error;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "tts")]
 use tokio::io::AsyncWriteExt;
@@ -172,7 +172,7 @@ pub async fn get_recommendations(url: String, lim: usize) -> Vec<VideoInfo> {
     videos_from_raw_youtube_url(url, lim).await
 }
 #[allow(dead_code)]
-pub async fn get_video_info(url: String) -> Result<VideoInfo, Error> {
+pub async fn get_video_info(url: String) -> Result<VideoInfo> {
     let info = get_url_video_info(&url).await?;
     Ok(VideoInfo {
         title: info.title,
@@ -180,7 +180,7 @@ pub async fn get_video_info(url: String) -> Result<VideoInfo, Error> {
         duration: info.duration,
     })
 }
-pub async fn get_url_video_info(url: &str) -> Result<RawVidInfo, Error> {
+pub async fn get_url_video_info(url: &str) -> Result<RawVidInfo> {
     let dl = ytd_rs::YoutubeDL::new(
         &std::path::PathBuf::from("/dev/null"),
         vec![ytd_rs::Arg::new_with_arg("-O", "%(.{title,duration})#j")],
@@ -197,10 +197,10 @@ pub async fn get_url_video_info(url: &str) -> Result<RawVidInfo, Error> {
 pub struct RawVidInfo {
     pub title: String,
     #[serde(default)]
-    pub duration: Option<u64>,
+    pub duration: Option<f64>,
 }
 #[cfg(feature = "spotify")]
-pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
+pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>> {
     let token = crate::Config::get().spotify_api_key;
     let url = format!("https://api.spotify.com/v1/tracks/{}", id);
     let res = crate::WEB_CLIENT
@@ -212,7 +212,13 @@ pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
     if let Ok(spoofy) = spoofydata {
         Ok(vec![format!(
             "{} - {}",
-            spoofy.name, spoofy.artists[0].name
+            spoofy.name,
+            spoofy
+                .artists
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )])
     } else {
         let url = format!("https://api.spotify.com/v1/albums/{}", id);
@@ -227,7 +233,17 @@ pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>, Error> {
                 .tracks
                 .items
                 .iter()
-                .map(|t| format!("{} - {}", t.name, t.artists[0].name))
+                .map(|t| {
+                    format!(
+                        "{} - {}",
+                        t.name,
+                        t.artists
+                            .iter()
+                            .map(|a| a.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
                 .collect())
         } else {
             log::info!("spoofydata: {:?}", spoofydata);
@@ -256,7 +272,7 @@ pub struct RawSpotifyArtist {
 pub struct VideoInfo {
     pub title: String,
     pub url: String,
-    pub duration: Option<u64>,
+    pub duration: Option<f64>,
 }
 impl VideoInfo {
     pub fn to_songbird(&self) -> songbird::input::Input {
@@ -319,18 +335,17 @@ impl TTSVoice {
     }
 }
 #[cfg(feature = "tts")]
-pub async fn get_tts(
-    title: String,
-    key: String,
-    specificvoice: Option<TTSVoice>,
-) -> Result<Video, Error> {
+pub async fn get_tts(title: String, key: String, specificvoice: Option<TTSVoice>) -> Result<Video> {
     let mut title = title;
     use rand::seq::SliceRandom;
-    let voice = specificvoice.unwrap_or_else(|| {
-        *SILLYVOICES
-            .choose(&mut rand::thread_rng())
-            .expect("NO SILLY VOICES AVAILABLE")
-    });
+    let backup_voice = VOICES
+        .choose(&mut rand::thread_rng())
+        .copied()
+        .ok_or(anyhow::anyhow!("Could not get voice"));
+    let voice = match specificvoice {
+        Some(v) => v,
+        None => backup_voice?,
+    };
     if specificvoice.is_none() {
         title = format!("Now playing... {}", title);
     }
@@ -388,7 +403,7 @@ pub struct TTSResponse {
     audio_content: String,
 }
 #[cfg(feature = "tts")]
-pub async fn get_access_token() -> Result<String, Error> {
+pub async fn get_access_token() -> Result<String> {
     #[cfg(target_family = "windows")]
     match powershell_script::PsScriptBuilder::new()
         .non_interactive(true)
@@ -423,7 +438,7 @@ pub async fn get_access_token() -> Result<String, Error> {
     }
 }
 #[cfg(feature = "youtube-search")]
-pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>, Error> {
+pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>> {
     let url = format!(
         "https://www.youtube.com/results?search_query={}",
         urlencoding::encode(url)
@@ -435,7 +450,10 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>, Er
         tokio::process::Command::new("yt-dlp")
             .args([
                 "--cookies",
-                bot_path.to_str().expect("Could not convert path to str"),
+                match bot_path.to_str() {
+                    Some(s) => s,
+                    None => return Err(anyhow::anyhow!("Could not get cookies path")),
+                },
             ])
             .args(["-O", "%(.{webpage_url,title,duration,uploader})j"])
             .arg("--flat-playlist")
@@ -477,12 +495,12 @@ pub struct YoutubeMedia {
     pub uploader: Option<String>,
 }
 impl YoutubeMedia {
-    pub fn to_raw(&self) -> Option<RawVideo> {
-        self.duration.map(|duration| RawVideo {
+    pub fn to_raw(&self) -> RawVideo {
+        RawVideo {
             url: self.url.clone(),
             title: self.title.clone(),
-            duration: duration.floor() as u32,
-        })
+            duration: self.duration,
+        }
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

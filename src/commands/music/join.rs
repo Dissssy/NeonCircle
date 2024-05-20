@@ -1,8 +1,13 @@
-use super::{AudioHandler, AudioPromiseCommand};
-use anyhow::Error;
+use super::{
+    mainloop::{ControlData, Log},
+    settingsdata::SettingsData,
+    transcribe::TranscriptionThread,
+    AudioHandler, AudioPromiseCommand,
+};
+use anyhow::Result;
 use serenity::all::*;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot};
 #[derive(Debug, Clone)]
 pub struct Join;
 #[async_trait]
@@ -45,8 +50,9 @@ impl crate::CommandTrait for Join {
         };
         if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
             let next_step = {
-                let mut v = v.lock().await;
-                v.mutual_channel(ctx, &guild_id, &member.user.id)
+                v.write()
+                    .await
+                    .mutual_channel(ctx, &guild_id, &member.user.id)
             };
             match next_step {
                 super::VoiceAction::UserNotConnected => {
@@ -81,26 +87,59 @@ impl crate::CommandTrait for Join {
                     return;
                 }
                 super::VoiceAction::Join(channel) => {
-                    let manager = songbird::get(ctx)
-                        .await
-                        .expect("Songbird Voice client placed in at initialisation.")
-                        .clone();
+                    let manager = match songbird::get(ctx).await {
+                        Some(v) => v,
+                        None => {
+                            if let Err(e) = interaction
+                                .edit_response(
+                                    &ctx.http,
+                                    EditInteractionResponse::new()
+                                        .content("Failed to get songbird manager"),
+                                )
+                                .await
+                            {
+                                log::error!(
+                                    "Failed to edit original interaction response: {:?}",
+                                    e
+                                );
+                            }
+                            return;
+                        }
+                    };
                     {
                         let audio_handler = {
-                            ctx.data
-                                .read()
-                                .await
-                                .get::<AudioHandler>()
-                                .expect("Expected AudioHandler in TypeMap")
-                                .clone()
+                            match ctx.data.read().await.get::<AudioHandler>() {
+                                Some(v) => Arc::clone(v),
+                                None => {
+                                    if let Err(e) = interaction
+                                        .edit_response(
+                                            &ctx.http,
+                                            EditInteractionResponse::new()
+                                                .content("Failed to get audio handler"),
+                                        )
+                                        .await
+                                    {
+                                        log::error!(
+                                            "Failed to edit original interaction response: {:?}",
+                                            e
+                                        );
+                                    }
+                                    return;
+                                }
+                            }
                         };
-                        let mut audio_handler = audio_handler.lock().await;
                         match manager.join(guild_id, channel).await {
                             Ok(call) => {
                                 let (tx, rx) = mpsc::unbounded_channel::<(
                                     oneshot::Sender<String>,
                                     AudioPromiseCommand,
                                 )>();
+                                let transcription = TranscriptionThread::new(
+                                    Arc::clone(&call),
+                                    Arc::clone(&ctx.http),
+                                    tx.clone(),
+                                )
+                                .await;
                                 let msg = match interaction
                                     .channel_id
                                     .send_message(
@@ -146,57 +185,83 @@ impl crate::CommandTrait for Join {
                                     Some(guild) => guild,
                                     None => return,
                                 };
-                                let em = match ctx
-                                    .data
-                                    .read()
+                                let em = match super::get_transcribe_channel_handler(ctx, &guild_id)
                                     .await
-                                    .get::<super::transcribe::TranscribeData>()
-                                    .expect("Expected TranscribeData in TypeMap.")
-                                    .lock()
-                                    .await
-                                    .entry(guild_id)
                                 {
-                                    std::collections::hash_map::Entry::Occupied(ref mut e) => {
-                                        e.get_mut()
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to get transcribe channel handler: {:?}",
+                                            e
+                                        );
+                                        if let Err(e) = interaction
+                                            .edit_response(
+                                                &ctx.http,
+                                                EditInteractionResponse::new()
+                                                    .content("Failed to get handler"),
+                                            )
+                                            .await
+                                        {
+                                            log::error!(
+                                    "Failed to edit original interaction response: {:?}",
+                                    e
+                                );
+                                        }
+                                        return;
                                     }
-                                    std::collections::hash_map::Entry::Vacant(e) => {
-                                        e.insert(Arc::new(Mutex::new(
-                                            super::transcribe::TranscribeChannelHandler::new(),
-                                        )))
-                                    }
-                                }
-                                .clone();
-                                if let Err(e) = em.lock().await.register(channel).await {
+                                };
+                                if let Err(e) = em.write().await.register(channel).await {
                                     log::error!("Error registering channel: {:?}", e);
                                 }
-                                let http = Arc::clone(&ctx.http);
-                                let handle = {
-                                    let tx = tx.clone();
-                                    tokio::task::spawn(async move {
-                                        super::mainloop::the_lüüp(
-                                            call,
-                                            rx,
-                                            tx,
-                                            messageref,
-                                            cfg.looptime,
-                                            nothing_path,
-                                            em,
-                                            http,
-                                            format!("{}-{}", guild_id, channel),
-                                        )
-                                        .await;
-                                    })
-                                };
-                                audio_handler.insert(guild_id.to_string(), handle);
+                                let handle = tokio::task::spawn(async move {
+                                    let control = ControlData {
+                                        call,
+                                        rx,
+                                        msg: messageref,
+                                        nothing_uri: nothing_path,
+                                        settings: SettingsData::default(),
+                                        brk: false,
+                                        log: Log::new(format!("{}-{}", guild_id, channel)),
+                                        transcribe: em,
+                                    };
+                                    super::mainloop::the_lüüp(
+                                        cfg.looptime,
+                                        transcription,
+                                        control,
+                                    )
+                                    .await;
+                                });
+                                audio_handler
+                                    .write()
+                                    .await
+                                    .insert(guild_id.to_string(), handle);
                                 let audio_command_handler = {
                                     let read_lock = ctx.data.read().await;
-                                    read_lock
-                                        .get::<super::AudioCommandHandler>()
-                                        .expect("Expected AudioCommandHandler in TypeMap")
-                                        .clone()
+                                    match read_lock.get::<super::AudioCommandHandler>() {
+                                        Some(v) => Arc::clone(v),
+                                        None => {
+                                            if let Err(e) = interaction
+                                                .edit_response(
+                                                    &ctx.http,
+                                                    EditInteractionResponse::new().content(
+                                                        "Failed to get audio command handler",
+                                                    ),
+                                                )
+                                                .await
+                                            {
+                                                log::error!(
+                                                    "Failed to edit original interaction response: {:?}",
+                                                    e
+                                                );
+                                            }
+                                            return;
+                                        }
+                                    }
                                 };
-                                let mut audio_command_handler = audio_command_handler.lock().await;
-                                audio_command_handler.insert(guild_id.to_string(), tx);
+                                audio_command_handler
+                                    .write()
+                                    .await
+                                    .insert(guild_id.to_string(), tx);
                                 if let Err(e) = interaction.delete_response(&ctx.http).await {
                                     log::error!("Error deleting interaction: {:?}", e);
                                 }
@@ -234,7 +299,7 @@ impl crate::CommandTrait for Join {
     fn name(&self) -> &str {
         "join"
     }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<(), Error> {
+    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<()> {
         Ok(())
     }
 }

@@ -1,5 +1,5 @@
-use super::AudioPromiseCommand;
-use anyhow::Error;
+use super::{AudioPromiseCommand, OrToggle};
+use anyhow::Result;
 use serenity::all::*;
 #[derive(Debug, Clone)]
 pub struct Autoplay;
@@ -41,7 +41,8 @@ impl crate::CommandTrait for Autoplay {
             "value" => Some(&o.value),
             _ => None,
         }) {
-            Some(ResolvedValue::Boolean(b)) => *b,
+            Some(ResolvedValue::Boolean(b)) => OrToggle::Specific(*b),
+            None => OrToggle::Toggle,
             _ => {
                 if let Err(e) = interaction
                     .edit_response(
@@ -62,15 +63,16 @@ impl crate::CommandTrait for Autoplay {
         };
         if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
             let next_step = {
-                let mut v = v.lock().await;
-                v.mutual_channel(ctx, &guild_id, &member.user.id)
+                v.write()
+                    .await
+                    .mutual_channel(ctx, &guild_id, &member.user.id)
             };
             next_step
                 .send_command_or_respond(
                     ctx,
                     interaction,
                     guild_id,
-                    AudioPromiseCommand::Autoplay(super::OrToggle::Specific(option)),
+                    AudioPromiseCommand::Autoplay(option),
                 )
                 .await;
         } else if let Err(e) = interaction
@@ -86,7 +88,7 @@ impl crate::CommandTrait for Autoplay {
     fn name(&self) -> &str {
         "autoplay"
     }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<(), Error> {
+    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<()> {
         Ok(())
     }
 }

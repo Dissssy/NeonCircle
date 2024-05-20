@@ -1,5 +1,6 @@
 pub mod add;
 pub mod autoplay;
+pub mod consent;
 pub mod join;
 pub mod loop_queue;
 pub mod mainloop;
@@ -16,34 +17,43 @@ pub mod transcribe;
 pub mod volume;
 use self::mainloop::EmbedData;
 use self::settingsdata::SettingsData;
+use self::transcribe::{TranscribeChannelHandler, TranscribeData};
 use crate::video::Video;
+use crate::voice_events::PostSomething;
 use crate::youtube::{TTSVoice, VideoInfo};
-use anyhow::Error;
+use anyhow::Result;
 use serde_json::json;
-use serenity::all::*;
+use serenity::all::{
+    ButtonStyle, Cache, Channel, ChannelId, ChannelType, CommandInteraction, Context,
+    CreateActionRow, CreateButton, CreateMessage, CreateThread, CreateWebhook,
+    EditInteractionResponse, EditMessage, GetMessages, GuildChannel, GuildId, Http, Member,
+    Message, MessageFlags, Timestamp, User, UserId, VoiceState,
+};
+#[cfg(feature = "new-controls")]
+use serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption};
 use songbird::typemap::TypeMapKey;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 pub struct AudioHandler;
 impl TypeMapKey for AudioHandler {
-    type Value = Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>;
+    type Value = Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>;
 }
 pub struct AudioCommandHandler;
 impl TypeMapKey for AudioCommandHandler {
     type Value = Arc<
-        Mutex<
+        RwLock<
             HashMap<String, mpsc::UnboundedSender<(oneshot::Sender<String>, AudioPromiseCommand)>>,
         >,
     >;
 }
 pub struct VoiceData;
 impl TypeMapKey for VoiceData {
-    type Value = Arc<Mutex<InnerVoiceData>>;
+    type Value = Arc<RwLock<InnerVoiceData>>;
 }
 pub struct InnerVoiceData {
     pub guilds: HashMap<GuildId, GuildVc>,
@@ -90,7 +100,16 @@ impl InnerVoiceData {
             _ => VoiceAction::UserNotConnected,
         }
     }
-    pub async fn refresh_guild(&mut self, ctx: &Context, guild_id: GuildId) -> Result<(), Error> {
+    pub async fn refresh_guild(&mut self, ctx: &Context, guild_id: GuildId) -> Result<()> {
+        let (_, new) = self.lazy_refresh_guild(ctx, guild_id).await?;
+        self.guilds.insert(guild_id, new);
+        Ok(())
+    }
+    pub async fn lazy_refresh_guild(
+        &self,
+        ctx: &Context,
+        guild_id: GuildId,
+    ) -> Result<(GuildId, GuildVc)> {
         let mut new = GuildVc::new();
         for (_i, channel) in ctx
             .http
@@ -120,8 +139,10 @@ impl InnerVoiceData {
                 new.replace_channel(channel.id, newchannel);
             }
         }
-        self.guilds.insert(guild_id, new);
-        Ok(())
+        Ok((guild_id, new))
+    }
+    pub fn write_guild(&mut self, guild_id: GuildId, voice_data: GuildVc) {
+        self.guilds.insert(guild_id, voice_data);
     }
     pub fn bot_alone(&mut self, guild: &GuildId) -> bool {
         let guild = self.guilds.entry(*guild).or_insert_with(GuildVc::new);
@@ -189,14 +210,25 @@ impl VoiceAction {
                 }
             }
             Self::InSame(_channel) => {
-                let audio_command_handler = ctx
-                    .data
-                    .read()
-                    .await
-                    .get::<AudioCommandHandler>()
-                    .expect("Expected AudioCommandHandler in TypeMap")
-                    .clone();
-                let mut audio_command_handler = audio_command_handler.lock().await;
+                let audio_command_handler = match ctx.data.read().await.get::<AudioCommandHandler>()
+                {
+                    Some(handler) => Arc::clone(handler),
+                    None => {
+                        if let Err(e) = interaction
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(
+                                    "Failed to get audio handler, this shouldn't be possible",
+                                ),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to edit original interaction response: {:?}", e);
+                        }
+                        return;
+                    }
+                };
+                let mut audio_command_handler = audio_command_handler.write().await;
                 if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
                     let (rtx, rrx) = oneshot::channel::<String>();
                     if tx.send((rtx, command)).is_err() {
@@ -242,6 +274,43 @@ impl VoiceAction {
             }
         }
     }
+    // pub async fn send_command_or_err(
+    //     self,
+    //     ctx: &Context,
+    //     command: AudioPromiseCommand,
+    // ) -> Result<String> {
+    //     // just return the error if the user isn't connected
+    //     match self {
+    //         Self::UserNotConnected => Err(anyhow::anyhow!("User not connected")),
+    //         Self::InDifferent(_channel) => Err(anyhow::anyhow!("Bot in different channel")),
+    //         Self::Join(_channel) => Err(anyhow::anyhow!("Bot not in channel")),
+    //         Self::InSame(_channel) => {
+    //             let audio_command_handler = match ctx.data.read().await.get::<AudioCommandHandler>()
+    //             {
+    //                 Some(handler) => Arc::clone(handler),
+    //                 None => {
+    //                     return Err(anyhow::anyhow!("Failed to get audio handler"));
+    //                 }
+    //             };
+    //             let mut audio_command_handler = audio_command_handler.write().await;
+    //             if let Some(tx) = audio_command_handler.get_mut(&_channel.to_string()) {
+    //                 let (rtx, rrx) = oneshot::channel::<String>();
+    //                 if tx.send((rtx, command)).is_err() {
+    //                     return Err(anyhow::anyhow!("Failed to send command"));
+    //                 }
+    //                 let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
+    //                 if let Ok(Ok(msg)) = timeout {
+    //                     log::trace!("Silent command: {}", msg);
+    //                     Ok(msg)
+    //                 } else {
+    //                     Err(anyhow::anyhow!("Failed to send inner command"))
+    //                 }
+    //             } else {
+    //                 Err(anyhow::anyhow!("Couldnt find the channel handler"))
+    //             }
+    //         }
+    //     }
+    // }
 }
 #[derive(Debug, Clone)]
 pub struct GuildVc {
@@ -324,6 +393,7 @@ pub enum AudioPromiseCommand {
     Remove(usize),
 
     RetrieveLog(mpsc::Sender<Vec<String>>),
+    // Consent { user_id: UserId, consent: bool },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrAuto {
@@ -356,9 +426,9 @@ impl VideoType {
             VideoType::Url(v) => v.to_songbird(),
         }
     }
-    pub fn get_duration(&self) -> Option<u64> {
+    pub fn get_duration(&self) -> Option<f64> {
         match self {
-            VideoType::Disk(v) => Some(v.duration.floor() as u64),
+            VideoType::Disk(v) => Some(v.duration),
             VideoType::Url(v) => v.duration,
         }
     }
@@ -369,7 +439,7 @@ impl VideoType {
             VideoType::Url(v) => v.title.clone(),
         }
     }
-    pub async fn delete(&self) -> Result<(), Error> {
+    pub async fn delete(&self) -> Result<()> {
         if let VideoType::Disk(v) = self {
             v.delete()?;
         }
@@ -378,22 +448,22 @@ impl VideoType {
 }
 #[derive(Debug, Clone)]
 pub struct LazyLoadedVideo {
-    handle: Arc<Mutex<Option<JoinHandle<anyhow::Result<Video>>>>>,
-    video: Arc<Mutex<Option<Video>>>,
+    handle: Arc<RwLock<Option<JoinHandle<anyhow::Result<Video>>>>>,
+    video: Arc<RwLock<Option<Video>>>,
 }
 impl LazyLoadedVideo {
     pub fn new(handle: JoinHandle<anyhow::Result<Video>>) -> Self {
         Self {
-            handle: Arc::new(Mutex::new(Some(handle))),
-            video: Arc::new(Mutex::new(None)),
+            handle: Arc::new(RwLock::new(Some(handle))),
+            video: Arc::new(RwLock::new(None)),
         }
     }
     pub async fn check(&mut self) -> anyhow::Result<Option<Video>> {
-        let mut lock = self.handle.lock().await;
+        let mut lock = self.handle.write().await;
         if let Some(handle) = lock.take() {
             if handle.is_finished() {
                 let video = handle.await??;
-                self.video.lock().await.replace(video.clone());
+                self.video.write().await.replace(video.clone());
                 Ok(Some(video))
             } else {
                 lock.replace(handle);
@@ -404,10 +474,10 @@ impl LazyLoadedVideo {
         }
     }
     pub async fn wait_for(&mut self) -> anyhow::Result<Video> {
-        let mut lock = self.handle.lock().await;
+        let mut lock = self.handle.write().await;
         if let Some(handle) = lock.take() {
             let video = handle.await??;
-            self.video.lock().await.replace(video.clone());
+            self.video.write().await.replace(video.clone());
             Ok(video)
         } else {
             Err(anyhow::anyhow!("Handle is None"))
@@ -443,7 +513,7 @@ pub struct MetaVideo {
     pub ttsmsg: Option<LazyLoadedVideo>,
 }
 impl MetaVideo {
-    pub async fn delete(&mut self) -> Result<(), Error> {
+    pub async fn delete(&mut self) -> Result<()> {
         self.video.delete().await?;
         #[cfg(feature = "tts")]
         if let Some(ref mut ttsmsg) = self.ttsmsg {
@@ -514,7 +584,7 @@ impl MessageReference {
             transcription_thread: OptionOrFailed::None,
         }
     }
-    async fn send_manually(&mut self, content: String, user: UserId) -> Result<(), Error> {
+    async fn send_manually(&mut self, content: PostSomething, user: UserId) -> Result<()> {
         if self.transcription_thread.is_failed() {
             return Ok(());
         }
@@ -560,21 +630,51 @@ impl MessageReference {
         };
         let author = self.http.get_user(user).await?;
         let webhook_url = format!("{}?thread_id={}", webhook.url()?, thread_id);
-        crate::WEB_CLIENT
-            .post(&webhook_url)
-            .json(&json!({
-                "content": content,
-                "username": author.name,
-                "avatar_url": author.avatar_url().unwrap_or_else(|| author.default_avatar_url()),
-                "allowed_mentions": {
-                    "parse": []
-                }
-            }))
-            .send()
-            .await?;
+        match content {
+            PostSomething::Text(text) => {
+                crate::WEB_CLIENT
+                    .post(&webhook_url)
+                    .json(&json!({
+                        "content": text,
+                        "username": author.name,
+                        "avatar_url": author.avatar_url().unwrap_or_else(|| author.default_avatar_url()),
+                        "allowed_mentions": {
+                            "parse": []
+                        }
+                    })).send().await?;
+            }
+            PostSomething::Attachment { name, data } => {
+                crate::WEB_CLIENT
+                    .post(&webhook_url)
+                    .multipart({
+                        let mut builder = reqwest::multipart::Form::new();
+                        let mut payload = json!({
+                            "username": author.name,
+                            "avatar_url": author.avatar_url().unwrap_or_else(|| author.default_avatar_url()),
+                            "allowed_mentions": {
+                                "parse": []
+                            }
+                        });
+                        builder = builder.part("files[0]", reqwest::multipart::Part::bytes(data).file_name(name));
+                        if let Some(attachments) = payload.get_mut("attachments") {
+                            let mut new = json!([
+                                {
+                                    "id": 0,
+                                    "description": "Transcription",
+                                    "filename": "transcription.mp3",
+                                }
+                            ]);
+                            std::mem::swap(attachments, &mut new);
+                        }
+                        builder.text("payload_json", serde_json::to_string(&payload)?)
+                    })
+                    .send()
+                    .await?;
+            }
+        }
         Ok(())
     }
-    async fn update(&mut self, settings: SettingsData, content: EmbedData) -> Result<(), Error> {
+    async fn update(&mut self, settings: SettingsData, content: EmbedData) -> Result<()> {
         let message = match self.message.as_mut() {
             Some(message) => message,
             None => {
@@ -646,7 +746,7 @@ impl MessageReference {
         }
         Ok(())
     }
-    async fn send_new(&mut self) -> Result<(), Error> {
+    async fn send_new(&mut self) -> Result<()> {
         match self.last_content {
             None => {
                 let content = String::from("<a:earloading:979852072998543443>");
@@ -684,13 +784,13 @@ impl MessageReference {
             }
         }
     }
-    async fn delete(&mut self) -> Result<(), Error> {
+    async fn delete(&mut self) -> Result<()> {
         if let Some(message) = self.message.take() {
             message.delete(&self.http).await?;
         };
         Ok(())
     }
-    async fn final_cleanup(&mut self) -> Result<(), Error> {
+    async fn final_cleanup(&mut self) -> Result<()> {
         self.delete().await?;
         if let Some(thread) = self.transcription_thread.take() {
             if [ChannelType::PrivateThread, ChannelType::PublicThread].contains(&thread.kind) {
@@ -922,12 +1022,10 @@ pub struct RawMessage {
     pub channel_name: Option<String>,
 
     pub timestamp: Timestamp,
-    pub tts_audio_handle: Option<tokio::task::JoinHandle<Result<Video, anyhow::Error>>>,
+    pub tts_audio_handle: Option<tokio::task::JoinHandle<Result<Video>>>,
 }
 impl RawMessage {
-    pub async fn check_tts(
-        &mut self,
-    ) -> Result<Option<Result<Video, anyhow::Error>>, anyhow::Error> {
+    pub async fn check_tts(&mut self) -> Result<Option<Result<Video>>> {
         if let Some(handle) = self.tts_audio_handle.take() {
             if handle.is_finished() {
                 Ok(Some(handle.await?))
@@ -948,7 +1046,7 @@ impl RawMessage {
             tts_audio_handle: Some(Self::audio_handle(text, *voice)),
         }
     }
-    pub async fn message(ctx: &Context, msg: &Message, voice: &TTSVoice) -> Result<Self, Error> {
+    pub async fn message(ctx: &Context, msg: &Message, voice: &TTSVoice) -> Result<Self> {
         let safecontent = msg.content_safe(&ctx.cache);
         let finder = linkify::LinkFinder::new();
         let links: Vec<_> = finder.links(&safecontent).map(|l| l.as_str()).collect();
@@ -984,10 +1082,7 @@ impl RawMessage {
             tts_audio_handle: Some(Self::audio_handle(filteredcontent, *voice)),
         })
     }
-    pub fn audio_handle(
-        text: String,
-        voice: TTSVoice,
-    ) -> tokio::task::JoinHandle<Result<Video, anyhow::Error>> {
+    pub fn audio_handle(text: String, voice: TTSVoice) -> tokio::task::JoinHandle<Result<Video>> {
         tokio::task::spawn(async move {
             let key = match crate::youtube::get_access_token().await {
                 Ok(key) => key,
@@ -1001,7 +1096,13 @@ impl RawMessage {
 }
 fn detect_emojis(safecontent: &str) -> Vec<EmojiData> {
     let mut emojis: Vec<EmojiData> = Vec::new();
-    let regex = regex::Regex::new(r"<a?:([^:]+):\d+>").expect("Failed to create regex");
+    let regex = match regex::Regex::new(r"<a?:([^:]+):\d+>") {
+        Ok(regex) => regex,
+        Err(e) => {
+            log::error!("Failed to create regex: {:?}", e);
+            return emojis;
+        }
+    };
     for cap in regex.captures_iter(safecontent) {
         let name = match cap.get(1) {
             Some(name) => name.as_str(),
@@ -1024,4 +1125,27 @@ fn detect_emojis(safecontent: &str) -> Vec<EmojiData> {
 pub struct EmojiData {
     pub name: String,
     pub raw_emoji_text: String,
+}
+pub async fn get_transcribe_channel_handler(
+    ctx: &Context,
+    guild_id: &GuildId,
+) -> Result<Arc<RwLock<TranscribeChannelHandler>>> {
+    let transcribe = {
+        let data = ctx.data.read().await;
+        match data.get::<TranscribeData>() {
+            Some(v) => Arc::clone(v),
+            None => {
+                return Err(anyhow::anyhow!("Failed to get transcribe data"));
+            }
+        }
+    };
+    let mut data = transcribe.write().await;
+    Ok(match data.entry(*guild_id) {
+        std::collections::hash_map::Entry::Occupied(e) => Arc::clone(e.get()),
+        std::collections::hash_map::Entry::Vacant(e) => {
+            let v = Arc::new(RwLock::new(TranscribeChannelHandler::new()));
+            e.insert(Arc::clone(&v));
+            v
+        }
+    })
 }

@@ -1,6 +1,6 @@
 use super::music::VideoType;
 use crate::{video::MediaType, CommandTrait};
-use anyhow::Error;
+use anyhow::Result;
 use image::{
     codecs::gif::{GifDecoder, GifEncoder, Repeat::Infinite},
     AnimationDecoder, DynamicImage, Frame, GenericImage, GenericImageView, ImageFormat, Pixel,
@@ -35,7 +35,7 @@ impl crate::CommandTrait for Video {
     fn name(&self) -> &str {
         "embed_video"
     }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<(), Error> {
+    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<()> {
         Ok(())
     }
 }
@@ -59,7 +59,7 @@ impl crate::CommandTrait for Audio {
     fn name(&self) -> &str {
         "embed_audio"
     }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<(), Error> {
+    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<()> {
         Ok(())
     }
 }
@@ -148,7 +148,7 @@ impl CommandTrait for John {
             }
         }
     }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<(), Error> {
+    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<()> {
         Ok(())
     }
 }
@@ -156,7 +156,16 @@ fn get_green_channel(src: &DynamicImage) -> anyhow::Result<DynamicImage> {
     let mut dst = DynamicImage::new_rgba8(src.width(), src.height());
     for (x, y, pixel) in src.pixels() {
         let channels = pixel.channels();
-        dst.put_pixel(x, y, image::Rgba([0, channels[1], 0, channels[3]]));
+        dst.put_pixel(
+            x,
+            y,
+            image::Rgba([
+                0,
+                channels.get(1).copied().unwrap_or_default(),
+                0,
+                channels.get(3).copied().unwrap_or_default(),
+            ]),
+        );
     }
     Ok(dst)
 }
@@ -170,14 +179,30 @@ fn john_the_image(image: DynamicImage) -> anyhow::Result<DynamicImage> {
         let green_pixel = green_hue.get_pixel(x, y);
         let orig_channels = orig_pixel.channels();
         let green_channels = green_pixel.channels();
-        let r = orig_channels[0].saturating_add(green_channels[0]);
-        let g = orig_channels[1].saturating_add(green_channels[1]);
-        let b = orig_channels[2].saturating_add(green_channels[2]);
-        output.put_pixel(x, y, image::Rgba([r, g, b, orig_channels[3]]));
+        // let r = orig_channels[0].saturating_add(green_channels[0]);
+        let r = orig_channels
+            .first()
+            .and_then(|r| green_channels.first().map(|r2| r.saturating_add(*r2)))
+            .unwrap_or_default();
+        // let g = orig_channels[1].saturating_add(green_channels[1]);
+        let g = orig_channels
+            .get(1)
+            .and_then(|g| green_channels.get(1).map(|g2| g.saturating_add(*g2)))
+            .unwrap_or_default();
+        // let b = orig_channels[2].saturating_add(green_channels[2]);
+        let b = orig_channels
+            .get(2)
+            .and_then(|b| green_channels.get(2).map(|b2| b.saturating_add(*b2)))
+            .unwrap_or_default();
+        output.put_pixel(
+            x,
+            y,
+            image::Rgba([r, g, b, orig_channels.get(3).copied().unwrap_or_default()]),
+        );
     }
     Ok(output)
 }
-fn john(image: Vec<u8>, filename: &str) -> Result<Vec<u8>, Error> {
+fn john(image: Vec<u8>, filename: &str) -> Result<Vec<u8>> {
     if filename.ends_with("gif") {
         let file_in = Cursor::new(image.as_slice());
         let decoder = GifDecoder::new(file_in)?;

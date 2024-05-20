@@ -23,7 +23,7 @@ pub struct RawVideo {
     #[serde(rename = "webpage_url")]
     pub url: String,
     pub title: String,
-    pub duration: u32,
+    pub duration: Option<f64>,
 }
 async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
     let mut bot_path = crate::Config::get().data_path.clone();
@@ -36,11 +36,10 @@ async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
         if vids.is_empty() {
             return Err(anyhow::anyhow!("No videos found"));
         }
-        match vids.first().map(|v| (v.to_raw(), v)) {
-            Some((Some(v), _)) => return Ok(vec![v]),
-            Some((None, v)) => v.url.to_string(),
-            None => return Err(anyhow::anyhow!("No videos found")),
-        }
+        vids.first()
+            .ok_or(anyhow::anyhow!("No videos found"))?
+            .url
+            .clone()
     } else {
         url.to_string()
     };
@@ -50,9 +49,15 @@ async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
     }
     let output = if bot_path.exists() {
         tokio::process::Command::new("yt-dlp")
-            .args(["--cookies", bot_path.to_str().expect("No path")])
+            .args([
+                "--cookies",
+                match bot_path.to_str() {
+                    Some(p) => p,
+                    None => return Err(anyhow::anyhow!("No path")),
+                },
+            ])
             .arg("--flat-playlist")
-            .arg("--dump-json")
+            .args(["-O", "%(.{webpage_url,title,duration,uploader})j"])
             .arg("--force-ipv4")
             .arg(url)
             .output()
@@ -60,7 +65,7 @@ async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
     } else {
         tokio::process::Command::new("yt-dlp")
             .arg("--flat-playlist")
-            .arg("--dump-json")
+            .args(["-O", "%(.{webpage_url,title,duration,uploader})j"])
             .arg("--force-ipv4")
             .arg(url)
             .output()
@@ -104,7 +109,7 @@ impl Video {
                 VideoType::Url(VideoInfo {
                     title: v.title.clone(),
                     url: v.url.clone(),
-                    duration: Some(v.duration as u64),
+                    duration: v.duration,
                 })
             })
             .collect::<Vec<VideoType>>())
@@ -142,7 +147,10 @@ impl Video {
                 if bot_path.exists() {
                     args.push(Arg::new_with_arg(
                         "--cookies",
-                        bot_path.to_str().expect("No path"),
+                        match bot_path.to_str() {
+                            Some(p) => p,
+                            None => return Err(anyhow::anyhow!("No path")),
+                        },
                     ));
                 }
                 match media_type {
@@ -234,9 +242,10 @@ impl Video {
             &id
         };
         let s = ffprobe::ffprobe(&path)?;
-        let duration = s.streams[0]
-            .duration
-            .as_ref()
+        let duration = s
+            .streams
+            .first()
+            .and_then(|s| s.duration.as_ref())
             .and_then(|d| d.parse::<f64>().ok())
             .unwrap_or(0.0);
         let playlist_index = file_name
@@ -293,11 +302,9 @@ pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>> {
         let mut vids = Vec::new();
         for video in videos {
             let vid = youtube_search(&video, 1).await?;
-            if vid.is_empty() {
-                continue;
-            } else {
+            if let Some(vid) = vid.first() {
                 vids.push(
-                    Video::get_video(&vid[0].url, false, true)
+                    Video::get_video(&vid.url, false, true)
                         .await?
                         .first()
                         .ok_or_else(|| anyhow::anyhow!("No videos found"))?
