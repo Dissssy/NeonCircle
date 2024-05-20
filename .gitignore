@@ -18,3 +18,4 @@ sam
 alerts.json
 consent.json
 log.txt
+src/voice_events/voice_events.rs.old
