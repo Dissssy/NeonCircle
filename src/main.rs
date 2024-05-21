@@ -1207,6 +1207,14 @@ async fn main() {
         v.write().await.clear();
     }
     client.shard_manager.shutdown_all().await;
+    for client in clients {
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(3), client);
+        if let Ok(Ok(Ok(()))) = timeout.await {
+            log::info!("Client exited normally");
+        } else {
+            log::error!("Client failed to exit");
+        }
+    }
     // write the consent data to disk
     global_data::save();
     // {
