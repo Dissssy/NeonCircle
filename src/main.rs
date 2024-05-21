@@ -6,7 +6,7 @@
     // clippy::arithmetic_side_effects
 )]
 mod commands;
-mod consent;
+mod global_data;
 mod radio;
 mod sam;
 mod video;
@@ -18,7 +18,7 @@ mod context_menu;
 mod voice_events;
 use crate::commands::music::{AudioCommandHandler, AudioPromiseCommand, OrToggle};
 use anyhow::Result;
-use commands::music::{OrAuto, SpecificVolume, VoiceAction, VoiceData};
+use commands::music::{VoiceAction, VoiceData};
 use serde::{Deserialize, Serialize};
 use serenity::{
     all::*,
@@ -52,10 +52,36 @@ pub trait CommandTrait
 where
     Self: Send + Sync,
 {
-    fn register(&self) -> CreateCommand;
-    async fn run(&self, ctx: &Context, interaction: &CommandInteraction);
-    fn name(&self) -> &str;
-    async fn autocomplete(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()>;
+    fn register_command(&self) -> Option<CreateCommand> {
+        None
+    }
+    fn command_name(&self) -> &str {
+        ""
+    }
+    #[allow(unused_variables)]
+    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
+        log::error!("Run not implemented for {}", self.command_name());
+        Ok(())
+    }
+    fn modal_names(&self) -> &'static [&'static str] {
+        &[]
+    }
+    #[allow(unused_variables)]
+    async fn run_modal(&self, ctx: &Context, interaction: &ModalInteraction) -> Result<()> {
+        log::error!(
+            "Modal not implemented for {}",
+            std::any::type_name::<Self>()
+        );
+        Ok(())
+    }
+    #[allow(unused_variables)]
+    async fn autocomplete(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
+        log::error!(
+            "Autocomplete not implemented for {}",
+            std::any::type_name::<Self>()
+        );
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UserSafe {
@@ -67,7 +93,10 @@ impl EventHandler for Handler {
         match &interaction {
             Interaction::Command(rawcommand) => {
                 let command_name = rawcommand.data.name.clone();
-                let command = self.commands.iter().find(|c| c.name() == command_name);
+                let command = self
+                    .commands
+                    .iter()
+                    .find(|c| c.command_name() == command_name);
                 if let Some(command) = command {
                     command.run(&ctx, rawcommand).await;
                 } else {
@@ -76,7 +105,7 @@ impl EventHandler for Handler {
             }
             Interaction::Autocomplete(autocomplete) => {
                 let commandn = autocomplete.data.name.clone();
-                let command = self.commands.iter().find(|c| c.name() == commandn);
+                let command = self.commands.iter().find(|c| c.command_name() == commandn);
                 if let Some(command) = command {
                     let r = command.autocomplete(&ctx, autocomplete).await;
                     if r.is_err() {}
@@ -380,498 +409,93 @@ impl EventHandler for Handler {
                         }
                     }
                     p => {
-                        if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Modal(CreateModal::new("feedback", "Feedback").components(vec![CreateActionRow::InputText(CreateInputText::new(InputTextStyle::Paragraph, format!("How should clicking `{}` work?", p), "feedback").placeholder("Read the discord documentation and figure out what i can ACTUALLY do. I can't think of anything.").required(true))]))).await {
+                        if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Modal(CreateModal::new("missing_feature_feedback", "Feedback").components(vec![CreateActionRow::InputText(CreateInputText::new(InputTextStyle::Paragraph, format!("How should clicking `{}` work?", p), "feedback").placeholder("Read the discord documentation and figure out what i can ACTUALLY do. I can't think of anything.").required(true))]))).await {
                             log::error!("Failed to send response: {}", e);
                         }
                     }
                 }
             }
-            Interaction::Modal(p) => match p.data.custom_id.as_str() {
-                "feedback" => {
-                    let i = match p
-                        .data
-                        .components
-                        .first()
-                        .and_then(|ar| ar.components.first())
-                    {
-                        Some(ActionRowComponent::InputText(feedback)) => feedback,
-                        Some(_) => {
-                            log::error!("Invalid components in feedback modal");
-                            return;
-                        }
-                        None => {
-                            log::error!("No components in feedback modal");
-                            return;
-                        }
-                    };
-                    let mut content = "Thanks for the feedback!".to_owned();
-                    let feedback = format!(
-                        "User thinks `{}` should\n```\n{}```",
-                        i.custom_id,
-                        match i.value {
-                            Some(ref v) => v,
-                            None => {
-                                log::error!("No value in feedback modal");
-                                return;
-                            }
-                        }
-                    );
-                    match ctx.http.get_user(UserId::new(156533151198478336)).await {
-                        Ok(user) => {
-                            if let Err(e) = user
-                                .dm(&ctx.http, CreateMessage::default().content(&feedback))
-                                .await
+            Interaction::Modal(p) => {
+                let command = self
+                    .commands
+                    .iter()
+                    .find(|c| c.modal_names().contains(&p.data.custom_id.as_str()));
+                if let Some(command) = command {
+                    command.run_modal(&ctx, p).await;
+                } else {
+                    match p.data.custom_id.as_str() {
+                        "missing_button_feedback" => {
+                            let i = match p
+                                .data
+                                .components
+                                .first()
+                                .and_then(|ar| ar.components.first())
                             {
-                                log::error!("Failed to send feedback to developer: {}", e);
-                                content = format!("{}{}\n{}\n{}\n{}", content, "Unfortunately, I failed to send your feedback to the developer.", "If you're able to, be sure to send it to him yourself!", "He's <@156533151198478336> (monkey_d._issy)\n\nHere's a copy if you need it.", feedback);
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("Failed to get user: {}", e);
-                            content = format!("{}{}\n{}\n{}\n{}", content, "Unfortunately, I failed to send your feedback to the developer.", "If you're able to, be sure to send it to him yourself!", "He's <@156533151198478336> (monkey_d._issy)\n\nHere's a copy if you need it.", feedback);
-                        }
-                    }
-                    if let Err(e) = p
-                        .create_response(
-                            &ctx.http,
-                            CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::new()
-                                    .content(content)
-                                    .ephemeral(true),
-                            ),
-                        )
-                        .await
-                    {
-                        log::error!("Failed to send response: {}", e);
-                    }
-                }
-                raw if ["volume", "radiovolume"].iter().any(|a| *a == raw) => {
-                    let val = match p
-                        .data
-                        .components
-                        .first()
-                        .and_then(|ar| ar.components.first())
-                    {
-                        Some(ActionRowComponent::InputText(volume)) => match volume.value {
-                            Some(ref v) => v,
-                            None => {
-                                log::error!("No value in volume modal");
-                                return;
-                            }
-                        },
-                        Some(_) => {
-                            log::error!("Invalid components in volume modal");
-                            return;
-                        }
-                        None => {
-                            log::error!("No components in volume modal");
-                            return;
-                        }
-                    };
-                    let val = match val.parse::<f64>() {
-                        Ok(v) => v,
-                        Err(e) => {
-                            log::info!("Failed to parse volume: {}", e);
-                            if let Err(e) = p
-                                .create_response(
-                                    &ctx.http,
-                                    CreateInteractionResponse::Message(
-                                        CreateInteractionResponseMessage::new()
-                                            .content(format!("`{}` is not a valid number", val))
-                                            .ephemeral(true),
-                                    ),
-                                )
-                                .await
-                            {
-                                log::error!("Failed to send response: {}", e);
-                            }
-                            return;
-                        }
-                    };
-                    if !(0.0..=100.0).contains(&val) {
-                        if let Err(e) = p
-                            .create_response(
-                                &ctx.http,
-                                CreateInteractionResponse::Message(
-                                    CreateInteractionResponseMessage::new()
-                                        .content(format!("`{}` is outside 0-100", val))
-                                        .ephemeral(true),
-                                ),
-                            )
-                            .await
-                        {
-                            log::error!("Failed to send response: {}", e);
-                        }
-                        return;
-                    }
-                    let guild_id = match p.guild_id {
-                        Some(id) => id,
-                        None => {
-                            if let Err(e) = p
-                                .create_response(
-                                    &ctx.http,
-                                    CreateInteractionResponse::Message(
-                                        CreateInteractionResponseMessage::new()
-                                            .content("This can only be used in a server")
-                                            .ephemeral(true),
-                                    ),
-                                )
-                                .await
-                            {
-                                log::error!("Failed to send response: {}", e);
-                                return;
-                            }
-                            return;
-                        }
-                    };
-                    if let (Some(v), Some(member)) = (
-                        ctx.data.read().await.get::<VoiceData>().cloned(),
-                        p.member.as_ref(),
-                    ) {
-                        let mut v = v.write().await;
-                        let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
-                        if let VoiceAction::InSame(_c) = next_step {
-                            let audio_command_handler =
-                                match ctx.data.read().await.get::<AudioCommandHandler>() {
-                                    Some(a) => Arc::clone(a),
-                                    None => {
-                                        log::error!("Expected AudioCommandHandler in TypeMap");
-                                        if let Err(e) = p
-                                            .create_response(
-                                                &ctx.http,
-                                                CreateInteractionResponse::Message(
-                                                    CreateInteractionResponseMessage::new()
-                                                        .content(
-                                                            "Failed to get audio command handler",
-                                                        )
-                                                        .ephemeral(true),
-                                                ),
-                                            )
-                                            .await
-                                        {
-                                            log::error!("Failed to send response: {}", e);
-                                        }
-                                        return;
-                                    }
-                                };
-                            let mut audio_command_handler = audio_command_handler.write().await;
-                            if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
-                                let (rtx, rrx) = oneshot::channel::<String>();
-                                if let Err(e) = tx.send((
-                                    rtx,
-                                    match raw {
-                                        "volume" => AudioPromiseCommand::SpecificVolume(
-                                            SpecificVolume::Volume(val / 100.0),
-                                        ),
-                                        "radiovolume" => AudioPromiseCommand::SpecificVolume(
-                                            SpecificVolume::RadioVolume(val / 100.0),
-                                        ),
-                                        uh => {
-                                            log::error!("Unknown command: {}", uh);
-                                            return;
-                                        }
-                                    },
-                                )) {
-                                    if let Err(e) = p
-                                        .create_response(
-                                            &ctx.http,
-                                            CreateInteractionResponse::Message(
-                                                CreateInteractionResponseMessage::new()
-                                                    .content(format!(
-                                                        "Failed to issue command for {} ERR {}",
-                                                        raw, e
-                                                    ))
-                                                    .ephemeral(true),
-                                            ),
-                                        )
-                                        .await
-                                    {
-                                        log::error!("Failed to send response: {}", e);
-                                    }
+                                Some(ActionRowComponent::InputText(feedback)) => feedback,
+                                Some(_) => {
+                                    log::error!("Invalid components in feedback modal");
                                     return;
                                 }
-                                let timeout =
-                                    tokio::time::timeout(std::time::Duration::from_secs(10), rrx)
-                                        .await;
-                                match timeout {
-                                    Ok(Ok(_msg)) => {
-                                        if let Err(e) = p
-                                            .create_response(
-                                                &ctx.http,
-                                                CreateInteractionResponse::Acknowledge,
-                                            )
-                                            .await
-                                        {
-                                            log::error!("Failed to send response: {}", e);
-                                        }
-                                        return;
-                                    }
-                                    Ok(Err(e)) => {
-                                        log::error!(
-                                            "Failed to issue command for {} ERR: {}",
-                                            raw,
-                                            e
-                                        );
-                                    }
-                                    Err(e) => {
-                                        log::error!(
-                                            "Failed to issue command for {} ERR: {}",
-                                            raw,
-                                            e
-                                        );
-                                    }
-                                }
-                                if let Err(e) = p
-                                    .create_response(
-                                        &ctx.http,
-                                        CreateInteractionResponse::Message(
-                                            CreateInteractionResponseMessage::new()
-                                                .content(format!(
-                                                    "Failed to issue command for {}",
-                                                    raw
-                                                ))
-                                                .ephemeral(true),
-                                        ),
-                                    )
-                                    .await
-                                {
-                                    log::error!("Failed to send response: {}", e);
-                                }
-                                return;
-                            }
-                            log::trace!("{}", _c);
-                        } else {
-                            if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Why did you leave? I was just about to change the volume!").ephemeral(true))).await {
-                                log::error!("Failed to send response: {}", e);
-                            }
-                            return;
-                        }
-                    } else {
-                        log::error!("Failed to get voice data");
-                        if let Err(e) = p
-                            .create_response(
-                                &ctx.http,
-                                CreateInteractionResponse::Message(
-                                    CreateInteractionResponseMessage::new()
-                                        .content("Failed to get voice data")
-                                        .ephemeral(true),
-                                ),
-                            )
-                            .await
-                        {
-                            log::error!("Failed to send response: {}", e);
-                        }
-                    }
-                }
-                "bitrate" => {
-                    let val = match p
-                        .data
-                        .components
-                        .first()
-                        .and_then(|ar| ar.components.first())
-                    {
-                        Some(ActionRowComponent::InputText(bitrate)) => match bitrate.value {
-                            Some(ref v) => v,
-                            None => {
-                                log::error!("No value in bitrate modal");
-                                return;
-                            }
-                        },
-                        Some(_) => {
-                            log::error!("Invalid components in bitrate modal");
-                            return;
-                        }
-                        None => {
-                            log::error!("No components in bitrate modal");
-                            return;
-                        }
-                    };
-                    let val = if val.is_empty() {
-                        OrAuto::Auto
-                    } else {
-                        OrAuto::Specific({
-                            let val = match val.parse::<i64>() {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    log::info!("Failed to parse bitrate: {}", e);
-                                    if let Err(e) = p
-                                        .create_response(
-                                            &ctx.http,
-                                            CreateInteractionResponse::Message(
-                                                CreateInteractionResponseMessage::new()
-                                                    .content(format!(
-                                                        "`{}` is not a valid number",
-                                                        val
-                                                    ))
-                                                    .ephemeral(true),
-                                            ),
-                                        )
-                                        .await
-                                    {
-                                        log::error!("Failed to send response: {}", e);
-                                    }
+                                None => {
+                                    log::error!("No components in feedback modal");
                                     return;
                                 }
                             };
-                            if !(512..=512000).contains(&val) {
-                                if let Err(e) = p
-                                    .create_response(
-                                        &ctx.http,
-                                        CreateInteractionResponse::Message(
-                                            CreateInteractionResponseMessage::new()
-                                                .content(format!("`{}` is outside 512-512000", val))
-                                                .ephemeral(true),
-                                        ),
-                                    )
-                                    .await
-                                {
-                                    log::error!("Failed to send response: {}", e);
+                            let mut content = "Thanks for the feedback!".to_owned();
+                            let feedback = format!(
+                                "User thinks `{}` should\n```\n{}```",
+                                i.custom_id,
+                                match i.value {
+                                    Some(ref v) => v,
+                                    None => {
+                                        log::error!("No value in feedback modal");
+                                        return;
+                                    }
                                 }
-                                return;
+                            );
+                            match ctx.http.get_user(UserId::new(156533151198478336)).await {
+                                Ok(user) => {
+                                    if let Err(e) = user
+                                        .dm(&ctx.http, CreateMessage::default().content(&feedback))
+                                        .await
+                                    {
+                                        log::error!("Failed to send feedback to developer: {}", e);
+                                        content = format!("{}{}\n{}\n{}\n{}", content, "Unfortunately, I failed to send your feedback to the developer.", "If you're able to, be sure to send it to him yourself!", "He's <@156533151198478336> (monkey_d._issy)\n\nHere's a copy if you need it.", feedback);
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to get user: {}", e);
+                                    content = format!("{}{}\n{}\n{}\n{}", content, "Unfortunately, I failed to send your feedback to the developer.", "If you're able to, be sure to send it to him yourself!", "He's <@156533151198478336> (monkey_d._issy)\n\nHere's a copy if you need it.", feedback);
+                                }
                             }
-                            val
-                        })
-                    };
-                    let guild_id = match p.guild_id {
-                        Some(id) => id,
-                        None => {
                             if let Err(e) = p
                                 .create_response(
                                     &ctx.http,
                                     CreateInteractionResponse::Message(
                                         CreateInteractionResponseMessage::new()
-                                            .content("This can only be used in a server")
+                                            .content(content)
                                             .ephemeral(true),
                                     ),
                                 )
                                 .await
                             {
                                 log::error!("Failed to send response: {}", e);
-                                return;
                             }
-                            return;
                         }
-                    };
-                    if let (Some(v), Some(member)) = (
-                        ctx.data.read().await.get::<VoiceData>().cloned(),
-                        p.member.as_ref(),
-                    ) {
-                        let mut v = v.write().await;
-                        let next_step = v.mutual_channel(&ctx, &guild_id, &member.user.id);
-                        if let VoiceAction::InSame(_c) = next_step {
-                            let audio_command_handler =
-                                match ctx.data.read().await.get::<AudioCommandHandler>() {
-                                    Some(a) => Arc::clone(a),
-                                    None => {
-                                        log::error!("Expected AudioCommandHandler in TypeMap");
-                                        if let Err(e) = p
-                                            .create_response(
-                                                &ctx.http,
-                                                CreateInteractionResponse::Message(
-                                                    CreateInteractionResponseMessage::new()
-                                                        .content(
-                                                            "Failed to get audio command handler",
-                                                        )
-                                                        .ephemeral(true),
-                                                ),
-                                            )
-                                            .await
-                                        {
-                                            log::error!("Failed to send response: {}", e);
-                                        }
-                                        return;
-                                    }
-                                };
-                            let mut audio_command_handler = audio_command_handler.write().await;
-                            if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
-                                let (rtx, rrx) = oneshot::channel::<String>();
-                                if let Err(e) = tx.send((rtx, AudioPromiseCommand::SetBitrate(val)))
-                                {
-                                    if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for bitrate ERR {}", e)).ephemeral(true))).await {
-                                        log::error!("Failed to send response: {}", e);
-                                    }
-                                    return;
-                                }
-                                let timeout =
-                                    tokio::time::timeout(std::time::Duration::from_secs(10), rrx)
-                                        .await;
-                                match timeout {
-                                    Ok(Ok(_msg)) => {
-                                        if let Err(e) = p
-                                            .create_response(
-                                                &ctx.http,
-                                                CreateInteractionResponse::Acknowledge,
-                                            )
-                                            .await
-                                        {
-                                            log::error!("Failed to send response: {}", e);
-                                        }
-                                        return;
-                                    }
-                                    Ok(Err(e)) => {
-                                        log::error!(
-                                            "Failed to issue command for bitrate ERR: {}",
-                                            e
-                                        );
-                                    }
-                                    Err(e) => {
-                                        log::error!(
-                                            "Failed to issue command for bitrate ERR: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                                if let Err(e) = p
-                                    .create_response(
-                                        &ctx.http,
-                                        CreateInteractionResponse::Message(
-                                            CreateInteractionResponseMessage::new()
-                                                .content("Failed to issue command for bitrate")
-                                                .ephemeral(true),
-                                        ),
-                                    )
-                                    .await
-                                {
-                                    log::error!("Failed to send response: {}", e);
-                                }
-                                return;
-                            }
-                            log::trace!("{}", _c);
-                        } else {
-                            if let Err(e) = p.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Why did you leave? I was just about to change the bitrate!").ephemeral(true))).await {
+                        "log" => {
+                            if let Err(e) = p
+                                .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+                                .await
+                            {
                                 log::error!("Failed to send response: {}", e);
                             }
-                            return;
                         }
-                    } else {
-                        log::error!("Failed to get voice data");
-                        if let Err(e) = p
-                            .create_response(
-                                &ctx.http,
-                                CreateInteractionResponse::Message(
-                                    CreateInteractionResponseMessage::new()
-                                        .content("Failed to get voice data")
-                                        .ephemeral(true),
-                                ),
-                            )
-                            .await
-                        {
-                            log::error!("Failed to send response: {}", e);
+                        _ => {
+                            log::error!("Unknown modal: {}", p.data.custom_id);
                         }
                     }
                 }
-                "log" => {
-                    if let Err(e) = p
-                        .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
-                        .await
-                    {
-                        log::error!("Failed to send response: {}", e);
-                    }
-                }
-                _ => {
-                    log::error!("Unknown modal: {}", p.data.custom_id);
-                }
-            },
+            }
             _ => {
                 log::info!("Unhandled interaction: {:?}", interaction);
             }
@@ -980,7 +604,7 @@ impl EventHandler for Handler {
             &ctx.http,
             self.commands
                 .iter()
-                .map(|command| command.register())
+                .flat_map(|command| command.register_command())
                 .collect(),
         )
         .await
@@ -1275,7 +899,7 @@ struct Timed<T> {
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    consent::init();
+    global_data::init();
     let cfg = Config::get();
     let mut tmp = cfg.data_path.clone();
     tmp.push("tmp");
@@ -1308,7 +932,8 @@ async fn main() {
         Box::new(commands::music::consent::Consent),
         Box::new(commands::embed::Video),
         Box::new(commands::embed::Audio),
-        Box::new(commands::embed::John),
+        Box::new(commands::john::John),
+        Box::new(commands::feedback::Feedback),
     ]);
     let config = songbird::Config::default()
         .preallocated_tracks(2)
@@ -1408,7 +1033,7 @@ async fn main() {
     }
     client.shard_manager.shutdown_all().await;
     // write the consent data to disk
-    consent::save();
+    global_data::save();
     // {
     //     match std::fs::File::create(&cfg.consent_path) {
     //         Ok(f) => {

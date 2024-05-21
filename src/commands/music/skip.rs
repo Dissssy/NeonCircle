@@ -5,10 +5,10 @@ use serenity::all::*;
 pub struct Skip;
 #[async_trait]
 impl crate::CommandTrait for Skip {
-    fn register(&self) -> CreateCommand {
-        CreateCommand::new(self.name()).description("Skip the current song")
+    fn register_command(&self) -> Option<CreateCommand> {
+        Some(CreateCommand::new(self.command_name()).description("Skip the current song"))
     }
-    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
+    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         if let Err(e) = interaction
             .create_response(
                 &ctx.http,
@@ -33,7 +33,7 @@ impl crate::CommandTrait for Skip {
                 {
                     log::error!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
+                return Ok(());
             }
         };
         let ungus = {
@@ -59,11 +59,9 @@ impl crate::CommandTrait for Skip {
         {
             log::error!("Failed to edit original interaction response: {:?}", e);
         }
-    }
-    fn name(&self) -> &str {
-        "skip"
-    }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<()> {
         Ok(())
+    }
+    fn command_name(&self) -> &str {
+        "skip"
     }
 }

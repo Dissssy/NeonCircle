@@ -5,16 +5,18 @@ use serenity::all::*;
 pub struct Repeat;
 #[async_trait]
 impl crate::CommandTrait for Repeat {
-    fn register(&self) -> CreateCommand {
-        CreateCommand::new(self.name())
-            .description("Repeat the current song")
-            .set_options(vec![CreateCommandOption::new(
-                CommandOptionType::Boolean,
-                "value",
-                "Specific value, otherwise toggle",
-            )])
+    fn register_command(&self) -> Option<CreateCommand> {
+        Some(
+            CreateCommand::new(self.command_name())
+                .description("Repeat the current song")
+                .set_options(vec![CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "value",
+                    "Specific value, otherwise toggle",
+                )]),
+        )
     }
-    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
+    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         if let Err(e) = interaction
             .create_response(
                 &ctx.http,
@@ -39,7 +41,7 @@ impl crate::CommandTrait for Repeat {
                 {
                     log::error!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
+                return Ok(());
             }
         };
         let options = interaction.data.options();
@@ -59,7 +61,7 @@ impl crate::CommandTrait for Repeat {
                 {
                     log::error!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
+                return Ok(());
             }
         };
         let ungus = {
@@ -90,11 +92,9 @@ impl crate::CommandTrait for Repeat {
         {
             log::error!("Failed to edit original interaction response: {:?}", e);
         }
-    }
-    fn name(&self) -> &str {
-        "repeat"
-    }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<()> {
         Ok(())
+    }
+    fn command_name(&self) -> &str {
+        "repeat"
     }
 }

@@ -5,10 +5,10 @@ use serenity::all::*;
 pub struct Stop;
 #[async_trait]
 impl crate::CommandTrait for Stop {
-    fn register(&self) -> CreateCommand {
-        CreateCommand::new(self.name()).description("Stop all playback")
+    fn register_command(&self) -> Option<CreateCommand> {
+        Some(CreateCommand::new(self.command_name()).description("Stop all playback"))
     }
-    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
+    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         if let Err(e) = interaction
             .create_response(
                 &ctx.http,
@@ -33,7 +33,7 @@ impl crate::CommandTrait for Stop {
                 {
                     log::error!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
+                return Ok(());
             }
         };
         let ungus = {
@@ -64,11 +64,9 @@ impl crate::CommandTrait for Stop {
         {
             log::error!("Failed to edit original interaction response: {:?}", e);
         }
-    }
-    fn name(&self) -> &str {
-        "stop"
-    }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<()> {
         Ok(())
+    }
+    fn command_name(&self) -> &str {
+        "stop"
     }
 }

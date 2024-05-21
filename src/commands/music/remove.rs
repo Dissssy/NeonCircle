@@ -5,18 +5,20 @@ use serenity::all::*;
 pub struct Remove;
 #[async_trait]
 impl crate::CommandTrait for Remove {
-    fn register(&self) -> CreateCommand {
-        CreateCommand::new(self.name())
-            .description("Remove a song from the queue")
-            .set_options(vec![CreateCommandOption::new(
-                CommandOptionType::Integer,
-                "index",
-                "Index of song to remove",
-            )
-            .min_int_value(1)
-            .required(true)])
+    fn register_command(&self) -> Option<CreateCommand> {
+        Some(
+            CreateCommand::new(self.command_name())
+                .description("Remove a song from the queue")
+                .set_options(vec![CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "index",
+                    "Index of song to remove",
+                )
+                .min_int_value(1)
+                .required(true)]),
+        )
     }
-    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
+    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         if let Err(e) = interaction
             .create_response(
                 &ctx.http,
@@ -41,7 +43,7 @@ impl crate::CommandTrait for Remove {
                 {
                     log::error!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
+                return Ok(());
             }
         };
         let options = interaction.data.options();
@@ -60,7 +62,7 @@ impl crate::CommandTrait for Remove {
                 {
                     log::error!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
+                return Ok(());
             }
         };
         let ungus = {
@@ -91,11 +93,9 @@ impl crate::CommandTrait for Remove {
         {
             log::error!("Failed to edit original interaction response: {:?}", e);
         }
-    }
-    fn name(&self) -> &str {
-        "remove"
-    }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<()> {
         Ok(())
+    }
+    fn command_name(&self) -> &str {
+        "remove"
     }
 }

@@ -12,10 +12,10 @@ use tokio::sync::{mpsc, oneshot};
 pub struct Join;
 #[async_trait]
 impl crate::CommandTrait for Join {
-    fn register(&self) -> CreateCommand {
-        CreateCommand::new(self.name()).description("Join the voice channel")
+    fn register_command(&self) -> Option<CreateCommand> {
+        Some(CreateCommand::new(self.command_name()).description("Join the voice channel"))
     }
-    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
+    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         if let Err(e) = interaction
             .create_response(
                 &ctx.http,
@@ -40,7 +40,7 @@ impl crate::CommandTrait for Join {
                 {
                     log::error!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
+                return Ok(());
             }
         };
         let ungus = {
@@ -65,7 +65,7 @@ impl crate::CommandTrait for Join {
                     {
                         log::error!("Failed to edit original interaction response: {:?}", e);
                     }
-                    return;
+                    return Ok(());
                 }
                 super::VoiceAction::InDifferent(_channel) => {
                     if let Err(e) = interaction
@@ -78,13 +78,13 @@ impl crate::CommandTrait for Join {
                     {
                         log::error!("Failed to edit original interaction response: {:?}", e);
                     }
-                    return;
+                    return Ok(());
                 }
                 super::VoiceAction::InSame(_channel) => {
                     if let Err(e) = interaction.edit_response(&ctx.http, EditInteractionResponse::new().content("I'm already in the same voice channel as you, what do you want from me?")).await {
                         log::error!("Failed to edit original interaction response: {:?}", e);
                     }
-                    return;
+                    return Ok(());
                 }
                 super::VoiceAction::Join(channel) => {
                     let manager = match songbird::get(ctx).await {
@@ -103,7 +103,7 @@ impl crate::CommandTrait for Join {
                                     e
                                 );
                             }
-                            return;
+                            return Ok(());
                         }
                     };
                     {
@@ -124,7 +124,7 @@ impl crate::CommandTrait for Join {
                                             e
                                         );
                                     }
-                                    return;
+                                    return Ok(());
                                 }
                             }
                         };
@@ -163,7 +163,7 @@ impl crate::CommandTrait for Join {
                                         {
                                             log::error!("Failed to edit original interaction response: {:?}", e);
                                         }
-                                        return;
+                                        return Ok(());
                                     }
                                 };
                                 let messageref = super::MessageReference::new(
@@ -183,7 +183,7 @@ impl crate::CommandTrait for Join {
                                 };
                                 let guild_id = match interaction.guild_id {
                                     Some(guild) => guild,
-                                    None => return,
+                                    None => return Ok(()),
                                 };
                                 let em = match super::get_transcribe_channel_handler(ctx, &guild_id)
                                     .await
@@ -207,7 +207,7 @@ impl crate::CommandTrait for Join {
                                     e
                                 );
                                         }
-                                        return;
+                                        return Ok(());
                                     }
                                 };
                                 if let Err(e) = em.write().await.register(channel).await {
@@ -254,7 +254,7 @@ impl crate::CommandTrait for Join {
                                                     e
                                                 );
                                             }
-                                            return;
+                                            return Ok(());
                                         }
                                     }
                                 };
@@ -295,11 +295,9 @@ impl crate::CommandTrait for Join {
         {
             log::error!("Failed to edit original interaction response: {:?}", e);
         }
-    }
-    fn name(&self) -> &str {
-        "join"
-    }
-    async fn autocomplete(&self, _ctx: &Context, _auto: &CommandInteraction) -> Result<()> {
         Ok(())
+    }
+    fn command_name(&self) -> &str {
+        "join"
     }
 }

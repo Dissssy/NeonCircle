@@ -27,7 +27,7 @@ use serenity::all::{
     ButtonStyle, Cache, Channel, ChannelId, ChannelType, CommandInteraction, Context,
     CreateActionRow, CreateButton, CreateMessage, CreateThread, CreateWebhook,
     EditInteractionResponse, EditMessage, GetMessages, GuildChannel, GuildId, Http, Member,
-    Message, MessageFlags, Timestamp, User, UserId, VoiceState,
+    Message, MessageFlags, ModalInteraction, Timestamp, User, UserId, VoiceState,
 };
 #[cfg(feature = "new-controls")]
 use serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption};
@@ -165,14 +165,46 @@ pub enum VoiceAction {
     InDifferent(ChannelId),
     UserNotConnected,
 }
-impl VoiceAction {
+pub enum GenericInteraction<'a> {
+    Command(&'a CommandInteraction),
+    Modal(&'a ModalInteraction),
+}
+impl<'a> GenericInteraction<'a> {
+    pub async fn edit_response(
+        &self,
+        http: &Http,
+        response: EditInteractionResponse,
+    ) -> Result<()> {
+        match self {
+            Self::Command(interaction) => {
+                interaction.edit_response(http, response).await?;
+            }
+            Self::Modal(interaction) => {
+                interaction.edit_response(http, response).await?;
+            }
+        }
+        Ok(())
+    }
+}
+impl<'a> From<&'a CommandInteraction> for GenericInteraction<'a> {
+    fn from(interaction: &'a CommandInteraction) -> Self {
+        Self::Command(interaction)
+    }
+}
+impl<'a> From<&'a ModalInteraction> for GenericInteraction<'a> {
+    fn from(interaction: &'a ModalInteraction) -> Self {
+        Self::Modal(interaction)
+    }
+}
+impl<'a> VoiceAction {
     pub async fn send_command_or_respond(
         self,
         ctx: &Context,
-        interaction: &CommandInteraction,
+        interaction: impl Into<GenericInteraction<'a>>,
         guild_id: GuildId,
         command: AudioPromiseCommand,
     ) {
+        let interaction = interaction.into();
         match self {
             Self::UserNotConnected => {
                 if let Err(e) = interaction

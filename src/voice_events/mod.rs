@@ -1,9 +1,12 @@
+mod commands;
 mod structs;
 mod user;
-use crate::{commands::music::transcribe::TranscriptionMessage, video::Video};
+use crate::{
+    commands::music::transcribe::TranscriptionMessage, global_data::get_consent, video::Video,
+};
 use anyhow::Result;
 use serde::Deserialize as _;
-use serenity::{all::*, futures::future::OptionFuture};
+use serenity::all::*;
 use songbird::{
     events::{
         context_data::{VoiceData, VoiceTick},
@@ -168,7 +171,7 @@ impl songbird::EventHandler for VoiceEventSender {
                     if let (Some(user_id), Some(audio)) = (
                         ssrc_to_user_id
                             .get(ssrc)
-                            .and_then(|u| crate::consent::get_consent(*u).then_some(*u)),
+                            .and_then(|u| get_consent(*u).then_some(*u)),
                         decoded_voice,
                     ) {
                         if self

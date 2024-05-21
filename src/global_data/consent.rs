@@ -7,6 +7,9 @@ use std::{
 };
 static mut CONSENT_INFO: MaybeUninit<HashMap<UserId, AtomicBool>> = MaybeUninit::uninit();
 static mut INITIALIZED: bool = false;
+lazy_static::lazy_static! {
+    static ref RWLOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+}
 pub fn init() {
     let file = match std::fs::File::open(Config::get().consent_path) {
         Ok(f) => f,

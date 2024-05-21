@@ -13,18 +13,20 @@ use tokio::sync::{mpsc, oneshot};
 pub struct Add;
 #[async_trait]
 impl crate::CommandTrait for Add {
-    fn register(&self) -> CreateCommand {
-        CreateCommand::new(self.name())
-            .description("Add a song to the queue")
-            .set_options(vec![CreateCommandOption::new(
-                CommandOptionType::String,
-                "search",
-                "Search youtube or provide a url (non youtube works as well)",
-            )
-            .set_autocomplete(true)
-            .required(true)])
+    fn register_command(&self) -> Option<CreateCommand> {
+        Some(
+            CreateCommand::new(self.command_name())
+                .description("Add a song to the queue")
+                .set_options(vec![CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "search",
+                    "Search youtube or provide a url (non youtube works as well)",
+                )
+                .set_autocomplete(true)
+                .required(true)]),
+        )
     }
-    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) {
+    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         if let Err(e) = interaction
             .create_response(
                 &ctx.http,
@@ -49,7 +51,7 @@ impl crate::CommandTrait for Add {
                 {
                     log::error!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
+                return Ok(());
             }
         };
         let options = interaction.data.options();
@@ -68,7 +70,7 @@ impl crate::CommandTrait for Add {
                 {
                     log::error!("Failed to edit original interaction response: {:?}", e);
                 }
-                return;
+                return Ok(());
             }
         };
         let ungus = {
@@ -93,7 +95,7 @@ impl crate::CommandTrait for Add {
                     {
                         log::error!("Failed to edit original interaction response: {:?}", e);
                     }
-                    return;
+                    return Ok(());
                 }
                 super::VoiceAction::InDifferent(_channel) => {
                     if let Err(e) = interaction
@@ -106,7 +108,7 @@ impl crate::CommandTrait for Add {
                     {
                         log::error!("Failed to edit original interaction response: {:?}", e);
                     }
-                    return;
+                    return Ok(());
                 }
                 super::VoiceAction::InSame(_channel) => {}
                 super::VoiceAction::Join(channel) => {
@@ -127,7 +129,7 @@ impl crate::CommandTrait for Add {
                                     e
                                 );
                             }
-                            return;
+                            return Ok(());
                         }
                     };
                     {
@@ -149,7 +151,7 @@ impl crate::CommandTrait for Add {
                                             e
                                         );
                                     }
-                                    return;
+                                    return Ok(());
                                 }
                             }
                         };
@@ -188,7 +190,7 @@ impl crate::CommandTrait for Add {
                                         {
                                             log::error!("Failed to edit original interaction response: {:?}", e);
                                         }
-                                        return;
+                                        return Ok(());
                                     }
                                 };
                                 let messageref = super::MessageReference::new(
@@ -208,7 +210,7 @@ impl crate::CommandTrait for Add {
                                 };
                                 let guild_id = match interaction.guild_id {
                                     Some(guild) => guild,
-                                    None => return,
+                                    None => return Ok(()),
                                 };
                                 let em = match super::get_transcribe_channel_handler(ctx, &guild_id)
                                     .await
@@ -232,7 +234,7 @@ impl crate::CommandTrait for Add {
                                     e
                                 );
                                         }
-                                        return;
+                                        return Ok(());
                                     }
                                 };
                                 if let Err(e) = em.write().await.register(channel).await {
@@ -280,7 +282,7 @@ impl crate::CommandTrait for Add {
                                                     e
                                                 );
                                             }
-                                            return;
+                                            return Ok(());
                                         }
                                     }
                                 };
@@ -329,7 +331,7 @@ impl crate::CommandTrait for Add {
                             Ok(t) => t,
                             Err(e) => {
                                 log::error!("Error: {:?}", e);
-                                return;
+                                return Ok(());
                             }
                         }
                     };
@@ -344,7 +346,7 @@ impl crate::CommandTrait for Add {
                                 Ok(t) => t,
                                 Err(e) => {
                                     log::error!("Error: {:?}", e);
-                                    return;
+                                    return Ok(());
                                 }
                             }
                         };
@@ -367,7 +369,7 @@ impl crate::CommandTrait for Add {
                     {
                         log::error!("Failed to edit original interaction response: {:?}", e);
                     }
-                    return;
+                    return Ok(());
                 }
             };
             match t {
@@ -430,7 +432,7 @@ impl crate::CommandTrait for Add {
                                     e
                                 );
                             }
-                            return;
+                            return Ok(());
                         }
                     };
                     let mut audio_command_handler = audio_command_handler.write().await;
@@ -493,7 +495,7 @@ impl crate::CommandTrait for Add {
                     {
                         log::error!("Failed to edit original interaction response: {:?}", e);
                     }
-                    return;
+                    return Ok(());
                 }
             }
         } else if let Err(e) = interaction
@@ -505,8 +507,9 @@ impl crate::CommandTrait for Add {
         {
             log::error!("Failed to edit original interaction response: {:?}", e);
         }
+        Ok(())
     }
-    fn name(&self) -> &str {
+    fn command_name(&self) -> &str {
         "add"
     }
     #[allow(unused)]
