@@ -1,4 +1,4 @@
-use super::{AudioPromiseCommand, VoiceData};
+use super::AudioPromiseCommand;
 use crate::commands::music::SpecificVolume;
 use anyhow::Result;
 use serenity::all::*;
@@ -68,29 +68,32 @@ impl crate::CommandTrait for Volume {
             }
         } as f64
             / 100.0;
-        let ungus = {
-            let bingus = ctx.data.read().await;
-            let bungly = bingus.get::<super::VoiceData>();
-            bungly.cloned()
-        };
-        if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
-            let next_step = {
-                v.write()
-                    .await
-                    .mutual_channel(ctx, &guild_id, &member.user.id)
+        if let Some(member) = interaction.member.as_ref() {
+            let next_step = match crate::global_data::mutual_channel(&guild_id, &member.user.id)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    log::error!("Failed to get mutual channel: {:?}", e);
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content("Failed to get mutual channel"),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
+                    }
+                    return Ok(());
+                }
             };
             next_step
-                .send_command_or_respond(
-                    ctx,
-                    interaction,
-                    guild_id,
-                    AudioPromiseCommand::Volume(option),
-                )
+                .send_command_or_respond(interaction, guild_id, AudioPromiseCommand::Volume(option))
                 .await;
         } else if let Err(e) = interaction
             .edit_response(
                 &ctx.http,
-                EditInteractionResponse::new().content("TELL ETHAN THIS SHOULD NEVER HAPPEN :("),
+                EditInteractionResponse::new().content("This can only be used in a server"),
             )
             .await
         {
@@ -131,7 +134,7 @@ impl crate::CommandTrait for Volume {
         let val = match val.parse::<f64>() {
             Ok(v) => v,
             Err(e) => {
-                log::info!("Failed to interactionarse volume: {}", e);
+                log::trace!("Failed to parse volume: {}", e);
                 if let Err(e) = interaction
                     .create_response(
                         &ctx.http,
@@ -149,6 +152,7 @@ impl crate::CommandTrait for Volume {
             }
         };
         if !(0.0..=100.0).contains(&val) {
+            log::trace!("Volume out of range: {}", val);
             if let Err(e) = interaction
                 .create_response(
                     &ctx.http,
@@ -167,6 +171,7 @@ impl crate::CommandTrait for Volume {
         let guild_id = match interaction.guild_id {
             Some(id) => id,
             None => {
+                log::trace!("This can only be used in a server");
                 if let Err(e) = interaction
                     .create_response(
                         &ctx.http,
@@ -184,15 +189,33 @@ impl crate::CommandTrait for Volume {
                 return Ok(());
             }
         };
-        if let (Some(v), Some(member)) = (
-            ctx.data.read().await.get::<VoiceData>().cloned(),
-            interaction.member.as_ref(),
-        ) {
-            let mut v = v.write().await;
-            let next_step = v.mutual_channel(ctx, &guild_id, &member.user.id);
+        if let Some(member) = interaction.member.as_ref() {
+            let next_step =
+                match crate::global_data::mutual_channel(&guild_id, &member.user.id).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!("Failed to get mutual channel: {:?}", e);
+                        if let Err(e) = interaction
+                            .create_response(
+                                &ctx.http,
+                                CreateInteractionResponse::Message(
+                                    CreateInteractionResponseMessage::new()
+                                        .content("Failed to get mutual channel")
+                                        .ephemeral(true),
+                                ),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to edit original interaction response: {:?}", e);
+                        }
+                        return Ok(());
+                    }
+                };
+            if let Err(e) = interaction.defer_ephemeral(&ctx.http).await {
+                log::error!("Failed to defer: {:?}", e);
+            }
             next_step
                 .send_command_or_respond(
-                    ctx,
                     interaction,
                     guild_id,
                     match raw {

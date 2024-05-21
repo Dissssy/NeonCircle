@@ -126,7 +126,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
             log::warn!("No guild in cache");
         }
     } else {
-        log::warn!("No guild id");
+        log::trace!("No guild id in interaction");
     }
     match crate::video::Video::download_video(option, media_type, spoiler, max_size).await {
         Err(e) => match interaction

@@ -13,11 +13,27 @@ while true; do
     python -m pip install --upgrade yt-dlp
     if [ "$1" = "release" ]; then
         echo "Running in release mode"
-        cargo run --release --features experimental
+        cargo build --release --features experimental
+        # if the build fails, echo an error message and use the last good build, otherwise move the built binary to ./bin
+        if [ $? -ne 0 ]; then
+            echo "Build failed, using last good build"
+        else
+            echo "Build successful, moving binary to ./bin"
+            cp ./target/release/alrightguysnewprojecttime ./bin/alrightguysnewprojecttime
+        fi
     else
         echo "Running in debug mode"
-        cargo run --features experimental
+        cargo build --features experimental
+        # if the build fails, echo an error message and use the last good build, otherwise move the built binary to ./bin
+        if [ $? -ne 0 ]; then
+            echo "Build failed, using last good build"
+        else
+            echo "Build successful, moving binary to ./bin"
+            cp ./target/debug/alrightguysnewprojecttime ./bin/alrightguysnewprojecttime
+        fi
     fi
+    # run the application
+    ./bin/alrightguysnewprojecttime
 
     # save the return code
     ret=$?

@@ -1,4 +1,4 @@
-use super::{AudioPromiseCommand, OrAuto, VoiceData};
+use super::{AudioPromiseCommand, OrAuto};
 use anyhow::Result;
 use serenity::all::*;
 #[derive(Debug, Clone)]
@@ -66,20 +66,27 @@ impl crate::CommandTrait for SetBitrate {
                 return Ok(());
             }
         };
-        let ungus = {
-            let bingus = ctx.data.read().await;
-            let bungly = bingus.get::<super::VoiceData>();
-            bungly.cloned()
-        };
-        if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
-            let next_step = {
-                v.write()
-                    .await
-                    .mutual_channel(ctx, &guild_id, &member.user.id)
+        if let Some(member) = interaction.member.as_ref() {
+            let next_step = match crate::global_data::mutual_channel(&guild_id, &member.user.id)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    log::error!("Failed to get mutual channel: {:?}", e);
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content("Failed to get mutual channel"),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
+                    }
+                    return Ok(());
+                }
             };
             next_step
                 .send_command_or_respond(
-                    ctx,
                     interaction,
                     guild_id,
                     AudioPromiseCommand::SetBitrate(option),
@@ -188,15 +195,30 @@ impl crate::CommandTrait for SetBitrate {
                 return Ok(());
             }
         };
-        if let (Some(v), Some(member)) = (
-            ctx.data.read().await.get::<VoiceData>().cloned(),
-            interaction.member.as_ref(),
-        ) {
-            let mut v = v.write().await;
-            let next_step = v.mutual_channel(ctx, &guild_id, &member.user.id);
+        if let Some(member) = interaction.member.as_ref() {
+            let next_step = match crate::global_data::mutual_channel(&guild_id, &member.user.id)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    log::error!("Failed to get mutual channel: {:?}", e);
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content("Failed to get mutual channel"),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
+                    }
+                    return Ok(());
+                }
+            };
+            if let Err(e) = interaction.defer_ephemeral(&ctx.http).await {
+                log::error!("Failed to defer: {:?}", e);
+            }
             next_step
                 .send_command_or_respond(
-                    ctx,
                     interaction,
                     guild_id,
                     AudioPromiseCommand::SetBitrate(val),

@@ -22,7 +22,7 @@ async fn parse_commands(s: &str, u: UserId, http: Arc<Http>) -> WithFeedback {
         ))
         .await;
     }
-    let filtered = filter_input(&s);
+    let filtered = filter_input(s);
     if filtered.is_empty() {
         return WithFeedback::new_without_feedback(Box::pin(
             async move { Ok(ParsedCommand::None) },

@@ -4,7 +4,10 @@ use super::{
     transcribe::TranscriptionThread,
     AudioCommandHandler, AudioHandler, AudioPromiseCommand,
 };
-use crate::commands::music::{Author, LazyLoadedVideo, MetaVideo};
+use crate::{
+    commands::music::{Author, LazyLoadedVideo, MetaVideo},
+    global_data::VoiceAction,
+};
 use anyhow::Result;
 use serenity::all::*;
 use std::{sync::Arc, time::Duration};
@@ -73,19 +76,28 @@ impl crate::CommandTrait for Add {
                 return Ok(());
             }
         };
-        let ungus = {
-            let bingus = ctx.data.read().await;
-            let bungly = bingus.get::<super::VoiceData>();
-            bungly.cloned()
-        };
-        if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
-            let next_step = {
-                v.write()
-                    .await
-                    .mutual_channel(ctx, &guild_id, &member.user.id)
+        if let Some(member) = interaction.member.as_ref() {
+            let next_step = match crate::global_data::mutual_channel(&guild_id, &member.user.id)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    log::error!("Failed to get mutual channel: {:?}", e);
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content("Failed to get mutual channel"),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
+                    }
+                    return Ok(());
+                }
             };
-            match next_step {
-                super::VoiceAction::UserNotConnected => {
+            let mut userin = None;
+            match next_step.action {
+                VoiceAction::UserNotConnected => {
                     if let Err(e) = interaction
                         .edit_response(
                             &ctx.http,
@@ -97,12 +109,11 @@ impl crate::CommandTrait for Add {
                     }
                     return Ok(());
                 }
-                super::VoiceAction::InDifferent(_channel) => {
+                VoiceAction::NoRemaining => {
                     if let Err(e) = interaction
                         .edit_response(
                             &ctx.http,
-                            EditInteractionResponse::new()
-                                .content("I'm in a different voice channel"),
+                            EditInteractionResponse::new().content("No satellites available to join, use /feedback to request more (and dont forget to donate if you can! :D)"),
                         )
                         .await
                     {
@@ -110,9 +121,26 @@ impl crate::CommandTrait for Add {
                     }
                     return Ok(());
                 }
-                super::VoiceAction::InSame(_channel) => {}
-                super::VoiceAction::Join(channel) => {
-                    let manager = match songbird::get(ctx).await {
+                VoiceAction::InviteSatellite(invite) => {
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content(format!(
+                                "There are no satellites available, [use this link to invite one]({})\nPlease ensure that all satellites have permission to view the voice channel you're in.",
+                                invite
+                            )),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
+                    }
+                    return Ok(());
+                }
+                VoiceAction::SatelliteInVcWithUser(channel, _ctx) => {
+                    userin = Some(channel);
+                }
+                VoiceAction::SatelliteShouldJoin(channel, satellite_ctx) => {
+                    let manager = match songbird::get(&satellite_ctx).await {
                         Some(v) => v,
                         None => {
                             log::error!("Failed to get songbird manager");
@@ -167,8 +195,7 @@ impl crate::CommandTrait for Add {
                                     tx.clone(),
                                 )
                                 .await;
-                                let msg = match interaction
-                                    .channel_id
+                                let msg = match channel
                                     .send_message(
                                         &ctx.http,
                                         CreateMessage::new()
@@ -197,7 +224,7 @@ impl crate::CommandTrait for Add {
                                     ctx.http.clone(),
                                     ctx.cache.clone(),
                                     guild_id,
-                                    msg.channel_id,
+                                    channel,
                                     msg,
                                 );
                                 let cfg = crate::Config::get();
@@ -286,10 +313,8 @@ impl crate::CommandTrait for Add {
                                         }
                                     }
                                 };
-                                audio_command_handler
-                                    .write()
-                                    .await
-                                    .insert(guild_id.to_string(), tx);
+                                userin = Some(channel);
+                                audio_command_handler.write().await.insert(channel, tx);
                             }
                             Err(e) => {
                                 log::error!("Failed to join channel: {:?}", e);
@@ -435,8 +460,27 @@ impl crate::CommandTrait for Add {
                             return Ok(());
                         }
                     };
+                    let userin = match userin {
+                        Some(v) => v,
+                        None => {
+                            if let Err(e) = interaction
+                                .edit_response(
+                                    &ctx.http,
+                                    EditInteractionResponse::new()
+                                        .content("Failed to get channel???"),
+                                )
+                                .await
+                            {
+                                log::error!(
+                                    "Failed to edit original interaction response: {:?}",
+                                    e
+                                );
+                            }
+                            return Ok(());
+                        }
+                    };
                     let mut audio_command_handler = audio_command_handler.write().await;
-                    let tx = audio_command_handler.get_mut(&guild_id.to_string());
+                    let tx = audio_command_handler.get_mut(&userin);
                     if let Some(tx) = tx {
                         let (rtx, rrx) = oneshot::channel::<String>();
                         if tx
@@ -482,7 +526,7 @@ impl crate::CommandTrait for Add {
                             log::error!("Failed to edit original interaction response: {:?}", e);
                         }
                     } else {
-                        audio_command_handler.remove(&guild_id.to_string());
+                        audio_command_handler.remove(&userin);
                     }
                 }
                 Err(e) => {

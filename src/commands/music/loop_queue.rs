@@ -64,24 +64,27 @@ impl crate::CommandTrait for Loop {
                 return Ok(());
             }
         };
-        let ungus = {
-            let bingus = ctx.data.read().await;
-            let bungly = bingus.get::<super::VoiceData>();
-            bungly.cloned()
-        };
-        if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
-            let next_step = {
-                v.write()
-                    .await
-                    .mutual_channel(ctx, &guild_id, &member.user.id)
+        if let Some(member) = interaction.member.as_ref() {
+            let next_step = match crate::global_data::mutual_channel(&guild_id, &member.user.id)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    log::error!("Failed to get mutual channel: {:?}", e);
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content("Failed to get mutual channel"),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
+                    }
+                    return Ok(());
+                }
             };
             next_step
-                .send_command_or_respond(
-                    ctx,
-                    interaction,
-                    guild_id,
-                    AudioPromiseCommand::Loop(option),
-                )
+                .send_command_or_respond(interaction, guild_id, AudioPromiseCommand::Loop(option))
                 .await;
         } else if let Err(e) = interaction
             .edit_response(

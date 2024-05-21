@@ -1,11 +1,13 @@
-use super::{AudioPromiseCommand, RawMessage};
-use crate::{video::Video, voice_events::PostSomething, youtube::TTSVoice};
+use super::{AudioPromiseCommand, RawMessage, TTSStatus};
+use crate::{
+    global_data::VoiceAction, video::Video, voice_events::PostSomething, youtube::TTSVoice,
+};
 use anyhow::Result;
 use rand::seq::SliceRandom;
 use serenity::all::*;
 use songbird::{input::Input, tracks::TrackHandle, typemap::TypeMapKey, Call};
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 #[derive(Debug, Clone)]
 pub struct Transcribe;
 #[async_trait]
@@ -69,19 +71,54 @@ impl crate::CommandTrait for Transcribe {
                 return Ok(());
             }
         };
-        let ungus = {
-            let bingus = ctx.data.read().await;
-            let bungly = bingus.get::<super::VoiceData>();
-            bungly.cloned()
-        };
-        if let (Some(v), Some(member)) = (ungus, interaction.member.as_ref()) {
-            let next_step = {
-                v.write()
-                    .await
-                    .mutual_channel(ctx, &guild_id, &member.user.id)
+        if let Some(member) = interaction.member.as_ref() {
+            let next_step = match crate::global_data::mutual_channel(&guild_id, &member.user.id)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    log::error!("Failed to get mutual channel: {:?}", e);
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content("Failed to get mutual channel"),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
+                    }
+                    return Ok(());
+                }
             };
-            match next_step {
-                super::VoiceAction::UserNotConnected => {
+            match next_step.action {
+                VoiceAction::NoRemaining => {
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content("No satellites available to join, use /feedback to request more (and dont forget to donate if you can! :D)"),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
+                    }
+                    return Ok(());
+                }
+                VoiceAction::InviteSatellite(invite) => {
+                    if let Err(e) = interaction
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content(format!(
+                                "There are no satellites available, [use this link to invite one]({})\nPlease ensure that all satellites have permission to view the voice channel you're in.",
+                                invite
+                            )),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {:?}", e);
+                    }
+                    return Ok(());
+                }
+                VoiceAction::UserNotConnected => {
                     if let Err(e) = interaction
                         .edit_response(
                             &ctx.http,
@@ -93,25 +130,12 @@ impl crate::CommandTrait for Transcribe {
                     }
                     return Ok(());
                 }
-                super::VoiceAction::InDifferent(_channel) => {
-                    if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new()
-                                .content("I'm in a different voice channel"),
-                        )
-                        .await
-                    {
-                        log::error!("Failed to edit original interaction response: {:?}", e);
-                    }
-                    return Ok(());
-                }
-                super::VoiceAction::Join(_channel) => {
+                VoiceAction::SatelliteShouldJoin(_channel, _ctx) => {
                     if let Err(e) = interaction
                         .edit_response(
                             &ctx.http,
                             EditInteractionResponse::new().content(
-                                "I'm not in a channel, if you want me to join use /join or /play",
+                                "I'm not in a channel, if you want me to join use /join or /add",
                             ),
                         )
                         .await
@@ -120,7 +144,7 @@ impl crate::CommandTrait for Transcribe {
                     }
                     return Ok(());
                 }
-                super::VoiceAction::InSame(_channel) => {
+                VoiceAction::SatelliteInVcWithUser(_channel, _ctx) => {
                     let em = match super::get_transcribe_channel_handler(ctx, &guild_id).await {
                         Ok(v) => v,
                         Err(e) => {
@@ -356,6 +380,7 @@ impl Handler {
                     self.last_channel_name.clone_from(mn);
                     self.waiting_on = Some(mn.clone());
                     let content = format!("in #{}", mn);
+                    let tts = Arc::new(RwLock::new(TTSStatus::Pending));
                     push = Some(RawMessage {
                         author_id: String::new(),
 
@@ -366,19 +391,44 @@ impl Handler {
                         tts_audio_handle: match self.channel_names.get(mn) {
                             Some(v) => {
                                 let v = v.clone().get_video().clone();
-                                Some(tokio::task::spawn(async move { Ok(v) }))
+                                let tts = Arc::clone(&tts);
+                                Some(tokio::task::spawn(async move {
+                                    let mut tts = tts.write().await;
+                                    *tts = TTSStatus::Finished(v);
+                                    Ok(())
+                                }))
                             }
                             None => {
-                                match RawMessage::audio_handle(content, TTSVoice::default()).await {
-                                    Ok(Ok(v)) => {
-                                        self.channel_names
-                                            .insert(mn.clone(), Deleteable::Keep(v.clone()));
-                                        Some(tokio::task::spawn(async move { Ok(v) }))
+                                match RawMessage::audio_handle(
+                                    content,
+                                    TTSVoice::default(),
+                                    Arc::clone(&tts),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(())) => {
+                                        let sendtts = Arc::clone(&tts);
+                                        match &*tts.read().await {
+                                            TTSStatus::Finished(v) => {
+                                                self.channel_names.insert(
+                                                    mn.clone(),
+                                                    Deleteable::Keep(v.clone()),
+                                                );
+                                                let v = v.clone();
+                                                Some(tokio::task::spawn(async move {
+                                                    let mut tts = sendtts.write().await;
+                                                    *tts = TTSStatus::Finished(v);
+                                                    Ok(())
+                                                }))
+                                            }
+                                            _ => None,
+                                        }
                                     }
                                     _ => None,
                                 }
                             }
                         },
+                        tts,
                     });
                 }
             }
@@ -388,15 +438,9 @@ impl Handler {
         }
         if let Some(m) = self.queue.get_mut(0) {
             let deleteable = !m.author_id.is_empty();
-            let v = match m.check_tts().await? {
-                Some(Ok(v)) => Some(v),
-                Some(Err(e)) => {
-                    log::error!("Error generating audio: {:?}", e);
-                    None
-                }
-                None => {
-                    return Ok(());
-                }
+            let v = match m.check_tts().await {
+                super::TTSStatus::Finished(v) => Some(v),
+                _ => None,
             };
             if let Some(v) = v {
                 self.prepared_next = if deleteable {
@@ -429,9 +473,11 @@ impl Handler {
             let h = m.tts_audio_handle.take();
             if let Some(h) = h {
                 match h.await {
-                    Ok(Ok(v)) => {
-                        if let Err(e) = v.delete() {
-                            log::error!("Error deleting video: {:?}", e);
+                    Ok(Ok(())) => {
+                        if let super::TTSStatus::Finished(v) = m.check_tts().await {
+                            if let Err(e) = v.delete() {
+                                log::error!("Error deleting video: {:?}", e);
+                            }
                         }
                     }
                     Ok(Err(e)) => {
@@ -457,37 +503,38 @@ impl TypeMapKey for TranscribeData {
 }
 type Arh<K, V> = Arc<RwLock<HashMap<K, V>>>;
 pub struct TranscribeChannelHandler {
-    channels: Arh<ChannelId, mpsc::Sender<RawMessage>>,
-    sender: mpsc::Sender<RawMessage>,
-    receiver: Option<mpsc::Receiver<RawMessage>>,
+    channels: Arh<ChannelId, broadcast::Sender<RawMessage>>,
+    sender: broadcast::Sender<RawMessage>,
+    receiver: broadcast::Receiver<RawMessage>,
     assigned_voice: Arh<String, crate::youtube::TTSVoice>,
     voice_cycle: Vec<crate::youtube::TTSVoice>,
 }
 impl TranscribeChannelHandler {
     pub fn new() -> Self {
-        let (sender, receiver) = mpsc::channel::<RawMessage>(16);
+        let (sender, receiver) = broadcast::channel::<RawMessage>(16);
         let mut v = crate::youtube::VOICES.clone();
         v.shuffle(&mut rand::thread_rng());
         Self {
             channels: Arc::new(RwLock::new(HashMap::new())),
             sender,
-            receiver: Some(receiver),
+            receiver,
             assigned_voice: Arc::new(RwLock::new(HashMap::new())),
             voice_cycle: v,
         }
     }
-    pub fn lock(&mut self) -> Result<mpsc::Receiver<RawMessage>> {
-        self.receiver
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Receiver already taken"))
+    pub fn get_receiver(&mut self) -> broadcast::Receiver<RawMessage> {
+        // self.receiver
+        //     .take()
+        //     .ok_or_else(|| anyhow::anyhow!("Receiver already taken"))
+        self.receiver.resubscribe()
     }
-    pub async fn unlock(&mut self, receiver: mpsc::Receiver<RawMessage>) -> Result<()> {
-        self.receiver = Some(receiver);
-        self.channels.write().await.clear();
-        self.assigned_voice.write().await.clear();
-        self.voice_cycle.shuffle(&mut rand::thread_rng());
-        Ok(())
-    }
+    // pub async fn unlock(&mut self, receiver: mpsc::Receiver<RawMessage>) -> Result<()> {
+    //     self.receiver = Some(receiver);
+    //     self.channels.write().await.clear();
+    //     self.assigned_voice.write().await.clear();
+    //     self.voice_cycle.shuffle(&mut rand::thread_rng());
+    //     Ok(())
+    // }
     pub async fn register(&mut self, channel: ChannelId) -> Result<()> {
         let tx = self.sender.clone();
         let mut channels = self.channels.write().await;
@@ -515,12 +562,9 @@ impl TranscribeChannelHandler {
             Some(tx) => tx,
             None => return Err(msg),
         };
-        match tx.try_send(msg) {
+        match tx.send(msg) {
             Ok(_) => Ok(()),
-            Err(e) => Err(match e {
-                mpsc::error::TrySendError::Full(m) => m,
-                mpsc::error::TrySendError::Closed(m) => m,
-            }),
+            Err(e) => Err(e.0),
         }
     }
     pub async fn get_tts(&mut self, ctx: &Context, msg: &Message) -> Vec<RawMessage> {

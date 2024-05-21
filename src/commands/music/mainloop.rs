@@ -129,16 +129,11 @@ pub async fn the_lüüp(
     let mut data: Option<crate::radio::Root> = None;
     let mut current_track: Option<MetaVideo> = None;
     log.log("Locking transcription listener").await;
-    let ttsrx = match control.transcribe.write().await.lock() {
-        Ok(t) => t,
-        Err(e) => {
-            log.log(&format!("Error locking transcribe: {}", e)).await;
-            return;
-        }
-    };
+    let ttsrx = control.transcribe.write().await.get_receiver();
     let ttshandler = super::transcribe::Handler::new(Arc::clone(&control.call));
-    let (killsubthread, bekilled) =
-        tokio::sync::oneshot::channel::<tokio::sync::oneshot::Sender<mpsc::Receiver<RawMessage>>>();
+    let (killsubthread, bekilled) = tokio::sync::oneshot::channel::<
+        tokio::sync::oneshot::Sender<tokio::sync::broadcast::Receiver<RawMessage>>,
+    >();
     log.log("Spawning tts thread").await;
     let subthread = {
         let logger = log.clone();
@@ -159,9 +154,14 @@ pub async fn the_lüüp(
                         break;
                     }
                     msg = ttsrx.recv() => {
-                        if let Some(msg) = msg {
-                            if let Err(e) = ttshandler.update(vec![msg]).await {
-                                logger.log(&format!("Error updating tts: {}", e)).await;
+                        match msg {
+                            Ok(msg) => {
+                                if let Err(e) = ttshandler.update(vec![msg]).await {
+                                    logger.log(&format!("Error updating tts: {}", e)).await;
+                                }
+                            }
+                            Err(e) => {
+                                logger.log(&format!("Error receiving tts: {}", e)).await;
                             }
                         }
                     }
@@ -720,7 +720,7 @@ pub async fn the_lüüp(
                             nothing_handle = Some(handle);
                         }
                     }
-                    let mut possible_body = "Queue is empty, use `/play` to play something!".to_owned();
+                    let mut possible_body = "Queue is empty, use `/add` to play something!".to_owned();
                     if let Some(ref data) = data {
                         possible_body = format!(
                             "{}\nIn the meantime, enjoy these fine tunes from `{}`",
@@ -936,7 +936,8 @@ pub async fn the_lüüp(
         }
     }
     log.log("SHUTTING DOWN").await;
-    let (returner, gimme) = tokio::sync::oneshot::channel::<mpsc::Receiver<RawMessage>>();
+    let (returner, gimme) =
+        tokio::sync::oneshot::channel::<tokio::sync::broadcast::Receiver<RawMessage>>();
     if killsubthread.send(returner).is_err() {
         log.log("Error sending killsubthread").await;
     }
@@ -945,10 +946,11 @@ pub async fn the_lüüp(
     }
     match gimme.await {
         Ok(gimme) => {
-            if let Err(e) = control.transcribe.write().await.unlock(gimme).await {
-                log.log(&format!("Error unlocking transcribe: {}\n", e))
-                    .await;
-            }
+            // if let Err(e) = control.transcribe.write().await.unlock(gimme).await {
+            //     log.log(&format!("Error unlocking transcribe: {}\n", e))
+            //         .await;
+            // }
+            drop(gimme);
         }
         Err(e) => {
             log.log(&format!("Error getting ttsrx: {}\n", e)).await;

@@ -26,8 +26,8 @@ use serde_json::json;
 use serenity::all::{
     ButtonStyle, Cache, Channel, ChannelId, ChannelType, CommandInteraction, Context,
     CreateActionRow, CreateButton, CreateMessage, CreateThread, CreateWebhook,
-    EditInteractionResponse, EditMessage, GetMessages, GuildChannel, GuildId, Http, Member,
-    Message, MessageFlags, ModalInteraction, Timestamp, User, UserId, VoiceState,
+    EditInteractionResponse, EditMessage, GetMessages, GuildChannel, GuildId, Http, Message,
+    MessageFlags, ModalInteraction, Timestamp, User, UserId,
 };
 #[cfg(feature = "new-controls")]
 use serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption};
@@ -35,7 +35,6 @@ use songbird::typemap::TypeMapKey;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -47,123 +46,12 @@ pub struct AudioCommandHandler;
 impl TypeMapKey for AudioCommandHandler {
     type Value = Arc<
         RwLock<
-            HashMap<String, mpsc::UnboundedSender<(oneshot::Sender<String>, AudioPromiseCommand)>>,
+            HashMap<
+                ChannelId,
+                mpsc::UnboundedSender<(oneshot::Sender<String>, AudioPromiseCommand)>,
+            >,
         >,
     >;
-}
-pub struct VoiceData;
-impl TypeMapKey for VoiceData {
-    type Value = Arc<RwLock<InnerVoiceData>>;
-}
-pub struct InnerVoiceData {
-    pub guilds: HashMap<GuildId, GuildVc>,
-    pub bot_id: UserId,
-}
-impl InnerVoiceData {
-    pub fn new(bot_id: UserId) -> Self {
-        Self {
-            guilds: HashMap::new(),
-            bot_id,
-        }
-    }
-    pub fn update(&mut self, old: Option<VoiceState>, new: VoiceState) {
-        if let Some(guild_id) = new.guild_id {
-            let guild = self.guilds.entry(guild_id).or_insert_with(GuildVc::new);
-            guild.update(old, new.clone());
-            if self.bot_id == new.user_id {
-                guild.bot_connected = new.channel_id.is_some();
-            }
-        }
-    }
-    pub fn mutual_channel(
-        &mut self,
-        ctx: &Context,
-        guild: &GuildId,
-        member: &UserId,
-    ) -> VoiceAction {
-        let bot_id = ctx.cache.current_user().id;
-        if bot_id != self.bot_id {
-            self.bot_id = bot_id;
-        }
-        let guildstate = self.guilds.entry(*guild).or_insert_with(GuildVc::new);
-        let botstate = guildstate.find_user(bot_id);
-        let memberstate = guildstate.find_user(*member);
-        match (botstate, memberstate) {
-            (Some(botstate), Some(memberstate)) => {
-                if botstate == memberstate {
-                    VoiceAction::InSame(botstate)
-                } else {
-                    VoiceAction::InDifferent(botstate)
-                }
-            }
-            (None, Some(memberstate)) => VoiceAction::Join(memberstate),
-            _ => VoiceAction::UserNotConnected,
-        }
-    }
-    pub async fn refresh_guild(&mut self, ctx: &Context, guild_id: GuildId) -> Result<()> {
-        let (_, new) = self.lazy_refresh_guild(ctx, guild_id).await?;
-        self.guilds.insert(guild_id, new);
-        Ok(())
-    }
-    pub async fn lazy_refresh_guild(
-        &self,
-        ctx: &Context,
-        guild_id: GuildId,
-    ) -> Result<(GuildId, GuildVc)> {
-        let mut new = GuildVc::new();
-        for (_i, channel) in ctx
-            .http
-            .get_guild(guild_id)
-            .await?
-            .channels(&ctx.http)
-            .await?
-        {
-            if channel.kind == ChannelType::Voice {
-                let mut newchannel = HashMap::new();
-                for member in match ctx.http.get_channel(channel.id).await {
-                    Ok(Channel::Guild(channel)) => channel,
-                    Err(_) => {
-                        continue;
-                    }
-                    _ => return Err(anyhow::anyhow!("Expected Guild channel")),
-                }
-                .members(&ctx.cache)?
-                {
-                    newchannel.insert(
-                        member.user.id,
-                        UserMetadata {
-                            member: member.clone(),
-                        },
-                    );
-                }
-                new.replace_channel(channel.id, newchannel);
-            }
-        }
-        Ok((guild_id, new))
-    }
-    pub fn write_guild(&mut self, guild_id: GuildId, voice_data: GuildVc) {
-        self.guilds.insert(guild_id, voice_data);
-    }
-    pub fn bot_alone(&mut self, guild: &GuildId) -> bool {
-        let guild = self.guilds.entry(*guild).or_insert_with(GuildVc::new);
-        let channel = match guild.find_user(self.bot_id) {
-            Some(channel) => channel,
-            None => return false,
-        };
-        let channel = guild.channels.entry(channel).or_default();
-        for user in channel.values() {
-            if !user.member.user.bot {
-                return false;
-            }
-        }
-        true
-    }
-}
-pub enum VoiceAction {
-    Join(ChannelId),
-    InSame(ChannelId),
-    InDifferent(ChannelId),
-    UserNotConnected,
 }
 pub enum GenericInteraction<'a> {
     Command(&'a CommandInteraction),
@@ -194,201 +82,6 @@ impl<'a> From<&'a CommandInteraction> for GenericInteraction<'a> {
 impl<'a> From<&'a ModalInteraction> for GenericInteraction<'a> {
     fn from(interaction: &'a ModalInteraction) -> Self {
         Self::Modal(interaction)
-    }
-}
-impl<'a> VoiceAction {
-    pub async fn send_command_or_respond(
-        self,
-        ctx: &Context,
-        interaction: impl Into<GenericInteraction<'a>>,
-        guild_id: GuildId,
-        command: AudioPromiseCommand,
-    ) {
-        let interaction = interaction.into();
-        match self {
-            Self::UserNotConnected => {
-                if let Err(e) = interaction
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new().content("You're not in a voice channel"),
-                    )
-                    .await
-                {
-                    log::error!("Failed to edit original interaction response: {:?}", e);
-                }
-            }
-            Self::InDifferent(_channel) => {
-                if let Err(e) = interaction
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new().content("I'm in a different voice channel"),
-                    )
-                    .await
-                {
-                    log::error!("Failed to edit original interaction response: {:?}", e);
-                }
-            }
-            Self::Join(_channel) => {
-                if let Err(e) = interaction
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new().content(
-                            "I'm not in a channel, if you want me to join use /join or /play",
-                        ),
-                    )
-                    .await
-                {
-                    log::error!("Failed to edit original interaction response: {:?}", e);
-                }
-            }
-            Self::InSame(_channel) => {
-                let audio_command_handler = match ctx.data.read().await.get::<AudioCommandHandler>()
-                {
-                    Some(handler) => Arc::clone(handler),
-                    None => {
-                        if let Err(e) = interaction
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new().content(
-                                    "Failed to get audio handler, this shouldn't be possible",
-                                ),
-                            )
-                            .await
-                        {
-                            log::error!("Failed to edit original interaction response: {:?}", e);
-                        }
-                        return;
-                    }
-                };
-                let mut audio_command_handler = audio_command_handler.write().await;
-                if let Some(tx) = audio_command_handler.get_mut(&guild_id.to_string()) {
-                    let (rtx, rrx) = oneshot::channel::<String>();
-                    if tx.send((rtx, command)).is_err() {
-                        if let Err(e) = interaction
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new()
-                                    .content("Failed to send volume change"),
-                            )
-                            .await
-                        {
-                            log::error!("Failed to edit original interaction response: {:?}", e);
-                        }
-                        return;
-                    }
-                    let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
-                    if let Ok(Ok(msg)) = timeout {
-                        if let Err(e) = interaction
-                            .edit_response(&ctx.http, EditInteractionResponse::new().content(msg))
-                            .await
-                        {
-                            log::error!("Failed to edit original interaction response: {:?}", e);
-                        }
-                    } else if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new().content("Failed to send inner command"),
-                        )
-                        .await
-                    {
-                        log::error!("Failed to edit original interaction response: {:?}", e);
-                    }
-                } else if let Err(e) = interaction
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content("Couldnt find the channel handler :( im broken."),
-                    )
-                    .await
-                {
-                    log::error!("Failed to edit original interaction response: {:?}", e);
-                }
-            }
-        }
-    }
-    // pub async fn send_command_or_err(
-    //     self,
-    //     ctx: &Context,
-    //     command: AudioPromiseCommand,
-    // ) -> Result<String> {
-    //     // just return the error if the user isn't connected
-    //     match self {
-    //         Self::UserNotConnected => Err(anyhow::anyhow!("User not connected")),
-    //         Self::InDifferent(_channel) => Err(anyhow::anyhow!("Bot in different channel")),
-    //         Self::Join(_channel) => Err(anyhow::anyhow!("Bot not in channel")),
-    //         Self::InSame(_channel) => {
-    //             let audio_command_handler = match ctx.data.read().await.get::<AudioCommandHandler>()
-    //             {
-    //                 Some(handler) => Arc::clone(handler),
-    //                 None => {
-    //                     return Err(anyhow::anyhow!("Failed to get audio handler"));
-    //                 }
-    //             };
-    //             let mut audio_command_handler = audio_command_handler.write().await;
-    //             if let Some(tx) = audio_command_handler.get_mut(&_channel.to_string()) {
-    //                 let (rtx, rrx) = oneshot::channel::<String>();
-    //                 if tx.send((rtx, command)).is_err() {
-    //                     return Err(anyhow::anyhow!("Failed to send command"));
-    //                 }
-    //                 let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
-    //                 if let Ok(Ok(msg)) = timeout {
-    //                     log::trace!("Silent command: {}", msg);
-    //                     Ok(msg)
-    //                 } else {
-    //                     Err(anyhow::anyhow!("Failed to send inner command"))
-    //                 }
-    //             } else {
-    //                 Err(anyhow::anyhow!("Couldnt find the channel handler"))
-    //             }
-    //         }
-    //     }
-    // }
-}
-#[derive(Debug, Clone)]
-pub struct GuildVc {
-    pub channels: HashMap<ChannelId, HashMap<UserId, UserMetadata>>,
-    pub bot_connected: bool,
-}
-impl GuildVc {
-    pub fn new() -> Self {
-        Self {
-            channels: HashMap::new(),
-            bot_connected: false,
-        }
-    }
-    pub fn update(&mut self, old: Option<VoiceState>, new: VoiceState) {
-        if let Some(old) = old {
-            if old.channel_id != new.channel_id {
-                if let Some(channel) = old.channel_id {
-                    let channel = self.channels.entry(channel).or_default();
-                    channel.remove(&old.user_id);
-                }
-            }
-        }
-        if let (Some(channel), Some(member)) = (new.channel_id, new.member.clone()) {
-            let channel = self.channels.entry(channel).or_default();
-            channel.insert(new.user_id, UserMetadata::new(member, new));
-        }
-    }
-    pub fn replace_channel(&mut self, id: ChannelId, members: HashMap<UserId, UserMetadata>) {
-        self.channels.insert(id, members);
-    }
-    pub fn find_user(&self, user: UserId) -> Option<ChannelId> {
-        for (channel, members) in self.channels.iter() {
-            if members.contains_key(&user) {
-                return Some(*channel);
-            }
-        }
-        None
-    }
-}
-#[derive(Debug, Clone)]
-pub struct UserMetadata {
-    pub member: Member,
-}
-impl UserMetadata {
-    pub fn new(member: Member, _state: VoiceState) -> Self {
-        Self { member }
     }
 }
 #[derive(Debug, Clone)]
@@ -617,91 +310,102 @@ impl MessageReference {
         }
     }
     async fn send_manually(&mut self, content: PostSomething, user: UserId) -> Result<()> {
-        if self.transcription_thread.is_failed() {
-            return Ok(());
-        }
-        let webhook = match self.channel_id.webhooks(&self.http).await?.first() {
-            Some(webhook) => webhook.clone(),
-            None => {
-                self.channel_id
-                    .create_webhook(
-                        &self.http,
-                        CreateWebhook::new("Music Bot").audit_log_reason(
-                            "Webhook for logging things said during a voice session",
-                        ),
-                    )
-                    .await?
-            }
-        };
-        let thread_id = match self.transcription_thread {
-            OptionOrFailed::Some(ref thread) => thread.id,
-            OptionOrFailed::Failed => {
+        if cfg!(feature = "send_to_thread") {
+            if self.transcription_thread.is_failed() {
                 return Ok(());
             }
-            OptionOrFailed::None => {
-                let thread = self
-                    .channel_id
-                    .create_thread(
-                        &self.http,
-                        CreateThread::new(
-                            chrono::Local::now()
-                                .format("CLOSED CAPTIONS FOR %b %-d, %Y at %-I:%M%p")
-                                .to_string(),
-                        ),
-                    )
-                    .await;
-                if thread.is_err() {
-                    self.transcription_thread = OptionOrFailed::Failed;
+            let webhook = match self.channel_id.webhooks(&self.http).await?.first() {
+                Some(webhook) => webhook.clone(),
+                None => {
+                    self.channel_id
+                        .create_webhook(
+                            &self.http,
+                            CreateWebhook::new("Music Bot").audit_log_reason(
+                                "Webhook for logging things said during a voice session",
+                            ),
+                        )
+                        .await?
+                }
+            };
+            let thread_id = match self.transcription_thread {
+                OptionOrFailed::Some(ref thread) => thread.id,
+                OptionOrFailed::Failed => {
                     return Ok(());
                 }
-                let thread = thread?;
-                let id = thread.id;
-                self.transcription_thread = OptionOrFailed::Some(thread);
-                id
-            }
-        };
-        let author = self.http.get_user(user).await?;
-        let webhook_url = format!("{}?thread_id={}", webhook.url()?, thread_id);
-        match content {
-            PostSomething::Text(text) => {
-                crate::WEB_CLIENT
-                    .post(&webhook_url)
-                    .json(&json!({
-                        "content": text,
-                        "username": author.name,
-                        "avatar_url": author.avatar_url().unwrap_or_else(|| author.default_avatar_url()),
-                        "allowed_mentions": {
-                            "parse": []
-                        }
-                    })).send().await?;
-            }
-            PostSomething::Attachment { name, data } => {
-                crate::WEB_CLIENT
-                    .post(&webhook_url)
-                    .multipart({
-                        let mut builder = reqwest::multipart::Form::new();
-                        let mut payload = json!({
+                OptionOrFailed::None => {
+                    let thread = self
+                        .channel_id
+                        .create_thread(
+                            &self.http,
+                            CreateThread::new(
+                                chrono::Local::now()
+                                    .format("CLOSED CAPTIONS FOR %b %-d, %Y at %-I:%M%p")
+                                    .to_string(),
+                            ),
+                        )
+                        .await;
+                    if thread.is_err() {
+                        self.transcription_thread = OptionOrFailed::Failed;
+                        return Ok(());
+                    }
+                    let thread = thread?;
+                    let id = thread.id;
+                    self.transcription_thread = OptionOrFailed::Some(thread);
+                    id
+                }
+            };
+            let author = self.http.get_user(user).await?;
+            let webhook_url = format!("{}?thread_id={}", webhook.url()?, thread_id);
+            match content {
+                PostSomething::Text(text) => {
+                    crate::WEB_CLIENT
+                        .post(&webhook_url)
+                        .json(&json!({
+                            "content": text,
                             "username": author.name,
                             "avatar_url": author.avatar_url().unwrap_or_else(|| author.default_avatar_url()),
                             "allowed_mentions": {
                                 "parse": []
                             }
-                        });
-                        builder = builder.part("files[0]", reqwest::multipart::Part::bytes(data).file_name(name));
-                        if let Some(attachments) = payload.get_mut("attachments") {
-                            let mut new = json!([
-                                {
-                                    "id": 0,
-                                    "description": "Transcription",
-                                    "filename": "transcription.mp3",
+                        })).send().await?;
+                }
+                PostSomething::Attachment { name, data } => {
+                    crate::WEB_CLIENT
+                        .post(&webhook_url)
+                        .multipart({
+                            let mut builder = reqwest::multipart::Form::new();
+                            let mut payload = json!({
+                                "username": author.name,
+                                "avatar_url": author.avatar_url().unwrap_or_else(|| author.default_avatar_url()),
+                                "allowed_mentions": {
+                                    "parse": []
                                 }
-                            ]);
-                            std::mem::swap(attachments, &mut new);
-                        }
-                        builder.text("payload_json", serde_json::to_string(&payload)?)
-                    })
-                    .send()
-                    .await?;
+                            });
+                            builder = builder.part("files[0]", reqwest::multipart::Part::bytes(data).file_name(name));
+                            if let Some(attachments) = payload.get_mut("attachments") {
+                                let mut new = json!([
+                                    {
+                                        "id": 0,
+                                        "description": "Transcription",
+                                        "filename": "transcription.mp3",
+                                    }
+                                ]);
+                                std::mem::swap(attachments, &mut new);
+                            }
+                            builder.text("payload_json", serde_json::to_string(&payload)?)
+                        })
+                        .send()
+                        .await?;
+                }
+            }
+        } else {
+            match content {
+                PostSomething::Text(text) => {
+                    log::trace!("Would have sent: {}", text);
+                }
+                PostSomething::Attachment { name, data } => {
+                    log::trace!("Would have sent: a {} byte file named {}", data.len(), name);
+                }
             }
         }
         Ok(())
@@ -762,6 +466,7 @@ impl MessageReference {
             } else if let Err(e) = message
                 .edit(&self.http, {
                     let mut m = EditMessage::new()
+                        .content("")
                         .embed(write_content.to_serenity())
                         .flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
                     if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
@@ -803,6 +508,7 @@ impl MessageReference {
                     .channel_id
                     .send_message(&self.http, {
                         let mut m = CreateMessage::new()
+                            .content("")
                             .embed(write_content.to_serenity())
                             .flags(MessageFlags::SUPPRESS_NOTIFICATIONS);
                         if let Some(ars) = self.last_settings.as_ref().map(Self::get_ars) {
@@ -1054,28 +760,60 @@ pub struct RawMessage {
     pub channel_name: Option<String>,
 
     pub timestamp: Timestamp,
-    pub tts_audio_handle: Option<tokio::task::JoinHandle<Result<Video>>>,
+    pub tts: Arc<RwLock<TTSStatus>>,
+    pub tts_audio_handle: Option<tokio::task::JoinHandle<Result<()>>>,
 }
-impl RawMessage {
-    pub async fn check_tts(&mut self) -> Result<Option<Result<Video>>> {
-        if let Some(handle) = self.tts_audio_handle.take() {
-            if handle.is_finished() {
-                Ok(Some(handle.await?))
-            } else {
-                self.tts_audio_handle = Some(handle);
-                Ok(None)
-            }
-        } else {
-            Err(anyhow::anyhow!("TTS audio handle is None"))
+#[derive(Debug, Clone)]
+pub enum TTSStatus {
+    Pending,
+    Errored,
+    Finished(Video),
+}
+impl Clone for RawMessage {
+    fn clone(&self) -> Self {
+        Self {
+            author_id: self.author_id.clone(),
+            channel_id: self.channel_id,
+            channel_name: self.channel_name.clone(),
+            timestamp: self.timestamp,
+            tts: Arc::clone(&self.tts),
+            tts_audio_handle: None,
         }
     }
+}
+impl RawMessage {
+    pub async fn check_tts(&mut self) -> TTSStatus {
+        if let Some(handle) = self.tts_audio_handle.take() {
+            if handle.is_finished() {
+                match handle.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        log::error!("Error in TTS: {:?}", e);
+                        let mut lock = self.tts.write().await;
+                        *lock = TTSStatus::Errored;
+                    }
+                    Err(e) => {
+                        log::error!("Error in thread: {:?}", e);
+                        let mut lock = self.tts.write().await;
+                        *lock = TTSStatus::Errored;
+                    }
+                }
+            } else {
+                self.tts_audio_handle = Some(handle);
+            }
+        }
+        let lock = self.tts.read().await;
+        lock.clone()
+    }
     pub fn announcement(msg: &Message, text: String, voice: &TTSVoice) -> Self {
+        let tts = Arc::new(RwLock::new(TTSStatus::Pending));
         Self {
             author_id: String::from("Announcement"),
             channel_id: msg.channel_id,
             channel_name: None,
             timestamp: msg.timestamp,
-            tts_audio_handle: Some(Self::audio_handle(text, *voice)),
+            tts_audio_handle: Some(Self::audio_handle(text, *voice, Arc::clone(&tts))),
+            tts,
         }
     }
     pub async fn message(ctx: &Context, msg: &Message, voice: &TTSVoice) -> Result<Self> {
@@ -1106,23 +844,31 @@ impl RawMessage {
                 return Err(anyhow::anyhow!("Failed to get channel name"));
             }
         };
+        let tts = Arc::new(RwLock::new(TTSStatus::Pending));
         Ok(Self {
             author_id: msg.author.id.to_string(),
             channel_name: Some(channelname),
             channel_id: msg.channel_id,
             timestamp: msg.timestamp,
-            tts_audio_handle: Some(Self::audio_handle(filteredcontent, *voice)),
+            tts_audio_handle: Some(Self::audio_handle(
+                filteredcontent,
+                *voice,
+                Arc::clone(&tts),
+            )),
+            tts,
         })
     }
-    pub fn audio_handle(text: String, voice: TTSVoice) -> tokio::task::JoinHandle<Result<Video>> {
+    pub fn audio_handle(
+        text: String,
+        voice: TTSVoice,
+        tts: Arc<RwLock<TTSStatus>>,
+    ) -> tokio::task::JoinHandle<Result<()>> {
         tokio::task::spawn(async move {
-            let key = match crate::youtube::get_access_token().await {
-                Ok(key) => key,
-                Err(e) => {
-                    return Err(e);
-                }
-            };
-            crate::youtube::get_tts(text, key, Some(voice)).await
+            let key = crate::youtube::get_access_token().await?;
+            let res = crate::youtube::get_tts(text, key, Some(voice)).await?;
+            let mut lock = tts.write().await;
+            *lock = TTSStatus::Finished(res);
+            Ok(())
         })
     }
 }
