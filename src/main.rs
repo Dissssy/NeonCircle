@@ -1541,6 +1541,12 @@ impl EventHandler for SatelliteHandler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         log::info!("Connected as {}", ready.user.name);
         ctx.set_activity(Some(ActivityData::playing(&self.playing)));
+        if let Err(e) = Command::set_global_commands(
+            &ctx.http,
+            vec![]
+        ).await {
+            log::error!("Failed to register commands: {}", e);
+        }
         global_data::add_satellite_wait(ctx, self.position).await;
     }
 }
