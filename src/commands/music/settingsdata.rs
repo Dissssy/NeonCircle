@@ -1,11 +1,11 @@
 use super::OrAuto;
 #[derive(Clone, PartialEq, Debug)]
 pub struct SettingsData {
-    pub something_playing: bool,
+    // pub something_playing: bool,
     pub log_empty: bool,
 
-    volume: f64,
-    radiovolume: f64,
+    song_volume: f32,
+    radio_volume: f32,
     pub bitrate: OrAuto,
 
     pub autoplay: bool,
@@ -16,33 +16,39 @@ pub struct SettingsData {
     pub read_titles: bool,
 }
 impl SettingsData {
-    pub fn volume(&mut self) -> f64 {
-        self.something_playing = true;
-        self.volume * 0.5
+    pub fn song_volume(&self) -> f32 {
+        // self.something_playing = true;
+        self.song_volume * 0.5
     }
-    pub fn set_volume(&mut self, v: f64) {
-        self.volume = v;
+    pub fn display_song_volume(&self) -> f32 {
+        self.song_volume
     }
-    pub fn raw_volume(&self) -> f64 {
-        self.volume
+    pub fn set_song_volume(&mut self, v: f32) {
+        self.song_volume = v;
     }
-    pub fn radiovolume(&mut self) -> f64 {
-        self.something_playing = false;
-        self.radiovolume * 0.5
+    // pub fn raw_song_volume(&self) -> f32 {
+    //     self.song_volume
+    // }
+    pub fn radio_volume(&self) -> f32 {
+        // self.something_playing = false;
+        self.radio_volume * 0.5
     }
-    pub fn set_radiovolume(&mut self, v: f64) {
-        self.radiovolume = v;
+    pub fn set_radio_volume(&mut self, v: f32) {
+        self.radio_volume = v;
     }
-    pub fn raw_radiovolume(&self) -> f64 {
-        self.radiovolume
+    pub fn display_radio_volume(&self) -> f32 {
+        self.radio_volume
     }
+    // pub fn raw_radio_volume(&self) -> f32 {
+    //     self.radio_volume
+    // }
 }
 impl Default for SettingsData {
     fn default() -> Self {
         Self {
-            something_playing: false,
-            volume: 1.0,
-            radiovolume: 0.33,
+            // something_playing: false,
+            song_volume: 1.0,
+            radio_volume: 0.33,
             autoplay: false,
             looped: false,
             repeat: false,

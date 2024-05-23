@@ -1,9 +1,7 @@
 mod commands;
 mod structs;
 mod user;
-use crate::{
-    commands::music::transcribe::TranscriptionMessage, global_data::get_consent, video::Video,
-};
+use crate::{commands::music::transcribe::TranscriptionMessage, video::Video};
 use anyhow::Result;
 use serde::Deserialize as _;
 use serenity::all::*;
@@ -169,9 +167,9 @@ impl songbird::EventHandler for VoiceEventSender {
                 for (ssrc, VoiceData { decoded_voice, .. }) in speaking.iter() {
                     let ssrc_to_user_id = self.ssrc_to_user_id.read().await;
                     if let (Some(user_id), Some(audio)) = (
-                        ssrc_to_user_id
-                            .get(ssrc)
-                            .and_then(|u| get_consent(*u).then_some(*u)),
+                        ssrc_to_user_id.get(ssrc).and_then(|u| {
+                            crate::global_data::consent_data::get_consent(*u).then_some(*u)
+                        }),
                         decoded_voice,
                     ) {
                         if self
@@ -186,7 +184,7 @@ impl songbird::EventHandler for VoiceEventSender {
                                 //         _ => unreachable!(),
                                 //     })
                                 //     .collect::<Vec<u8>>(),
-                                audio: audio.to_vec(),
+                                audio: audio.clone(),
                                 received: Instant::now(),
                             })
                             .is_err()
@@ -209,13 +207,13 @@ pub struct PacketData {
     pub received: Instant,
 }
 // this struct will implement the Future trait, and only ever return if there is an active timeout and it has expired, turning the timeout into a None
-struct OptionalTimeout {
+pub struct OptionalTimeout {
     // from: Option<Instant>,
     opt: Option<Pin<Box<Sleep>>>,
     duration: Duration,
 }
 impl OptionalTimeout {
-    fn new(duration: Duration) -> Self {
+    pub fn new(duration: Duration) -> Self {
         // Self {
         //     from: None,
         //     duration,
@@ -225,11 +223,14 @@ impl OptionalTimeout {
             duration,
         }
     }
-    fn begin_now(&mut self) {
+    pub fn set_duration(&mut self, duration: Duration) {
+        self.duration = duration;
+    }
+    pub fn begin_now(&mut self) {
         let duration = self.duration;
         self.opt = Some(Box::pin(tokio::time::sleep(duration)));
     }
-    fn end_now(&mut self) {
+    pub fn end_now(&mut self) {
         self.opt = None;
     }
 }
@@ -239,10 +240,14 @@ impl Future for OptionalTimeout {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<()> {
-        match self.as_mut().opt {
+        let poll = match self.as_mut().opt {
             None => std::task::Poll::Pending,
             Some(ref mut fut) => fut.poll_unpin(cx),
+        };
+        if poll.is_ready() {
+            self.as_mut().end_now();
         }
+        poll
     }
 }
 // async fn pcm_s16le_to_mp3(data: &[u8]) -> Result<Vec<u8>> {

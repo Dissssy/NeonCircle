@@ -57,7 +57,7 @@ codegen-units = 1
 panic = "abort"
 
 [features]
-default = ["all"]
+default = ["all", "experimental"]
 all = [
     "spotify",
     "youtube-search",

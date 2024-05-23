@@ -4,15 +4,15 @@ use super::{
     transcribe::TranscriptionThread,
     AudioHandler, AudioPromiseCommand,
 };
-use crate::global_data::VoiceAction;
+use crate::global_data::voice_data::VoiceAction;
 use anyhow::Result;
 use serenity::all::*;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 #[derive(Debug, Clone)]
-pub struct Join;
+pub struct Command;
 #[async_trait]
-impl crate::CommandTrait for Join {
+impl crate::CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(CreateCommand::new(self.command_name()).description("Join the voice channel"))
     }
@@ -45,24 +45,26 @@ impl crate::CommandTrait for Join {
             }
         };
         if let Some(member) = interaction.member.as_ref() {
-            let next_step = match crate::global_data::mutual_channel(&guild_id, &member.user.id)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    log::error!("Failed to get mutual channel: {:?}", e);
-                    if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new().content("Failed to get mutual channel"),
-                        )
-                        .await
-                    {
-                        log::error!("Failed to edit original interaction response: {:?}", e);
+            let next_step =
+                match crate::global_data::voice_data::mutual_channel(&guild_id, &member.user.id)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!("Failed to get mutual channel: {:?}", e);
+                        if let Err(e) = interaction
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .content("Failed to get mutual channel"),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to edit original interaction response: {:?}", e);
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
-                }
-            };
+                };
             match next_step.action {
                 VoiceAction::NoRemaining => {
                     if let Err(e) = interaction
@@ -174,7 +176,7 @@ impl crate::CommandTrait for Join {
                                     .send_message(
                                         &ctx.http,
                                         CreateMessage::new()
-                                            .content("Joining voice channel")
+                                            .content("<a:earloading:979852072998543443>")
                                             .flags(MessageFlags::SUPPRESS_NOTIFICATIONS),
                                     )
                                     .await
@@ -196,8 +198,8 @@ impl crate::CommandTrait for Join {
                                     }
                                 };
                                 let messageref = super::MessageReference::new(
-                                    ctx.http.clone(),
-                                    ctx.cache.clone(),
+                                    Arc::clone(&ctx.http),
+                                    Arc::clone(&ctx.cache),
                                     guild_id,
                                     channel,
                                     msg,
@@ -242,6 +244,7 @@ impl crate::CommandTrait for Join {
                                 if let Err(e) = em.write().await.register(channel).await {
                                     log::error!("Error registering channel: {:?}", e);
                                 }
+                                let this_bot_id = ctx.cache.current_user().id;
                                 let handle = tokio::task::spawn(async move {
                                     let control = ControlData {
                                         call,
@@ -249,14 +252,14 @@ impl crate::CommandTrait for Join {
                                         msg: messageref,
                                         nothing_uri: nothing_path,
                                         settings: SettingsData::default(),
-                                        brk: false,
                                         log: Log::new(format!("{}-{}", guild_id, channel)),
                                         transcribe: em,
                                     };
                                     super::mainloop::the_lüüp(
-                                        cfg.looptime,
+                                        // cfg.looptime,
                                         transcription,
                                         control,
+                                        this_bot_id,
                                     )
                                     .await;
                                 });

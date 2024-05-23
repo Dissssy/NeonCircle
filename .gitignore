@@ -21,3 +21,4 @@ log.txt
 src/voice_events/voice_events.rs.old
 bots.json
 bin
+guilds.json

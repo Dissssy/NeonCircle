@@ -1,10 +1,10 @@
-use crate::global_data::{get_consent, set_consent};
+use crate::global_data::consent_data::{get_consent, set_consent};
 use anyhow::Result;
 use serenity::all::*;
 #[derive(Debug, Clone)]
-pub struct Consent;
+pub struct Command;
 #[async_trait]
-impl crate::CommandTrait for Consent {
+impl crate::CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(CreateCommand::new(self.command_name()).description("Grant consent for Neon Circle to process audio data sent from your microphone. (OFF BY DEFAULT)").set_options(vec![CreateCommandOption::new(CommandOptionType::Boolean, "consent", "I consent to Neon Circle processing audio data sent from my microphone.").required(true)]))
     }

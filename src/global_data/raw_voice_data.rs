@@ -83,6 +83,19 @@ pub async fn mutual_channel(guild: &GuildId, member: &UserId) -> Result<VoiceAct
         None => Err(anyhow::anyhow!("Voice data uninitialized")),
     }
 }
+pub async fn channel_count_besides(
+    guild: &GuildId,
+    channel: &ChannelId,
+    ignore: &UserId,
+) -> Result<UserCount> {
+    let data = VOICE_DATA.read().await;
+    match data.as_ref() {
+        Some(data) => Ok(data
+            .user_count_besides(guild, channel, ignore)
+            .ok_or(anyhow::anyhow!("Channel not found"))?),
+        None => Err(anyhow::anyhow!("Voice data uninitialized")),
+    }
+}
 struct VoiceData {
     guilds: HashMap<GuildId, GuildVc>,
     planet_context: Context,
@@ -109,6 +122,22 @@ impl VoiceData {
                 }
             }
         }
+    }
+    fn user_count_besides(
+        &self,
+        guild: &GuildId,
+        channel: &ChannelId,
+        ignore: &UserId,
+    ) -> Option<UserCount> {
+        let guild = self.guilds.get(guild)?;
+        guild.user_count_besides(
+            channel,
+            &self
+                .bot_ids
+                .iter()
+                .filter_map(|(_, id, _)| (id != ignore).then_some(*id))
+                .collect::<Vec<_>>(),
+        )
     }
     async fn mutual_channel(&mut self, guild: &GuildId, member: &UserId) -> VoiceActionWithContext {
         let guildstate = self.guilds.entry(*guild).or_insert_with(GuildVc::new);
@@ -207,7 +236,8 @@ impl VoiceData {
                     newchannel.insert(
                         member.user.id,
                         UserMetadata {
-                            _member: member.clone(),
+                            member: member.clone(),
+                            last_known_state: None,
                         },
                     );
                 }
@@ -386,6 +416,24 @@ impl GuildVc {
             bots_connected: HashSet::new(),
         }
     }
+    fn user_count_besides(&self, channel: &ChannelId, our_bots: &[UserId]) -> Option<UserCount> {
+        if let Some(channel) = self.channels.get(channel) {
+            let mut users = 0;
+            let mut bots = 0;
+            for (id, user) in channel {
+                if !user.member.user.bot {
+                    if our_bots.contains(id) {
+                        bots += 1;
+                    } else {
+                        users += 1;
+                    }
+                }
+            }
+            Some(UserCount { users, bots })
+        } else {
+            None
+        }
+    }
     pub fn update(&mut self, old: Option<VoiceState>, new: VoiceState) {
         if let Some(old) = old {
             if old.channel_id != new.channel_id {
@@ -431,10 +479,19 @@ impl GuildVc {
 }
 #[derive(Debug, Clone)]
 pub struct UserMetadata {
-    pub _member: Member,
+    pub member: Member,
+    #[allow(dead_code)]
+    pub last_known_state: Option<VoiceState>,
 }
 impl UserMetadata {
-    pub fn new(member: Member, _state: VoiceState) -> Self {
-        Self { _member: member }
+    pub fn new(member: Member, state: VoiceState) -> Self {
+        Self {
+            member,
+            last_known_state: Some(state),
+        }
     }
+}
+pub struct UserCount {
+    pub users: usize,
+    pub bots: usize,
 }

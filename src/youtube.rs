@@ -5,6 +5,7 @@ use crate::video::RawVideo;
 use crate::{commands::music::VideoType, video::Video};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 #[cfg(feature = "tts")]
 use tokio::io::AsyncWriteExt;
 #[cfg(all(feature = "misandry", feature = "misogyny"))]
@@ -175,8 +176,8 @@ pub async fn get_recommendations(url: String, lim: usize) -> Vec<VideoInfo> {
 pub async fn get_video_info(url: String) -> Result<VideoInfo> {
     let info = get_url_video_info(&url).await?;
     Ok(VideoInfo {
-        title: info.title,
-        url,
+        title: info.title.into(),
+        url: url.into(),
         duration: info.duration,
     })
 }
@@ -270,13 +271,29 @@ pub struct RawSpotifyArtist {
 }
 #[derive(Debug, Clone)]
 pub struct VideoInfo {
-    pub title: String,
-    pub url: String,
-    pub duration: Option<f64>,
+    title: Arc<str>,
+    url: Arc<str>,
+    duration: Option<f64>,
 }
 impl VideoInfo {
+    pub fn new(title: Arc<str>, url: Arc<str>, duration: Option<f64>) -> Self {
+        Self {
+            title,
+            url,
+            duration,
+        }
+    }
+    pub fn title(&self) -> Arc<str> {
+        Arc::clone(&self.title)
+    }
+    pub fn url(&self) -> Arc<str> {
+        Arc::clone(&self.url)
+    }
+    pub fn duration(&self) -> Option<f64> {
+        self.duration
+    }
     pub fn to_songbird(&self) -> songbird::input::Input {
-        songbird::input::YoutubeDl::new(crate::WEB_CLIENT.clone(), self.url.clone()).into()
+        songbird::input::YoutubeDl::new(crate::WEB_CLIENT.clone(), self.url().to_string()).into()
     }
     pub async fn to_metavideo(&self) -> anyhow::Result<MetaVideo> {
         let v = crate::video::Video::get_video(&self.url, true, false)
@@ -286,27 +303,27 @@ impl VideoInfo {
             .clone();
         #[cfg(feature = "tts")]
         let key = crate::youtube::get_access_token().await;
-        let title = match v.clone() {
-            VideoType::Disk(v) => v.title,
-            VideoType::Url(v) => v.title,
+        let title = match &v {
+            VideoType::Disk(v) => v.title(),
+            VideoType::Url(v) => v.title(),
         };
         #[cfg(feature = "tts")]
         if let Ok(key) = key.as_ref() {
             Ok(MetaVideo {
                 video: v,
                 ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(
-                    title.clone(),
+                    Arc::clone(&title),
                     key.clone(),
                     None,
                 )))),
-                title,
+                // title,
                 author: None,
             })
         } else {
             Ok(MetaVideo {
                 video: v,
                 ttsmsg: None,
-                title,
+                // title,
                 author: None,
             })
         }
@@ -335,8 +352,12 @@ impl TTSVoice {
     }
 }
 #[cfg(feature = "tts")]
-pub async fn get_tts(title: String, key: String, specificvoice: Option<TTSVoice>) -> Result<Video> {
-    let mut title = title;
+pub async fn get_tts<F, T>(title: F, key: T, specificvoice: Option<TTSVoice>) -> Result<Video>
+where
+    F: AsRef<str>,
+    T: AsRef<str>,
+{
+    let mut title = title.as_ref().to_owned();
     use rand::seq::SliceRandom;
     let backup_voice = VOICES
         .choose(&mut rand::thread_rng())
@@ -368,7 +389,7 @@ pub async fn get_tts(title: String, key: String, specificvoice: Option<TTSVoice>
         .post("https://texttospeech.googleapis.com/v1/text:synthesize")
         .header("Content-Type", "application/json; charset=utf-8")
         .header("X-Goog-User-Project", "97417849124")
-        .header("Authorization", format!("Bearer {}", key.trim()))
+        .header("Authorization", format!("Bearer {}", key.as_ref().trim()))
         .body(body.to_string())
         .send()
         .await?;

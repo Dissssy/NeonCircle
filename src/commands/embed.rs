@@ -95,8 +95,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                         builder::CreateEmbed::default()
                             .title("Error")
                             .description("This command requires a video url")
-                            .color(Color::RED)
-                            .to_owned(),
+                            .color(Color::RED),
                     ),
                 )
                 .await
@@ -136,8 +135,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                     builder::CreateEmbed::default()
                         .title("Error")
                         .description(format!("{}", e))
-                        .color(Color::RED)
-                        .to_owned(),
+                        .color(Color::RED),
                 ),
             )
             .await
@@ -150,7 +148,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
         Ok(video) => {
             match video {
                 VideoType::Disk(video) => {
-                    let file = match CreateAttachment::path(&video.path).await {
+                    let file = match CreateAttachment::path(&video.path()).await {
                         Ok(f) => f,
                         Err(e) => {
                             match interaction
@@ -161,8 +159,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                                             builder::CreateEmbed::default()
                                                 .title("Error")
                                                 .description(format!("{}", e))
-                                                .color(Color::RED)
-                                                .to_owned(),
+                                                .color(Color::RED),
                                         )
                                         .ephemeral(true),
                                 )
@@ -197,8 +194,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                                         builder::CreateEmbed::default()
                                             .title("Error")
                                             .description(format!("{}", e))
-                                            .color(Color::RED)
-                                            .to_owned(),
+                                            .color(Color::RED),
                                     )
                                     .ephemeral(true),
                             )
@@ -208,12 +204,6 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
                             Err(e) => {
                                 log::error!("Fatal error creating followup message: {}", e)
                             }
-                        }
-                    };
-                    match video.delete() {
-                        Ok(_) => {}
-                        Err(e) => {
-                            log::error!("Error deleting video: {}", e)
                         }
                     };
                 }

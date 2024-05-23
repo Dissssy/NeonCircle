@@ -1,23 +1,25 @@
 use super::settingsdata::SettingsData;
 use super::transcribe::{TranscribeChannelHandler, TranscriptionThread};
-use super::{MessageReference, OrAuto};
-use crate::commands::music::{
-    AudioPromiseCommand, MetaVideo, RawMessage, SpecificVolume, VideoType,
-};
-use crate::radio::AzuraCast;
-use crate::voice_events::PostSomething;
+use super::{Author, MessageReference, OrAuto};
+use crate::commands::music::{AudioPromiseCommand, MetaVideo, RawMessage, SpecificVolume};
+use crate::radio::Root;
+use crate::voice_events::{OptionalTimeout, PostSomething};
+use anyhow::Result;
 use rand::Rng;
-use serenity::all::{Color, CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, UserId};
+use serenity::all::{ChannelId, Color, CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, UserId};
+use serenity::async_trait;
 use songbird::driver::Bitrate;
-use songbird::error::ControlError;
 use songbird::input::{File, YoutubeDl};
-use songbird::tracks::TrackHandle;
-use songbird::Call;
+use songbird::tracks::{Track, TrackHandle, TrackState};
+use songbird::{Call, EventContext};
+use std::future::Future;
 use std::mem;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 use tokio::time::Instant;
 pub struct ControlData {
     pub call: Arc<Mutex<Call>>,
@@ -26,36 +28,15 @@ pub struct ControlData {
     pub nothing_uri: Option<PathBuf>,
     pub transcribe: Arc<RwLock<TranscribeChannelHandler>>,
     pub settings: SettingsData,
-    pub brk: bool,
     pub log: Log,
 }
 pub async fn the_lüüp(
-    rawlooptime: u64,
     mut transcription: TranscriptionThread,
     mut control: ControlData,
+    this_bot_id: UserId,
 ) {
-    // let (transcription_thread, kill_transcription_thread, mut recv_new_transcription) = {
-    //     let transcribe = crate::voice_events::VoiceDataManager::new(
-    //         Arc::clone(&rawcall),
-    //         Arc::clone(&http),
-    //         rawtx,
-    //     )
-    //     .await;
-    //     let (killtranscribe, transcribereturn) = tokio::sync::mpsc::channel::<()>(1);
-    //     let (transsender, transcribed) = mpsc::unbounded_channel::<(String, UserId)>();
-    //     let trans = {
-    //         let call = Arc::clone(&rawcall);
-    //         tokio::task::spawn(crate::voice_events::transcription_thread(
-    //             transcribe,
-    //             transcribereturn,
-    //             transsender,
-    //             call,
-    //         ))
-    //     };
-    //     (trans, killtranscribe, transcribed)
-    // };
-    // let log = Log::new(log_source);
     let log = control.log.clone();
+    let mut current_channel = control.msg.channel_id;
     log.log("Starting loop").await;
     log.log("Creating control data").await;
     {
@@ -65,6 +46,7 @@ pub async fn the_lüüp(
         cl.set_bitrate(Bitrate::Auto);
     }
     let (msg_updater, update_msg) = mpsc::channel::<(SettingsData, EmbedData)>(8);
+    let (change_channel, mut change_rx) = tokio::sync::broadcast::channel::<ChannelId>(1);
     let (manually_send, send_msg) = mpsc::unbounded_channel::<(PostSomething, UserId)>();
     let (killmsg, killrx) = tokio::sync::oneshot::channel::<()>();
     log.log("Spawning message updater").await;
@@ -87,13 +69,19 @@ pub async fn the_lüüp(
                             while let Ok(u) = update_msg.try_recv() {
                                 shakesbutt = u;
                             }
-                            let r = msg.update(shakesbutt.0, shakesbutt.1).await;
-                            if let Err(e) = r {
+                            if let Err(e) = msg.update(shakesbutt.0, shakesbutt.1).await {
                                 logger.log(&format!("Error updating message: {}", e)).await;
                             }
                         } else {
                             logger.log("Error getting next message").await;
                             break;
+                        }
+                    }
+                    channel = change_rx.recv() => {
+                        if let Ok(channel) = channel {
+                            if let Err(e) = msg.change_channel(channel).await {
+                                logger.log(&format!("Error changing channel: {}", e)).await;
+                            }
                         }
                     }
                     manmsg = send_msg.recv() => {
@@ -112,22 +100,27 @@ pub async fn the_lüüp(
             }
         })
     };
-    let mut trackhandle: Option<TrackHandle> = None;
-    let mut queue: Vec<MetaVideo> = Vec::new();
+    let mut queue: Vec<SuperHandle> = Vec::new();
+    let mut current_song: Option<SuperHandle> = None;
+    let mut current_handle: Option<HandleMetadata> = None;
     let mut last_embed: Option<EmbedData> = None;
     let mut last_settings = None;
     let mut nothing_handle: Option<TrackHandle> = None;
-    let mut tts_handle: Option<TrackHandle> = None;
-    let mut skipmarker = false;
-    let g_timeout_time = Duration::from_millis(100);
-    let mut autoplay_thread: Option<tokio::task::JoinHandle<Option<MetaVideo>>> = None;
+    // let g_timeout_time = Duration::from_millis(100);
     log.log("Creating azuracast").await;
-    let mut azuracast = match crate::Config::get().api_url {
-        Some(ref url) => AzuraCast::new(url, log.clone(), g_timeout_time).await.ok(),
-        None => None,
-    };
-    let mut data: Option<crate::radio::Root> = None;
-    let mut current_track: Option<MetaVideo> = None;
+    // let mut azuracast = match crate::Config::get().api_url {
+    //     Some(ref url) => AzuraCast::new(url, log.clone(), g_timeout_time).await.ok(),
+    //     None => None,
+    // };
+    let (mut azuracast_updates, mut azuracast_data) =
+        match crate::global_data::azuracast::resubscribe().await {
+            Ok((a, b)) => (Some(a), Some(b)),
+            Err(e) => {
+                log.log(&format!("Error resubscribing to azuracast: {}", e))
+                    .await;
+                (None, None)
+            }
+        };
     log.log("Locking transcription listener").await;
     let ttsrx = control.transcribe.write().await.get_receiver();
     let ttshandler = super::transcribe::Handler::new(Arc::clone(&control.call));
@@ -174,20 +167,24 @@ pub async fn the_lüüp(
             }
         })
     };
-    let mut run_dur = tokio::time::interval(tokio::time::Duration::from_millis(rawlooptime));
+    let mut next_index = 0;
+    let mut connection_events = DisconnectEvents::register(&control.call).await;
+    let mut pending_reconnect = OptionalTimeout::new(std::time::Duration::from_secs(30));
+    let mut pending_disconnect = {
+        OptionalTimeout::new(
+            crate::global_data::guild_config::GuildConfig::get(control.msg.guild_id)
+                .get_empty_channel_timeout(),
+        )
+    };
+    let mut rerun = OptionalTimeout::new(std::time::Duration::from_millis(10));
+    rerun.begin_now();
     loop {
         control.settings.log_empty = log.is_empty().await;
         tokio::select! {
             t = control.rx.recv() => {
                 match t {
                     Some((snd, command)) => match command {
-                        // AudioPromiseCommand::Consent { user_id, consent } => {
-                        //     log::info!("Received consent command");
-                        //     if let Err(e) = transcription.consent(user_id, consent, snd).await {
-                        //         log.log(&format!("Error giving consent: {}\n", e)).await;
-                        //     }
-                        // }
-                        AudioPromiseCommand::RetrieveLog(secret) => {
+                        AudioPromiseCommand::RetrieveLog(log_snd) => {
                             let chunks = log.get_chunks_4k().await;
                             let mut string_chunks = chunks
                                 .iter()
@@ -199,248 +196,212 @@ pub async fn the_lüüp(
                             } else {
                                 chunks.last().map(|e| e.end).unwrap_or(0)
                             };
-                            let r = secret
+                            if let Err(e) = log_snd
                                 .send(
                                     string_chunks
                                         .into_iter()
                                         .map(|(s, _)| s)
                                         .collect::<Vec<String>>(),
                                 )
-                                .await;
-                            if let Err(e) = r {
+                                .await {
                                 log.log(&format!("Error sending log: {}\n", e)).await;
                             }
-                            let r = snd.send("Log sent!".to_owned());
-                            if let Err(e) = r {
+                            if let Err(e) = snd.send("Log sent!".to_owned()) {
                                 log.log(&format!("Error sending log: {}\n", e)).await;
                             }
                             log.clear_until(end).await;
                         }
                         AudioPromiseCommand::Play(videos) => {
                             for v in videos {
-                                queue.push(v);
+                                queue.push(match SuperHandle::new(&control.call, v, control.settings.song_volume()).await {
+                                    Ok(h) => h,
+                                    Err(e) => {
+                                        log.log(&format!("Error creating handle: {}\n", e)).await;
+                                        continue;
+                                    }
+                                });
                             }
-                            let r = snd.send(String::from("Added to queue"));
-                            if let Err(e) = r {
+                            if let Err(e) = snd.send(String::from("Added to queue")) {
                                 log.log(&format!("Error sending play: {}\n", e)).await;
                             }
+                            next_index = if control.settings.shuffle {
+                                let maxnum = if control.settings.looped {
+                                    queue.len() - 1
+                                } else {
+                                    queue.len()
+                                };
+                                if maxnum > 0 {
+                                    rand::thread_rng().gen_range(0..maxnum)
+                                } else {
+                                    0
+                                }
+                            } else {
+                                0
+                            };
                         }
                         AudioPromiseCommand::Stop(delay) => {
-                            let r = snd.send(String::from("Stopped"));
-                            if let Err(e) = r {
+                            if let Err(e) = snd.send(String::from("Stopped")) {
                                 log.log(&format!("Error sending stop: {}\n", e)).await;
                             }
-                            control.brk = true;
                             if let Some(delay) = delay {
                                 tokio::time::sleep(delay).await;
                             }
+                            break;
                         }
                         AudioPromiseCommand::Paused(paused) => {
                             let val = paused.get_val(control.settings.pause);
-                            if let Some(trackhandle) = trackhandle.as_mut() {
+                            if let Some(handle) = current_handle.as_ref() {
                                 if control.settings.pause != val {
                                     control.settings.pause = val;
-                                    let r = if control.settings.pause {
-                                        trackhandle.pause()
-                                    } else {
-                                        trackhandle.play()
-                                    };
-                                    if let Err(e) = r {
-                                        log.log(&format!("Error pausing track: {}\n", e)).await;
-                                    } else {
-                                        let r2 =
-                                            snd.send(format!("Paused set to `{}`", control.settings.pause));
-                                        if let Err(e) = r2 {
-                                            log.log(&format!("Error sending pause: {}\n", e)).await;
+                                    let trackhandle = handle.get_handle();
+                                    if control.settings.pause {
+                                        if let Err(e) = trackhandle.pause() {
+                                            log.log(&format!("Error pausing track: {}\n", e)).await;
                                         }
+                                    } else if let Err(e) = trackhandle.play() {
+                                        log.log(&format!("Error resuming track: {}\n", e)).await;
+                                    };
+                                    if let Err(e) = snd.send(format!("Paused set to `{}`", control.settings.pause)) {
+                                        log.log(&format!("Error sending pause: {}\n", e)).await;
                                     }
                                 }
                             } else if let Err(e) = snd.send(String::from("Nothing is playing")) {
-                                log.log(&format!("Error updating message: {}\n", e)).await;
+                                log.log(&format!("Error responding to command{}\n", e)).await;
                             }
                         }
                         AudioPromiseCommand::Shuffle(shuffle) => {
                             let shuffle = shuffle.get_val(control.settings.shuffle);
                             if control.settings.shuffle != shuffle {
                                 control.settings.shuffle = shuffle;
-                                let r = snd.send(format!("Shuffle set to `{}`", control.settings.shuffle));
-                                if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
+                                if let Err(e) = snd.send(format!("Shuffle set to `{}`", control.settings.shuffle)) {
+                                    log.log(&format!("Error responding to command{}\n", e)).await;
                                 }
-                            } else {
-                                let r =
-                                    snd.send(format!("Shuffle is already `{}`", control.settings.shuffle));
-                                if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
-                                }
+                            } else if let Err(e) = snd.send(format!("Shuffle is already `{}`", control.settings.shuffle)) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
                             }
                         }
                         AudioPromiseCommand::Autoplay(autoplay) => {
                             let autoplay = autoplay.get_val(control.settings.autoplay);
                             if control.settings.autoplay != autoplay {
                                 control.settings.autoplay = autoplay;
-                                let r =
-                                    snd.send(format!("Autoplay set to `{}`", control.settings.autoplay));
-                                if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
+                                if let Err(e) = snd.send(format!("Autoplay set to `{}`", control.settings.autoplay)) {
+                                    log.log(&format!("Error responding to command{}\n", e)).await;
                                 }
-                            } else {
-                                let r = snd.send(format!(
-                                    "Autoplay is already `{}`",
-                                    control.settings.autoplay
-                                ));
-                                if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
-                                }
+                            } else if let Err(e) = snd.send(format!(
+                                "Autoplay is already `{}`",
+                                control.settings.autoplay
+                            )) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
                             }
                         }
                         AudioPromiseCommand::ReadTitles(read_titles) => {
                             let read_titles = read_titles.get_val(control.settings.read_titles);
                             if control.settings.read_titles != read_titles {
                                 control.settings.read_titles = read_titles;
-                                let r = snd.send(format!(
+                                if let Err(e) = snd.send(format!(
                                     "Read titles set to `{}`",
                                     control.settings.read_titles
-                                ));
-                                if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
+                                )) {
+                                    log.log(&format!("Error responding to command{}\n", e)).await;
                                 }
-                            } else {
-                                let r = snd.send(format!(
-                                    "Read titles is already `{}`",
-                                    control.settings.read_titles
-                                ));
-                                if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
-                                }
+                            } else if let Err(e) = snd.send(format!(
+                                "Read titles is already `{}`",
+                                control.settings.read_titles
+                            )) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
                             }
                         }
                         AudioPromiseCommand::Loop(looped) => {
                             let looped = looped.get_val(control.settings.looped);
                             if control.settings.looped != looped {
                                 control.settings.looped = looped;
-                                let r = snd.send(format!("Loop set to `{}`", control.settings.looped));
-                                if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
+                                if let Err(e) = snd.send(format!("Loop set to `{}`", control.settings.looped)) {
+                                    log.log(&format!("Error responding to command{}\n", e)).await;
                                 }
-                            } else {
-                                let r = snd.send(format!("Loop is already `{}`", control.settings.looped));
-                                if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
-                                }
+                            } else if let Err(e) = snd.send(format!("Loop is already `{}`", control.settings.looped)) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
                             }
                         }
                         AudioPromiseCommand::Repeat(repeat) => {
                             let repeat = repeat.get_val(control.settings.repeat);
                             if control.settings.repeat != repeat {
                                 control.settings.repeat = repeat;
-                                let r = snd.send(format!("Repeat set to `{}`", control.settings.repeat));
-                                if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
+                                if let Err(e) = snd.send(format!("Repeat set to `{}`", control.settings.repeat)) {
+                                    log.log(&format!("Error responding to command{}\n", e)).await;
                                 }
                             } else {
                                 let r =
                                     snd.send(format!("Repeat is already `{}`", control.settings.repeat));
                                 if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
+                                    log.log(&format!("Error responding to command{}\n", e)).await;
                                 }
                             }
                         }
                         AudioPromiseCommand::Skip => {
-                            if let Some(trackhandle) = trackhandle.as_mut() {
+                            if let Some(trackhandle) = current_song.take() {
                                 log.log(&format!("Skipping track on line {}", line!())).await;
-                                let r = trackhandle.stop();
-                                if let Err(e) = r {
-                                    log.log(&format!("Error skipping track: {}\n", e)).await;
-                                } else {
-                                    let r2 = snd.send(String::from("Skipped"));
-                                    if let Err(e) = r2 {
-                                        log.log(&format!("Error sending skip: {}\n", e)).await;
+                                trackhandle.stop(&log).await;
+                                if let Some(handle) = current_handle.take() {
+                                    if let Err(e) = handle.get_handle().stop() {
+                                        log.log(&format!("Error stopping track: {}\n", e)).await;
                                     }
-                                    skipmarker = true;
                                 }
-                            } else if let Some(tts_handle) = tts_handle.as_mut() {
-                                log.log(&format!("Skipping tts on line {}", line!())).await;
-                                let r = tts_handle.stop();
-                                if let Err(e) = r {
-                                    log.log(&format!("Error skipping tts: {}\n", e)).await;
-                                } else {
-                                    let r2 = snd.send(String::from("Skipped"));
-                                    if let Err(e) = r2 {
-                                        log.log(&format!("Error sending skip: {}\n", e)).await;
-                                    }
-                                    skipmarker = true;
-                                }
-                            } else {
-                                let r = snd.send(String::from("Nothing is playing"));
-                                if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
-                                }
+                            } else if let Err(e) = snd.send(String::from("Nothing is playing")) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
                             }
                         }
-                        AudioPromiseCommand::Volume(v) => {
-                            // let msg = if nothing_handle.is_some() {
-                            let msg = if control.settings.something_playing {
-                                control.settings.set_volume(v);
-                                format!(
-                                    "Song volume set to `{}%`",
-                                    control.settings.raw_volume() * 100.0
-                                )
+                        AudioPromiseCommand::Volume(SpecificVolume::Current(v)) => {
+                            if let Some(handle) = current_handle.as_ref() {
+                                if let Err(e) = handle.get_handle().set_volume(v) {
+                                    log.log(&format!("Error setting volume: {}\n", e)).await;
+                                }
+                                control.settings.set_song_volume(v);
                             } else {
-                                control.settings.set_radiovolume(v);
-                                format!(
-                                    "Radio volume set to `{}%`",
-                                    control.settings.raw_radiovolume() * 100.0
-                                )
-                            };
-                            let r = snd.send(msg);
-                            if let Err(e) = r {
-                                log.log(&format!("Error updating message: {}\n", e)).await;
+                                if let Some(ref handle) = nothing_handle {
+                                    if let Err(e) = handle.set_volume(v) {
+                                        log.log(&format!("Error setting volume: {}\n", e)).await;
+                                    }
+                                }
+                                control.settings.set_radio_volume(v);
                             }
                         }
-                        AudioPromiseCommand::SpecificVolume(SpecificVolume::Volume(v)) => {
-                            control.settings.set_volume(v);
-                            let r = snd.send(format!(
+                        AudioPromiseCommand::Volume(SpecificVolume::SongVolume(v)) => {
+                            control.settings.set_song_volume(v);
+                            if let Err(e) = snd.send(format!(
                                 "Song volume set to `{}%`",
-                                control.settings.raw_volume() * 100.0
-                            ));
-                            if let Err(e) = r {
-                                log.log(&format!("Error updating message: {}\n", e)).await;
+                                control.settings.display_song_volume() * 100.0
+                            )) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
+                            }
+                            if let Some(handle) = current_handle.as_ref() {
+                                if let Err(e) = handle.get_handle().set_volume(v) {
+                                    log.log(&format!("Error setting volume: {}\n", e)).await;
+                                }
                             }
                         }
-                        AudioPromiseCommand::SpecificVolume(SpecificVolume::RadioVolume(v)) => {
-                            control.settings.set_radiovolume(v);
-                            let r = snd.send(format!(
+                        AudioPromiseCommand::Volume(SpecificVolume::RadioVolume(v)) => {
+                            control.settings.set_radio_volume(v);
+                            if let Err(e) = snd.send(format!(
                                 "Radio volume set to `{}%`",
-                                control.settings.raw_radiovolume() * 100.0
-                            ));
-                            if let Err(e) = r {
-                                log.log(&format!("Error updating message: {}\n", e)).await;
+                                control.settings.display_radio_volume() * 100.0
+                            )) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
+                            }
+                            if let Some(ref handle) = nothing_handle {
+                                if let Err(e) = handle.set_volume(control.settings.radio_volume()) {
+                                    log.log(&format!("Error setting volume: {}\n", e)).await;
+                                }
                             }
                         }
-                        AudioPromiseCommand::Remove(index) => {
-                            let index = index - 1;
+                        AudioPromiseCommand::Remove(i) => {
+                            let index = i - 1;
                             if index < queue.len() {
-                                let mut v = queue.remove(index);
-                                let r = v.delete().await;
-                                if let Err(r) = r {
-                                    log.log(&format!("Error removing `{}`: {}\n", v.title, r))
-                                        .await;
-                                    let r = snd.send(format!("Error removing `{}`: {}", v.title, r));
-                                    if let Err(e) = r {
-                                        log.log(&format!("Error updating message: {}\n", e)).await;
-                                    }
-                                } else {
-                                    let r = snd.send(format!("Removed `{}`", v.title));
-                                    if let Err(e) = r {
-                                        log.log(&format!("Error updating message: {}\n", e)).await;
-                                    }
+                                let v = queue.remove(index);
+                                if let Err(e) = snd.send(format!("Removed `{}`", v.title)) {
+                                    log.log(&format!("Error responding to command{}\n", e)).await;
                                 }
-                            } else {
-                                let r = snd.send(format!("Index out of range, max is `{}`", queue.len()));
-                                if let Err(e) = r {
-                                    log.log(&format!("Error updating message: {}\n", e)).await;
-                                }
+                            } else if let Err(e) = snd.send(format!("Index out of range, max is `{}`", queue.len())) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
                             }
                         }
                         AudioPromiseCommand::SetBitrate(bitrate) => {
@@ -454,9 +415,14 @@ pub async fn the_lüüp(
                                     cl.set_bitrate(Bitrate::BitsPerSecond(bitrate as i32));
                                 }
                             }
-                            let r = snd.send(format!("Bitrate set to `{}`", bitrate));
-                            if let Err(e) = r {
-                                log.log(&format!("Error updating message: {}\n", e)).await;
+                            if let Err(e) = snd.send(format!("Bitrate set to `{}`", bitrate)) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
+                            }
+                        }
+                        AudioPromiseCommand::UserConnect(id) => {
+                            pending_disconnect.end_now();
+                            if let Err(e) = snd.send(format!("User `{}` connected", id)) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
                             }
                         }
                     },
@@ -475,463 +441,401 @@ pub async fn the_lüüp(
                     }
                 }
             }
-            _ = run_dur.tick() => {
-                while let Ok((something, user)) = transcription.receiver.try_recv() {
-                    // if msg.trim().is_empty() {
-                    //     continue;
-                    // }
-                    if let Err(e) = manually_send.send((something, user)) {
-                        log.log(&format!("Error sending transcription: {}\n", e))
-                            .await;
-                    }
-                }
-                if let Some(current) = current_track.as_mut() {
-                    if let Some(thandle) = trackhandle.as_mut() {
-                        let playmode = tokio::time::timeout(g_timeout_time, thandle.get_info()).await;
-                        match playmode {
-                            Ok(Err(ref e)) => {
-                                log.log(&format!("TRACK CONTROL ERROR: {:?}\n", e)).await;
-                                if matches!(e, ControlError::Finished) {
-                                    let url = current_track.as_ref().and_then(|t| match t.video {
-                                        VideoType::Disk(_) => None,
-                                        VideoType::Url(ref y) => Some(y.url.clone()),
-                                    });
-                                    if control.settings.autoplay && queue.is_empty() {
-                                        if let Some(url) = url {
-                                            autoplay_thread = Some(tokio::spawn(async move {
-                                                let r = match tokio::time::timeout(
-                                                    Duration::from_secs(2),
-                                                    crate::youtube::get_recommendations(url, 1),
-                                                )
-                                                .await
-                                                {
-                                                    Ok(r) => r,
-                                                    Err(_) => {
-                                                        return None;
-                                                    }
-                                                };
-                                                let vid = match r.first() {
-                                                    Some(v) => v,
-                                                    None => {
-                                                        return None;
-                                                    }
-                                                };
-                                                vid.to_metavideo().await.ok()
-                                            }));
-                                        }
-                                    };
-                                    let mut t = None;
-                                    mem::swap(&mut current_track, &mut t);
-                                    if let Some(t) = t.as_mut() {
-                                        if control.settings.repeat && !skipmarker {
-                                            queue.insert(0, t.clone());
-                                        } else if control.settings.looped {
-                                            queue.push(t.clone());
-                                        } else {
-                                            let r = t.delete().await;
-                                            if let Err(e) = r {
-                                                log.log(&format!("Error deleting video: {}\n", e)).await;
-                                            }
-                                        }
-                                    }
-                                    skipmarker = false;
-                                    current_track = None;
-                                    trackhandle = None;
-                                    tts_handle = None;
-                                } else {
-                                    log.log(format!("playmode error: {:?}", playmode).as_str())
-                                        .await;
-                                }
-                            }
-                            Err(e) => {
-                                log.log(&format!("Error getting track info, Timeout: {}\n", e))
-                                    .await;
-                            }
-                            Ok(_) => {
-                                if skipmarker {
-                                    log.log(&format!("Skipping track on line {}", line!())).await;
-                                    let _ = thandle.stop();
-                                }
-                            }
-                        }
-                    } else if let Some(tts) = tts_handle.as_mut() {
-                        let r = tokio::time::timeout(g_timeout_time, tts.get_info()).await;
-                        match r {
-                            Ok(Ok(_)) => {}
-                            Ok(Err(ref e)) => {
-                                if matches!(e, ControlError::Finished) {
-                                    let calllock = control.call.try_lock();
-                                    if let Ok(mut clock) = calllock {
-                                        let handle = clock.play_input(current.video.to_songbird());
-                                        if let Err(e) = handle.set_volume(control.settings.volume() as f32)
-                                        {
-                                            log.log(&format!("Error setting volume: {}\n", e)).await;
-                                        }
-                                        trackhandle = Some(handle);
-                                    }
-                                } else {
-                                    log.log(&format!("Error getting tts info: {:?}\n", r)).await;
-                                }
-                            }
-                            Err(e) => {
-                                log.log(&format!("Error getting tts info: {}\n", e)).await;
-                            }
-                        }
-                    } else {
-                        let calllock = control.call.try_lock();
-                        if let Ok(mut clock) = calllock {
-                            #[cfg(feature = "tts")]
-                            if let Some(tts) = current.ttsmsg.as_mut().and_then(|t| control.settings.read_titles.then_some(t)) {
-                                let check = tts.check().await;
-                                match check {
-                                    Ok(Some(tts)) => {
-                                        let r = File::new(tts.path).into();
-                                        let handle = clock.play_input(r);
-                                        if let Err(e) = handle.set_volume(control.settings.volume() as f32)
-                                        {
-                                            log.log(&format!("Error setting volume: {}\n", e)).await;
-                                        }
-                                        tts_handle = Some(handle);
-                                    }
-                                    Ok(None) => {}
-                                    Err(e) => {
-                                        let err = format!("Error checking tts: {}\n", e);
-                                        if !err.contains("None") {
-                                            log.log(&format!("Error checking tts: {}\n", e)).await;
-                                        }
-                                        let r: songbird::input::Input = match current.video.clone() {
-                                            VideoType::Disk(v) => File::new(v.path).into(),
-                                            VideoType::Url(v) => {
-                                                YoutubeDl::new(crate::WEB_CLIENT.clone(), v.url).into()
-                                            }
-                                        };
-                                        let handle = clock.play_input(r);
-                                        if let Err(e) = handle.set_volume(control.settings.volume() as f32)
-                                        {
-                                            log.log(&format!("Error setting volume: {}\n", e)).await;
-                                        }
-                                        trackhandle = Some(handle);
-                                    }
-                                }
-                            } else {
-                                let a = YoutubeDl::new(
-                                    crate::WEB_CLIENT.clone(),
-                                    crate::Config::get().bumper_url,
-                                );
-                                let handle = clock.play_input(a.into());
-                                if let Err(e) = handle.set_volume(control.settings.volume() as f32) {
-                                    log.log(&format!("Error setting volume: {}\n", e)).await;
-                                }
-                                tts_handle = Some(handle);
-                            }
-                            #[cfg(not(feature = "tts"))]
-                            {
-                                if let Ok(h) = ytdl(crate::Config::get().bumper_url.as_str()) {
-                                    let (mut audio, handle) = create_player(h);
-                                    audio.set_volume(control.settings.volume() as f32);
-                                    clock.play(audio);
-                                    tts_handle = Some(handle);
-                                }
-                            }
-                        }
-                    }
-                } else if !queue.is_empty() {
-                    let index = if control.settings.shuffle {
-                        let maxnum = if control.settings.looped {
-                            queue.len() - 1
-                        } else {
-                            queue.len()
-                        };
-                        if maxnum > 0 {
-                            rand::thread_rng().gen_range(0..maxnum)
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    };
-                    let vid = queue.remove(index);
-                    current_track = Some(vid);
-                }
-                if queue.is_empty() && control.settings.autoplay && autoplay_thread.is_none() {
-                    let url = current_track.as_ref().and_then(|t| match t.video {
-                        VideoType::Disk(_) => None,
-                        VideoType::Url(ref y) => Some(y.url.clone()),
-                    });
-                    if let Some(url) = url {
-                        autoplay_thread = Some(tokio::spawn(async move {
-                            let r = match tokio::time::timeout(
-                                Duration::from_secs(2),
-                                crate::youtube::get_recommendations(url, 1),
-                            )
-                            .await
-                            {
-                                Ok(r) => r,
-                                Err(_) => {
-                                    return None;
-                                }
-                            };
-                            let vid = match r.first() {
-                                Some(v) => v,
-                                None => {
-                                    return None;
-                                }
-                            };
-                            vid.to_metavideo().await.ok()
-                        }));
-                    }
-                }
-                let mut embed = EmbedData::default();
-                if let Some(ref mut azuracast) = azuracast {
-                    if let Ok(d) = tokio::time::timeout(g_timeout_time, azuracast.fast_data()).await {
-                        match d {
-                            Ok(d) => {
-                                data = Some(d);
-                            }
-                            Err(e) => {
-                                log.log(&format!("Error getting azuracast data: {}\n", e))
-                                    .await;
-                            }
-                        }
-                    }
-                }
-                if queue.is_empty() && current_track.is_none() {
-                    control.settings.pause = false;
-                    if let Some(handle) = nothing_handle.as_mut() {
-                        let r = handle.play();
-                        if let Err(e) = r {
-                            log.log(&format!("Error playing nothing: {}\n", e)).await;
-                        }
-                    } else {
-                        let r: songbird::input::Input = if let Some(uri) = control.nothing_uri.clone() {
-                            File::new(uri).into()
-                        } else {
-                            YoutubeDl::new(crate::WEB_CLIENT.clone(), crate::Config::get().idle_url).into()
-                        };
-                        {
-                            let mut clock = control.call.lock().await;
-                            let handle = clock.play_input(r);
-                            if let Err(e) = handle.set_volume(control.settings.radiovolume() as f32) {
-                                log.log(&format!("Error setting volume: {}\n", e)).await;
-                            }
-                            if let Err(e) = handle.enable_loop() {
-                                log.log(&format!("Error enabling loop: {}\n", e)).await;
-                            }
-                            nothing_handle = Some(handle);
-                        }
-                    }
-                    let mut possible_body = "Queue is empty, use `/add` to play something!".to_owned();
-                    if let Some(ref data) = data {
-                        possible_body = format!(
-                            "{}\nIn the meantime, enjoy these fine tunes from `{}`",
-                            possible_body, data.station.name,
-                        );
-                        embed.fields.push((
-                            "Now Playing".to_owned(),
-                            format!(
-                                "{} - {}",
-                                data.now_playing.song.title, data.now_playing.song.artist
-                            ),
-                            false,
-                        ));
-                        embed.thumbnail = Some(data.now_playing.song.art.clone());
-                        embed.fields.push((
-                            "Next Up:".to_string(),
-                            format!(
-                                "{} - {}",
-                                data.playing_next.song.title, data.playing_next.song.artist
-                            ),
-                            true,
-                        ));
-                    };
-                    if !possible_body.is_empty() {
-                        embed.body = Some(possible_body);
-                    }
-                    embed.color = Some(Color::from_rgb(184, 29, 19));
+            _ = if_true(current_song.is_none() && !queue.is_empty()) => {
+                let mut superhandle = if next_index < queue.len() {
+                    queue.remove(next_index)
                 } else {
-                    if let Some(ref data) = data {
-                        embed.author = Some(format!(
-                            "{} - {} playing on {}",
-                            data.now_playing.song.title, data.now_playing.song.artist, data.station.name
-                        ));
-                        embed.author_icon_url = Some(data.now_playing.song.art.clone());
-                    }
-                    if nothing_handle.is_some() {
-                        if let Some(handle) = nothing_handle.as_mut() {
-                            // log.log(&format!("Skipping nothing on line {}", line!())).await;
-                            // let r = handle.stop();
-                            let r = handle.pause();
-                            if let Err(e) = r {
-                                // log.log(&format!("Error stopping nothing: {}\n", e)).await;
-                                log.log(&format!("Error pausing nothing: {}\n", e)).await;
+                    continue
+                };
+                match superhandle.next_audio(!control.settings.read_titles).await {
+                    Ok(Some(next_song)) => {
+                        log::info!("Playing next audio");
+                        match next_song.handle {
+                            HandleType::Song(ref handle) => {
+                                if let Err(e) = handle.play() {
+                                    log.log(&format!("Error playing song: {}\n", e)).await;
+                                } else {
+                                    if let Err(e) = next_song.get_handle().set_volume(control.settings.song_volume()) {
+                                        log.log(&format!("Error setting volume: {}\n", e)).await;
+                                    }
+                                    current_handle = Some(next_song);
+                                    current_song = Some(superhandle);
+                                }
+                            }
+                            HandleType::Tts(ref handle) => {
+                                if control.settings.read_titles {
+                                    if let Err(e) = handle.play() {
+                                        log.log(&format!("Error playing tts: {}\n", e)).await;
+                                    } else {
+                                        if let Err(e) = next_song.get_handle().set_volume(control.settings.song_volume()) {
+                                            log.log(&format!("Error setting volume: {}\n", e)).await;
+                                        }
+                                        current_handle = Some(next_song);
+                                        current_song = Some(superhandle);
+                                    }
+                                }
                             }
                         }
-                        // nothing_handle = None;
                     }
-                    let mut possible_body = String::new();
-                    let mut total_duration: Option<f64> = try {
-                        let mut total = 0.0;
-                        if let Some(ref current) = current_track {
-                            total += current.video.get_duration()?;
-                        };
-                        for track in queue.iter() {
-                            total += track.video.get_duration()?;
+                    Ok(None) => {
+                        continue
+                    }
+                    Err(e) => {
+                        log.log(&format!("Error getting next song: {}\n", e)).await;
+                    }
+                }
+            }
+            msg = get_message(current_handle.as_mut(), current_song.as_mut()) => {
+                match msg {
+                    Ok((_handle, msg, current, song)) => {
+                        log::trace!("Got message: {:?}", msg);
+                        match msg {
+                            SimpleTrackEvent::SongFinished => {
+                                log.log("Track finished").await;
+                                current_song = None;
+                            }
+                            SimpleTrackEvent::SongError(e) => {
+                                log.log(&format!("Error playing track: {}\n", e)).await;
+                                current_song = None;
+                            }
+                            SimpleTrackEvent::SongBegan => {
+                                log::trace!("Track began");
+                            }
+                            SimpleTrackEvent::TtsFinished => {
+                                log.log("TTS finished").await;
+                                match song.next_audio(control.settings.read_titles).await {
+                                    Ok(Some(next_song)) => {
+                                        log::info!("Playing next audio");
+                                        *current = next_song;
+                                        match current.handle {
+                                            HandleType::Song(ref handle) => {
+                                                if let Err(e) = handle.play() {
+                                                    log.log(&format!("Error playing song: {}\n", e)).await;
+                                                    current_song = None;
+                                                }
+                                            }
+                                            HandleType::Tts(ref handle) => {
+                                                if control.settings.read_titles {
+                                                    if let Err(e) = handle.play() {
+                                                        log.log(&format!("Error playing tts: {}\n", e)).await;
+                                                        current_song = None;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        current_song = None;
+                                        continue
+                                    }
+                                    Err(e) => {
+                                        current_song = None;
+                                        log.log(&format!("Error getting next song: {}\n", e)).await;
+                                    }
+                                }
+                            }
+                            SimpleTrackEvent::TtsError(e) => {
+                                log.log(&format!("Error playing tts: {}\n", e)).await;
+                                match song.next_audio(control.settings.read_titles).await {
+                                    Ok(Some(next_song)) => {
+                                        log::info!("Playing next audio");
+                                        *current = next_song;
+                                        match current.handle {
+                                            HandleType::Song(ref handle) => {
+                                                if let Err(e) = handle.play() {
+                                                    log.log(&format!("Error playing song: {}\n", e)).await;
+                                                    current_song = None;
+                                                }
+                                            }
+                                            HandleType::Tts(ref handle) => {
+                                                if control.settings.read_titles {
+                                                    if let Err(e) = handle.play() {
+                                                        log.log(&format!("Error playing tts: {}\n", e)).await;
+                                                        current_song = None;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        current_song = None;
+                                        continue
+                                    }
+                                    Err(e) => {
+                                        current_song = None;
+                                        log.log(&format!("Error getting next song: {}\n", e)).await;
+                                    }
+                                }
+                            }
+                            SimpleTrackEvent::TtsBegan => {
+                                log::trace!("TTS began");
+                            }
                         }
-                        total
-                    };
-                    if let Some(t) = current_track.as_ref() {
-                        let mut time_left = t.video.get_duration();
+                    }
+                    Err(e) => {
+                        log.log(&format!("Error getting message: {}\n", e)).await;
+                    }
+                }
+            }
+            Some(event) = connection_events.recv() => {
+                match event {
+                    SimpleConnectionEvent::DriverDisconnect => {
+                        log.log("Connection lost, starting timeout").await;
+                        pending_reconnect.begin_now();
+                    }
+                    SimpleConnectionEvent::DriverConnect(channel) => {
+                        log.log("Connection established, cancelling timeout").await;
+                        pending_reconnect.end_now();
+                        match crate::global_data::voice_data::channel_count_besides(&control.msg.guild_id, &control.msg.channel_id, &this_bot_id).await {
+                            Ok(counts) => {
+                                if counts.bots > 0 {
+                                    log.log("Too many bots, leaving immediately").await;
+                                    break;
+                                } else if counts.users > 0 {
+                                    log.log("Users are still here, staying").await;
+                                } else {
+                                    log.log("Bot is alone, leaving").await;
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                log.log(&format!("Error checking if bot is alone: {}\n", e)).await;
+                            }
+                        }
+                        if let Some(channel) = channel {
+                            if current_channel != channel {
+                                log.log("Channel changed, updating").await;
+                                current_channel = channel;
+                                if let Err(e) = change_channel.send(channel) {
+                                    log.log(&format!("Error joining channel: {}\n", e)).await;
+                                }
+                            }
+                        }
+                    }
+                    SimpleConnectionEvent::ClientDisconnect => {
+                        log.log("Client disconnected, beginning timeout").await;
+                        pending_disconnect.set_duration(crate::global_data::guild_config::GuildConfig::get(control.msg.guild_id).get_empty_channel_timeout());
+                        pending_disconnect.begin_now();
+                    }
+                }
+            }
+            _ = &mut pending_reconnect => {
+                log.log("Connection lost, breaking").await;
+                break;
+            }
+            _ = &mut pending_disconnect => {
+                log.log("Bot has been alone, checking if it should leave").await;
+                match crate::global_data::voice_data::channel_count_besides(&control.msg.guild_id, &control.msg.channel_id, &this_bot_id).await {
+                    Ok(counts) => {
+                        if counts.bots > 0 {
+                            log.log("Too many bots, leaving immediately").await;
+                            break;
+                        } else if counts.users > 0 {
+                            log.log("Users are still here, staying").await;
+                        } else {
+                            log.log("Bot is alone, leaving").await;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log.log(&format!("Error checking if bot is alone: {}\n", e)).await;
+                    }
+                }
+                pending_disconnect.end_now();
+            }
+            _ = &mut rerun => {
+                log.log("Force rerun").await;
+                rerun.end_now();
+            }
+            Some((something, user)) = transcription.receiver.recv() => {
+                if let Err(e) = manually_send.send((something, user)) {
+                    log.log(&format!("Error sending transcription: {}\n", e)).await;
+                }
+            }
+            data = never_resolve_option(azuracast_updates.as_mut()) => {
+                azuracast_data = Some(data);
+            }
+        }
+        let mut embed = EmbedData::default();
+        if queue.is_empty() && current_song.is_none() {
+            control.settings.pause = false;
+            if let Some(handle) = nothing_handle.as_mut() {
+                if let Err(e) = handle.play() {
+                    log.log(&format!("Error playing nothing: {}\n", e)).await;
+                }
+            } else {
+                let r: songbird::input::Input = if let Some(uri) = control.nothing_uri.clone() {
+                    File::new(uri).into()
+                } else {
+                    YoutubeDl::new(crate::WEB_CLIENT.clone(), crate::Config::get().idle_url).into()
+                };
+                {
+                    let mut clock = control.call.lock().await;
+                    let handle = clock.play(
+                        Track::new(r)
+                            .volume(control.settings.radio_volume())
+                            .loops(songbird::tracks::LoopState::Infinite),
+                    );
+                    nothing_handle = Some(handle);
+                }
+            }
+            let mut possible_body = "Queue is empty, use `/add` to play something!".to_owned();
+            if let Some(ref data) = azuracast_data {
+                possible_body = format!(
+                    "{}\nIn the meantime, enjoy these fine tunes from `{}`",
+                    possible_body, data.station.name,
+                );
+                embed.fields.push((
+                    "Now Playing".to_owned(), // i want the song title, artist, and album
+                    format!(
+                        "{} - {} on {}",
+                        data.now_playing.song.title,
+                        data.now_playing.song.artist,
+                        data.now_playing.song.album
+                    ),
+                    false,
+                ));
+                embed.thumbnail = Some(data.now_playing.song.art.clone());
+                embed.fields.push((
+                    "Next Up:".to_string(),
+                    format!(
+                        "{} - {} on {}",
+                        data.playing_next.song.title,
+                        data.playing_next.song.artist,
+                        data.playing_next.song.album
+                    ),
+                    true,
+                ));
+            };
+            if !possible_body.is_empty() {
+                embed.body = Some(possible_body);
+            }
+            embed.color = Some(Color::from_rgb(184, 29, 19));
+        } else {
+            if let Some(ref data) = azuracast_data {
+                embed.author = Some(format!(
+                    "{} - {} playing on {}",
+                    data.now_playing.song.title, data.now_playing.song.artist, data.station.name
+                ));
+                embed.author_icon_url = Some(data.now_playing.song.art.clone());
+            }
+            if let Some(handle) = nothing_handle.as_mut() {
+                if let Err(e) = handle.pause() {
+                    log.log(&format!("Error pausing nothing: {}\n", e)).await;
+                }
+            }
+            let mut possible_body = String::new();
+            let mut total_duration: Option<f64> = try {
+                let mut total = 0.0;
+                if let Some(ref current) = current_song {
+                    total += current.duration?;
+                };
+                for track in queue.iter() {
+                    total += track.duration?;
+                }
+                total
+            };
+            if let Some(t) = current_song.as_ref() {
+                let mut time_left = t.duration;
+                embed.fields.push((
+                    format!("Now Playing | {}", t.title),
+                    match time_left {
+                        Some(d) => friendly_duration(&Duration::from_secs(d.round() as u64)),
+                        None => "live".to_owned(),
+                    },
+                    false,
+                ));
+                if let Some(handle) = current_handle.as_ref() {
+                    match handle.last_state.as_ref() {
+                        Some(info) => {
+                            if let Some(ref mut dur) = time_left {
+                                let secs_elapsed = info.position.as_secs_f64();
+                                if let Some(ref mut length) = total_duration {
+                                    *length -= secs_elapsed;
+                                }
+                                let percent_done = secs_elapsed / *dur;
+                                *dur -= secs_elapsed;
+                                let total_time_str =
+                                    friendly_duration(&Duration::from_secs(dur.round() as u64));
+                                possible_body.push_str(&format!(
+                                    "\n{}\n[{} remaining]",
+                                    get_bar(percent_done, 15),
+                                    total_time_str
+                                ));
+                            }
+                        }
+                        None => {
+                            log.log("No last state").await;
+                        }
+                    }
+                }
+                let total_length_str = match total_duration {
+                    Some(d) => format!(
+                        "{} remaining",
+                        friendly_duration(&Duration::from_secs(d.round() as u64))
+                    ),
+                    None => "One or more tracks is live".to_owned(),
+                };
+                if let Some(ref author) = t.author {
+                    embed.footer = Some((
+                        format!("Requested by {} | {}", author.name, total_length_str),
+                        Some(author.pfp_url.clone()),
+                    ));
+                } else {
+                    embed.footer = Some((total_length_str, None));
+                }
+                if !queue.is_empty() {
+                    for (i, track) in queue.iter().enumerate() {
                         embed.fields.push((
-                            format!("Now Playing | {}", t.title),
-                            match time_left {
-                                Some(d) => friendly_duration(&Duration::from_secs(d.round() as u64)),
+                            format!("#{} | {}", i + 1, track.title),
+                            match track.duration {
+                                Some(d) => {
+                                    friendly_duration(&Duration::from_secs(d.round() as u64))
+                                }
                                 None => "live".to_owned(),
                             },
                             false,
                         ));
-                        if let Some(handle) = trackhandle.as_ref() {
-                            let info = tokio::time::timeout(g_timeout_time, handle.get_info()).await;
-                            match info {
-                                Ok(Ok(info)) => {
-                                    if let Some(ref mut dur) = time_left {
-                                        let secs_elapsed = info.position.as_secs_f64();
-                                        if let Some(ref mut length) = total_duration {
-                                            *length -= secs_elapsed;
-                                        }
-                                        let percent_done = secs_elapsed / *dur;
-                                        *dur -= secs_elapsed;
-                                        let total_time_str = friendly_duration(&Duration::from_secs(dur.round() as u64));
-                                        possible_body.push_str(&format!(
-                                            "\n{}\n[{} remaining]",
-                                            get_bar(percent_done, 15),
-                                            total_time_str
-                                        ));
-                                    }
-                                }
-                                Ok(Err(e)) => {
-                                    log.log(&format!("Error getting track info: {}\n", e)).await;
-                                }
-                                Err(e) => {
-                                    log.log(&format!("Error getting track info: {}\n", e)).await;
-                                }
-                            }
-                        }
-                        let total_length_str = match total_duration {
-                            Some(d) => format!("{} remaining", friendly_duration(&Duration::from_secs(d.round() as u64))),
-                            None => "One or more tracks is live".to_owned(),
-                        };
-                        if let Some(ref author) = t.author {
-                            embed.footer = Some((
-                                format!("Requested by {} | {}", author.name, total_length_str),
-                                Some(author.pfp_url.clone()),
-                            ));
-                        } else {
-                            embed.footer = Some((total_length_str, None));
-                        }
-                        if !queue.is_empty() {
-                            for (i, track) in queue.iter().enumerate() {
-                                embed.fields.push((
-                                    format!("#{} | {}", i + 1, track.title.clone()),
-                                    match track.video.get_duration() {
-                                        Some(d) => friendly_duration(&Duration::from_secs(d.round() as u64)),
-                                        None => "live".to_owned(),
-                                    },
-                                    false,
-                                ));
-                            }
-                        }
-                        embed.color = Some(Color::from_rgb(0, 132, 80));
-                    } else {
-                        for (i, track) in queue.iter().enumerate() {
-                            embed.fields.push((
-                                format!("#{} | {}", i + 1, track.title.clone()),
-                                match track.video.get_duration() {
-                                    Some(d) => friendly_duration(&Duration::from_secs(d.round() as u64)),
-                                    None => "live".to_owned(),
-                                },
-                                false,
-                            ));
-                        }
-                        let total_length_str = match total_duration {
-                            Some(d) => format!("{} remaining", friendly_duration(&Duration::from_secs(d.round() as u64))),
-                            None => "One or more tracks is live".to_owned(),
-                        };
-                        embed.footer = Some((total_length_str, None));
-                        embed.color = Some(Color::from_rgb(253, 218, 22));
-                    }
-                    if !possible_body.is_empty() {
-                        embed.body = Some(possible_body);
                     }
                 }
-                let send_now = match last_embed {
-                    Some(ref last_embed) => last_embed != &embed,
-                    None => true,
-                } || match last_settings {
-                    Some(ref last_settings) => last_settings != &control.settings,
-                    None => true,
+                embed.color = Some(Color::from_rgb(0, 132, 80));
+            } else {
+                for (i, track) in queue.iter().enumerate() {
+                    embed.fields.push((
+                        format!("#{} | {}", i + 1, track.title),
+                        match track.duration {
+                            Some(d) => friendly_duration(&Duration::from_secs(d.round() as u64)),
+                            None => "live".to_owned(),
+                        },
+                        false,
+                    ));
+                }
+                let total_length_str = match total_duration {
+                    Some(d) => format!(
+                        "{} remaining",
+                        friendly_duration(&Duration::from_secs(d.round() as u64))
+                    ),
+                    None => "One or more tracks is live".to_owned(),
                 };
-                if send_now {
-                    last_embed = Some(embed.clone());
-                    last_settings = Some(control.settings.clone());
-                    if let Err(e) = msg_updater.send((control.settings.clone(), embed)).await {
-                        log.log(&format!("Error sending update: {}\n", e)).await;
-                    }
-                }
-                if let Some(handle) = trackhandle.as_mut() {
-                    let r = handle.set_volume(control.settings.volume() as f32);
-                    if let Err(e) = r {
-                        let s = format!("Error setting volume: {}\n", e);
-                        if !s.contains("track ended") {
-                            log.log(&s).await;
-                        }
-                    }
-                }
-                if let Some(handle) = nothing_handle.as_mut() {
-                    let r = handle.set_volume(control.settings.radiovolume() as f32);
-                    if let Err(e) = r {
-                        log.log(&format!("Error setting volume: {}\n", e)).await;
-                    }
-                }
-                let mut finished = false;
-                if let Some(h) = &autoplay_thread {
-                    if h.is_finished() {
-                        finished = true;
-                    }
-                }
-                if finished {
-                    let thread = autoplay_thread.take();
-                    if let Some(thread) = thread {
-                        let res = thread.await;
-                        match res {
-                            Err(e) => {
-                                log.log(&format!("Error in autoplay thread: {}\n", e)).await;
-                            }
-                            Ok(v) => {
-                                if let Some(v) = v {
-                                    queue.push(v);
-                                }
-                            }
-                        };
-                        autoplay_thread = None;
-                    }
-                }
-                {
-                    match tokio::time::timeout(g_timeout_time, control.call.lock()).await {
-                        Ok(call) => {
-                            if let Some(_c) = call.current_connection() {
-                            } else {
-                                log.log("No connection, breaking\n").await;
-                                control.brk = true;
-                            }
-                        }
-                        Err(_) => {
-                            log.log("Call lock timed out").await;
-                        }
-                    }
-                }
-                if control.brk {
-                    break;
-                }
+                embed.footer = Some((total_length_str, None));
+                embed.color = Some(Color::from_rgb(253, 218, 22));
+            }
+            if !possible_body.is_empty() {
+                embed.body = Some(possible_body);
+            }
+        }
+        let send_now = match last_embed {
+            Some(ref last_embed) => last_embed != &embed,
+            None => true,
+        } || match last_settings {
+            Some(ref last_settings) => last_settings != &control.settings,
+            None => true,
+        };
+        if send_now {
+            last_embed = Some(embed.clone());
+            last_settings = Some(control.settings.clone());
+            if let Err(e) = msg_updater.send((control.settings.clone(), embed)).await {
+                log.log(&format!("Error sending update: {}\n", e)).await;
             }
         }
     }
@@ -946,10 +850,6 @@ pub async fn the_lüüp(
     }
     match gimme.await {
         Ok(gimme) => {
-            // if let Err(e) = control.transcribe.write().await.unlock(gimme).await {
-            //     log.log(&format!("Error unlocking transcribe: {}\n", e))
-            //         .await;
-            // }
             drop(gimme);
         }
         Err(e) => {
@@ -963,34 +863,15 @@ pub async fn the_lüüp(
         log.log(&format!("Error leaving voice channel: {}\n", e))
             .await;
     }
-    if let Some(t) = trackhandle.as_mut() {
-        let r = t.stop();
-        if let Err(e) = r {
+    if let Some(t) = current_handle.take() {
+        if let Err(e) = t.get_handle().stop() {
             log.log(&format!("Error stopping track: {}\n", e)).await;
         }
     }
-    if let Some(t) = current_track.as_mut() {
-        let mut tries = 10;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        while t.delete().await.is_err() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            tries -= 1;
-            log.log(&format!("Failed to delete file, {} tries left", tries))
-                .await;
-            if tries == 0 {
-                log.log("Failed to delete file, giving up").await;
-                break;
-            }
-        }
+    if let Some(t) = current_song.take() {
+        t.stop(&log).await;
     }
-    for video in queue.iter_mut() {
-        let r = video.delete().await;
-        if let Err(e) = r {
-            log.log(&format!("Error deleting video: {}\n", e)).await;
-        }
-    }
-    let r = calllock.leave().await;
-    if let Err(e) = r {
+    if let Err(e) = calllock.leave().await {
         log.log(&format!("Error leaving voice channel: {}\n", e))
             .await;
     }
@@ -999,25 +880,11 @@ pub async fn the_lüüp(
     } else if let Err(e) = msghandler.await {
         log.log(&format!("Error joining msghandler: {}\n", e)).await;
     }
-    // let TranscriptionThread {
-    //     message: kill_transcription_thread,
-    //     thread: transcription_thread,
-    //     ..
-    // } = transcription;
-    // if kill_transcription_thread.send().await.is_err() {
-    //     log.log("Error sending kill_transcription_thread").await;
-    // } else if let Err(e) = transcription_thread.await {
-    //     log.log(&format!("Error joining transcription_thread: {}\n", e))
-    //         .await;
-    // }
     if let Err(e) = transcription.stop().await {
         log.log(&format!("Error killing transcription: {}\n", e))
             .await;
     }
     log.log("Gracefully exited").await;
-    // if !log.is_empty().await {
-    //     // log::info!("Final log:\n{}", log.get().await);
-    // }
 }
 fn get_bar(percent_done: f64, length: usize) -> String {
     let emojis = [
@@ -1205,7 +1072,7 @@ impl LogString {
         s
     }
 }
-fn friendly_duration(dur: &std::time::Duration) -> String {
+pub fn friendly_duration(dur: &std::time::Duration) -> String {
     let mut dur = dur.as_secs();
     let mut s = String::new();
     let centuries = dur / (365 * 24 * 60 * 60 * 100);
@@ -1261,5 +1128,425 @@ fn friendly_duration(dur: &std::time::Duration) -> String {
         }
         s.push(' ');
     }
+    if s.trim().is_empty() {
+        s.push_str("0 seconds");
+    }
     s.trim().to_owned()
+}
+static EVENTS: &[songbird::Event] = &[
+    songbird::Event::Track(songbird::TrackEvent::End),
+    songbird::Event::Track(songbird::TrackEvent::Error),
+    songbird::Event::Track(songbird::TrackEvent::Play),
+];
+#[derive(Debug, Clone)]
+enum SimpleTrackEvent {
+    SongFinished,
+    SongError(songbird::error::PlayError),
+    TtsFinished,
+    TtsError(songbird::error::PlayError),
+    TtsBegan,
+    SongBegan,
+}
+struct HandleMetadata {
+    handle: HandleType,
+    last_state: Option<TrackState>,
+    recv: tokio::sync::mpsc::Receiver<(TrackHandle, TrackState, SimpleTrackEvent)>,
+}
+impl HandleMetadata {
+    async fn process_handle(handle: HandleType) -> Result<Self> {
+        let (send, recv) = tokio::sync::mpsc::channel(3);
+        match handle {
+            HandleType::Song(ref handle) => {
+                match handle.get_info().await?.playing {
+                    songbird::tracks::PlayMode::End => {
+                        return Err(anyhow::anyhow!("Track ended before we could process it"));
+                    }
+                    songbird::tracks::PlayMode::Stop => {
+                        return Err(anyhow::anyhow!("Track stopped before we could process it"));
+                    }
+                    songbird::tracks::PlayMode::Errored(ref e) => {
+                        return Err(anyhow::anyhow!(
+                            "Track errored before we could process it: {:?}",
+                            e
+                        ));
+                    }
+                    _ => {}
+                }
+                let handler = TrackEventHandler { send, tts: false };
+                for event in EVENTS {
+                    handle.add_event(*event, handler.clone())?;
+                }
+            }
+            HandleType::Tts(ref handle) => {
+                match handle.get_info().await?.playing {
+                    songbird::tracks::PlayMode::End => {
+                        return Err(anyhow::anyhow!("Track ended before we could process it"));
+                    }
+                    songbird::tracks::PlayMode::Stop => {
+                        return Err(anyhow::anyhow!("Track stopped before we could process it"));
+                    }
+                    songbird::tracks::PlayMode::Errored(ref e) => {
+                        return Err(anyhow::anyhow!(
+                            "Track errored before we could process it: {:?}",
+                            e
+                        ));
+                    }
+                    _ => {}
+                }
+                let handler = TrackEventHandler { send, tts: true };
+                for event in EVENTS {
+                    handle.add_event(*event, handler.clone())?;
+                }
+            }
+        }
+        Ok(Self {
+            handle,
+            recv,
+            last_state: None,
+        })
+    }
+    fn get_handle(&self) -> &TrackHandle {
+        match &self.handle {
+            HandleType::Song(handle) => handle,
+            HandleType::Tts(handle) => handle,
+        }
+    }
+}
+enum HandleType {
+    Song(TrackHandle),
+    Tts(TrackHandle),
+}
+#[derive(Clone)]
+struct TrackEventHandler {
+    tts: bool,
+    send: tokio::sync::mpsc::Sender<(TrackHandle, TrackState, SimpleTrackEvent)>,
+}
+#[async_trait]
+impl songbird::EventHandler for TrackEventHandler {
+    async fn act(&self, ctx: &EventContext<'_>) -> Option<songbird::events::Event> {
+        if let EventContext::Track(tracks) = ctx {
+            for (state, handle) in *tracks {
+                match state.playing {
+                    songbird::tracks::PlayMode::End => {
+                        let _ = self
+                            .send
+                            .send((
+                                (*handle).clone(),
+                                (*state).clone(),
+                                if self.tts {
+                                    SimpleTrackEvent::TtsFinished
+                                } else {
+                                    SimpleTrackEvent::SongFinished
+                                },
+                            ))
+                            .await;
+                    }
+                    songbird::tracks::PlayMode::Stop => {
+                        let _ = self
+                            .send
+                            .send((
+                                (*handle).clone(),
+                                (*state).clone(),
+                                if self.tts {
+                                    SimpleTrackEvent::TtsFinished
+                                } else {
+                                    SimpleTrackEvent::SongFinished
+                                },
+                            ))
+                            .await;
+                    }
+                    songbird::tracks::PlayMode::Errored(ref e) => {
+                        let _ = self
+                            .send
+                            .send((
+                                (*handle).clone(),
+                                (*state).clone(),
+                                if self.tts {
+                                    SimpleTrackEvent::TtsError(e.clone())
+                                } else {
+                                    SimpleTrackEvent::SongError(e.clone())
+                                },
+                            ))
+                            .await;
+                    }
+                    songbird::tracks::PlayMode::Play => {
+                        let _ = self
+                            .send
+                            .send((
+                                (*handle).clone(),
+                                (*state).clone(),
+                                if self.tts {
+                                    SimpleTrackEvent::TtsBegan
+                                } else {
+                                    SimpleTrackEvent::SongBegan
+                                },
+                            ))
+                            .await;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+}
+async fn never_resolve_option(opt: Option<&mut broadcast::Receiver<Arc<Root>>>) -> Arc<Root> {
+    match opt {
+        Some(rx) => match rx.recv().await {
+            Ok(data) => data,
+            Err(e) => {
+                log::error!("Error receiving data: {}", e);
+                Never::default().await
+            }
+        },
+        None => Never::default().await,
+    }
+}
+async fn if_true(b: bool) -> Result<()> {
+    if b {
+        Ok(())
+    } else {
+        Never::default().await
+    }
+}
+struct Never<T> {
+    _phantom: std::marker::PhantomData<T>,
+}
+impl<T> Default for Never<T> {
+    fn default() -> Self {
+        Self {
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+impl<T> Future for Never<T> {
+    type Output = T;
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<T> {
+        Poll::Pending
+    }
+}
+async fn get_message<'a>(
+    current_track: Option<&'a mut HandleMetadata>,
+    current_song: Option<&'a mut SuperHandle>,
+) -> Result<(
+    TrackHandle,
+    SimpleTrackEvent,
+    &'a mut HandleMetadata,
+    &'a mut SuperHandle,
+)> {
+    log::trace!("Getting message");
+    match current_song {
+        Some(song) => match current_track {
+            Some(current) => {
+                log::trace!("Getting message from song");
+                match current.recv.recv().await {
+                    Some((handle, state, event)) => {
+                        current.last_state = Some(state);
+                        Ok((handle, event, current, song))
+                    }
+                    None => Err(anyhow::anyhow!("Event handler closed")),
+                }
+            }
+            None => {
+                log::trace!("No current, waiting forever this time");
+                Never::default().await
+            }
+        },
+        None => {
+            log::trace!("No song, waiting forever this time");
+            Never::default().await
+        }
+    }
+}
+struct SuperHandle {
+    tts: Option<Lazy<Result<Option<HandleMetadata>>>>,
+    song: Lazy<Result<HandleMetadata>>,
+    title: Arc<str>,
+    duration: Option<f64>,
+    author: Option<Author>,
+}
+impl SuperHandle {
+    async fn stop(mut self, log: &Log) {
+        if let Some(mut tts) = self.tts.take() {
+            if let Err(e) = tts.resolve().await {
+                log.log(&format!("Error resolving tts: {}\n", e)).await;
+            }
+            match tts.take() {
+                Some(Ok(Some(tts))) => {
+                    let _ = tts.get_handle().stop();
+                }
+                Some(Err(e)) => {
+                    log.log(&format!("Error resolving tts: {}\n", e)).await;
+                }
+                _ => {}
+            }
+        }
+        if let Err(e) = self.song.resolve().await {
+            log.log(&format!("Error resolving song: {}\n", e)).await;
+        }
+        if let Some(Ok(song)) = self.song.take() {
+            let _ = song.get_handle().stop();
+        }
+    }
+    async fn new(call: &Arc<Mutex<Call>>, data: MetaVideo, volume: f32) -> Result<Self> {
+        let (song, title, duration, author) = {
+            let call = Arc::clone(call);
+            let song = data.video;
+            let title = song.get_title();
+            let author = data.author.clone();
+            let duration = song.get_duration();
+            (
+                Lazy::new(async move {
+                    let handle = {
+                        let mut clock = call.lock().await;
+                        clock.play(Track::new(song.to_songbird()).pause().volume(volume))
+                    };
+                    HandleMetadata::process_handle(HandleType::Song(handle)).await
+                })
+                .await,
+                title,
+                duration,
+                author,
+            )
+        };
+        let tts = {
+            let call = Arc::clone(call);
+            let tts = data.ttsmsg;
+            Lazy::new(async move {
+                let tts = match tts {
+                    Some(mut tts) => tts.wait_for().await?,
+                    None => return Ok(None),
+                };
+                let handle = {
+                    let mut clock = call.lock().await;
+                    clock.play(Track::new(tts.to_songbird()).pause().volume(volume))
+                };
+                Ok(Some(
+                    HandleMetadata::process_handle(HandleType::Tts(handle)).await?,
+                ))
+            })
+            .await
+        };
+        Ok(Self {
+            tts: Some(tts),
+            song,
+            title,
+            duration,
+            author,
+        })
+    }
+    async fn next_audio(&mut self, read_titles: bool) -> Result<Option<HandleMetadata>> {
+        if read_titles {
+            if let Some(ref mut tts) = self.tts {
+                tts.resolve().await?;
+                if let Some(mut tts) = self.tts.take() {
+                    if let Some(ttsresult) = tts.take() {
+                        if let Some(tts) = ttsresult? {
+                            return Ok(Some(tts));
+                        }
+                    }
+                }
+            }
+        }
+        self.song.resolve().await?;
+        if let Some(song) = self.song.take() {
+            return Ok(Some(song?));
+        }
+        Ok(None)
+    }
+}
+#[derive(Default)]
+enum Lazy<T> {
+    #[default]
+    Taken,
+    Done(T),
+    NotDone(tokio::task::JoinHandle<T>),
+}
+impl<T> Lazy<T> {
+    async fn resolve(&mut self) -> Result<()> {
+        match self {
+            Lazy::Taken => Err(anyhow::anyhow!("Lazy is taken")),
+            Lazy::Done(_) => Ok(()),
+            Lazy::NotDone(handle) => {
+                let t = handle.await?;
+                *self = Lazy::Done(t);
+                Ok(())
+            }
+        }
+    }
+    fn take(&mut self) -> Option<T> {
+        match mem::take(self) {
+            Lazy::Taken => {
+                log::trace!("Lazy is taken");
+                None
+            }
+            Lazy::Done(t) => Some(t),
+            Lazy::NotDone(_) => None,
+        }
+    }
+}
+impl<T: Send + 'static> Lazy<T> {
+    async fn new<F>(f: F) -> Self
+    where
+        F: Future<Output = T> + Send + 'static,
+    {
+        Lazy::NotDone(tokio::spawn(f))
+    }
+}
+#[derive(Debug, Clone)]
+struct DisconnectEvents {
+    snd: mpsc::Sender<SimpleConnectionEvent>,
+}
+#[async_trait]
+impl songbird::EventHandler for DisconnectEvents {
+    async fn act(&self, ctx: &EventContext<'_>) -> Option<songbird::events::Event> {
+        match ctx {
+            EventContext::ClientDisconnect(_) => {
+                let _ = self.snd.send(SimpleConnectionEvent::ClientDisconnect).await;
+            }
+            EventContext::DriverDisconnect(_) => {
+                let _ = self.snd.send(SimpleConnectionEvent::DriverDisconnect).await;
+            }
+            EventContext::DriverReconnect(data) => {
+                let _ = self
+                    .snd
+                    .send(SimpleConnectionEvent::DriverConnect(
+                        data.channel_id.map(|c| c.0.get()).map(ChannelId::new),
+                    ))
+                    .await;
+            }
+            EventContext::DriverConnect(data) => {
+                let _ = self
+                    .snd
+                    .send(SimpleConnectionEvent::DriverConnect(
+                        data.channel_id.map(|c| c.0.get()).map(ChannelId::new),
+                    ))
+                    .await;
+            }
+            _ => {}
+        }
+        None
+    }
+}
+impl DisconnectEvents {
+    async fn register(call: &Arc<Mutex<Call>>) -> mpsc::Receiver<SimpleConnectionEvent> {
+        let (snd, recv) = mpsc::channel(5);
+        let handler = DisconnectEvents { snd };
+        let mut lock = call.lock().await;
+        for event in &[
+            songbird::Event::Core(songbird::CoreEvent::ClientDisconnect),
+            songbird::Event::Core(songbird::CoreEvent::DriverDisconnect),
+            songbird::Event::Core(songbird::CoreEvent::DriverReconnect),
+            songbird::Event::Core(songbird::CoreEvent::DriverConnect),
+        ] {
+            lock.add_global_event(*event, handler.clone());
+        }
+        recv
+    }
+}
+#[derive(Debug, Clone)]
+enum SimpleConnectionEvent {
+    ClientDisconnect,
+    DriverDisconnect,
+    DriverConnect(Option<ChannelId>),
 }

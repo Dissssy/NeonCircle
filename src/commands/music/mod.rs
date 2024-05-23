@@ -23,11 +23,12 @@ use crate::voice_events::PostSomething;
 use crate::youtube::{TTSVoice, VideoInfo};
 use anyhow::Result;
 use serde_json::json;
+#[cfg(not(feature = "new-controls"))]
+use serenity::all::{ButtonStyle, CreateButton};
 use serenity::all::{
-    ButtonStyle, Cache, Channel, ChannelId, ChannelType, CommandInteraction, Context,
-    CreateActionRow, CreateButton, CreateMessage, CreateThread, CreateWebhook,
-    EditInteractionResponse, EditMessage, GetMessages, GuildChannel, GuildId, Http, Message,
-    MessageFlags, ModalInteraction, Timestamp, User, UserId,
+    Cache, Channel, ChannelId, ChannelType, CommandInteraction, Context, CreateActionRow,
+    CreateMessage, CreateThread, CreateWebhook, EditInteractionResponse, EditMessage, GetMessages,
+    GuildChannel, GuildId, Http, Message, MessageFlags, ModalInteraction, Timestamp, User, UserId,
 };
 #[cfg(feature = "new-controls")]
 use serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption};
@@ -110,14 +111,15 @@ pub enum AudioPromiseCommand {
     Autoplay(OrToggle),
     ReadTitles(OrToggle),
 
-    Volume(f64),
-    SpecificVolume(SpecificVolume),
+    Volume(SpecificVolume),
+    // SpecificVolume(SpecificVolume),
     SetBitrate(OrAuto),
 
     Skip,
     Remove(usize),
 
     RetrieveLog(mpsc::Sender<Vec<String>>),
+    UserConnect(UserId),
     // Consent { user_id: UserId, consent: bool },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,8 +137,9 @@ impl Display for OrAuto {
 }
 #[derive(Debug, Clone)]
 pub enum SpecificVolume {
-    Volume(f64),
-    RadioVolume(f64),
+    Current(f32),
+    SongVolume(f32),
+    RadioVolume(f32),
 }
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -153,22 +156,16 @@ impl VideoType {
     }
     pub fn get_duration(&self) -> Option<f64> {
         match self {
-            VideoType::Disk(v) => Some(v.duration),
-            VideoType::Url(v) => v.duration,
+            VideoType::Disk(v) => Some(v.duration()),
+            VideoType::Url(v) => v.duration(),
         }
     }
     #[allow(dead_code)]
-    pub fn get_title(&self) -> String {
+    pub fn get_title(&self) -> Arc<str> {
         match self {
-            VideoType::Disk(v) => v.title.clone(),
-            VideoType::Url(v) => v.title.clone(),
+            VideoType::Disk(v) => v.title(),
+            VideoType::Url(v) => v.title(),
         }
-    }
-    pub async fn delete(&self) -> Result<()> {
-        if let VideoType::Disk(v) = self {
-            v.delete()?;
-        }
-        Ok(())
     }
 }
 #[derive(Debug, Clone)]
@@ -183,21 +180,21 @@ impl LazyLoadedVideo {
             video: Arc::new(RwLock::new(None)),
         }
     }
-    pub async fn check(&mut self) -> anyhow::Result<Option<Video>> {
-        let mut lock = self.handle.write().await;
-        if let Some(handle) = lock.take() {
-            if handle.is_finished() {
-                let video = handle.await??;
-                self.video.write().await.replace(video.clone());
-                Ok(Some(video))
-            } else {
-                lock.replace(handle);
-                Ok(None)
-            }
-        } else {
-            Err(anyhow::anyhow!("Handle is None"))
-        }
-    }
+    // pub async fn check(&mut self) -> anyhow::Result<Option<Video>> {
+    //     let mut lock = self.handle.write().await;
+    //     if let Some(handle) = lock.take() {
+    //         if handle.is_finished() {
+    //             let video = handle.await??;
+    //             self.video.write().await.replace(video.clone());
+    //             Ok(Some(video))
+    //         } else {
+    //             lock.replace(handle);
+    //             Ok(None)
+    //         }
+    //     } else {
+    //         Err(anyhow::anyhow!("Handle is None"))
+    //     }
+    // }
     pub async fn wait_for(&mut self) -> anyhow::Result<Video> {
         let mut lock = self.handle.write().await;
         if let Some(handle) = lock.take() {
@@ -232,22 +229,10 @@ impl Author {
 #[derive(Debug, Clone)]
 pub struct MetaVideo {
     pub video: VideoType,
-    pub title: String,
+    // pub title: Arc<str>,
     pub author: Option<Author>,
     #[cfg(feature = "tts")]
     pub ttsmsg: Option<LazyLoadedVideo>,
-}
-impl MetaVideo {
-    pub async fn delete(&mut self) -> Result<()> {
-        self.video.delete().await?;
-        #[cfg(feature = "tts")]
-        if let Some(ref mut ttsmsg) = self.ttsmsg {
-            if let Ok(vid) = ttsmsg.wait_for().await {
-                vid.delete()?;
-            }
-        };
-        Ok(())
-    }
 }
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -308,6 +293,13 @@ impl MessageReference {
             resend_next_time: false,
             transcription_thread: OptionOrFailed::None,
         }
+    }
+    async fn change_channel(&mut self, channel_id: ChannelId) -> Result<()> {
+        self.channel_id = channel_id;
+        // delete and resend
+        self.delete().await?;
+        self.send_new().await?;
+        Ok(())
     }
     async fn send_manually(&mut self, content: PostSomething, user: UserId) -> Result<()> {
         if cfg!(feature = "send_to_thread") {
@@ -423,14 +415,14 @@ impl MessageReference {
                 }
             }
         };
-        let diff = match self.last_content {
-            None => true,
-            Some(ref last_content) => last_content != &content,
-        };
-        let forcediff = match self.last_settings {
-            None => true,
-            Some(ref last_settings) => last_settings != &settings,
-        };
+        // let diff = match self.last_content {
+        //     None => true,
+        //     Some(ref last_content) => last_content != &content,
+        // };
+        // let forcediff = match self.last_settings {
+        //     None => true,
+        //     Some(ref last_settings) => last_settings != &settings,
+        // };
         let mut messages = match message.channel(&self.http).await? {
             Channel::Guild(channel) => {
                 channel
@@ -450,8 +442,8 @@ impl MessageReference {
                 self.resend_next_time = true;
             }
         }
-        if (diff && ((self.last_edit.elapsed().as_millis() > self.edit_delay) || self.first_time))
-            || forcediff
+        // if (diff && ((self.last_edit.elapsed().as_millis() > self.edit_delay) || self.first_time))
+        //     || forcediff
         {
             self.first_time = false;
             let write_content = content.clone();
@@ -545,7 +537,7 @@ impl MessageReference {
                     .style(ButtonStyle::Primary)
                     .label(format!(
                         "{} {}%",
-                        match settings.raw_volume() {
+                        match settings.raw_song_volume() {
                             v if v == 0.0 => "🔇",
 
                             v if v <= 0.33 => "🔈",
@@ -554,7 +546,7 @@ impl MessageReference {
 
                             _ => "🔊",
                         },
-                        settings.raw_volume() * 100.0
+                        settings.raw_song_volume() * 100.0
                     )),
                 CreateButton::new("radiovolume")
                     .style(ButtonStyle::Secondary)
@@ -647,7 +639,7 @@ impl MessageReference {
                 .default_selection(true),
             CreateSelectMenuOption::new("Volume", "volume").description(format!(
                 "{} {:.0}%",
-                match settings.raw_volume() {
+                match settings.display_song_volume() {
                     v if v == 0.0 => "🔇",
 
                     v if v <= 0.33 => "🔈",
@@ -656,17 +648,19 @@ impl MessageReference {
 
                     _ => "🔊",
                 },
-                settings.raw_volume() * 100.0
+                settings.display_song_volume() * 100.0
             )),
-            CreateSelectMenuOption::new("Radio Volume", "radiovolume")
-                .description(format!("📻 {:.0}%", settings.raw_radiovolume() * 100.0)),
+            CreateSelectMenuOption::new("Radio Volume", "radiovolume").description(format!(
+                "📻 {:.0}%",
+                settings.display_radio_volume() * 100.0
+            )),
             CreateSelectMenuOption::new(
-                if settings.something_playing {
-                    "Playing"
-                } else {
-                    "Paused"
-                },
-                "pause",
+                // if settings.something_playing {
+                //     "Playing"
+                // } else {
+                //     "Paused"
+                // },
+                "Pause", "pause",
             )
             .description(if settings.pause { "▶️" } else { "⏸️" }),
             CreateSelectMenuOption::new("Skip", "skip").description("⏭️"),

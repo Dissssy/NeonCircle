@@ -134,7 +134,9 @@ async fn parse_commands(s: &str, u: UserId, http: Arc<Http>) -> WithFeedback {
                     WithFeedback::new_with_feedback(
                         Box::pin(async move {
                             Ok(ParsedCommand::Command(AudioPromiseCommand::Volume(
-                                vol.clamp(0, 100) as f64 / 100.0,
+                                crate::commands::music::SpecificVolume::Current(
+                                    vol.clamp(0, 100) as f32 / 100.0,
+                                ),
                             )))
                         }),
                         &format!("Setting volyume to {}%", humanize_number(vol)),
@@ -368,18 +370,18 @@ async fn get_videos(
             #[cfg(feature = "tts")]
             let key = crate::youtube::get_access_token().await;
             for v in vids {
-                let title = match v.clone() {
-                    crate::commands::music::VideoType::Disk(v) => v.title,
-                    crate::commands::music::VideoType::Url(v) => v.title,
+                let title = match &v {
+                    crate::commands::music::VideoType::Disk(v) => v.title(),
+                    crate::commands::music::VideoType::Url(v) => v.title(),
                 };
                 #[cfg(feature = "tts")]
                 if let Ok(key) = key.as_ref() {
                     truevideos.push(crate::commands::music::MetaVideo {
                         video: v,
                         ttsmsg: Some(crate::commands::music::LazyLoadedVideo::new(tokio::spawn(
-                            crate::youtube::get_tts(title.clone(), key.clone(), None),
+                            crate::youtube::get_tts(Arc::clone(&title), key.clone(), None),
                         ))),
-                        title,
+                        // title,
                         author: http.get_user(u).await.ok().map(|u| {
                             crate::commands::music::Author {
                                 name: u.name.clone(),
@@ -394,7 +396,7 @@ async fn get_videos(
                     truevideos.push(crate::commands::music::MetaVideo {
                         video: v,
                         ttsmsg: None,
-                        title,
+                        // title,
                         author: http.get_user(u).await.ok().map(|u| {
                             crate::commands::music::Author {
                                 name: u.name.clone(),

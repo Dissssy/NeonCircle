@@ -7,16 +7,27 @@ use crate::{commands::music::VideoType, youtube::VideoInfo};
 use anyhow::Result;
 use serde::Deserialize;
 use serenity::async_trait;
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 use ytd_rs::Arg;
 #[derive(Debug, Clone)]
 pub struct Video {
-    pub url: String,
+    inner: Arc<InnerVideo>,
+}
+#[derive(Debug)]
+struct InnerVideo {
+    pub url: Arc<str>,
     pub path: PathBuf,
-    pub title: String,
+    pub title: Arc<str>,
     pub duration: f64,
     pub media_type: MediaType,
     pub playlist_index: usize,
+}
+impl Drop for InnerVideo {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_file(&self.path) {
+            log::error!("Failed to delete video: {}", e);
+        }
+    }
 }
 #[derive(Deserialize, Debug)]
 pub struct RawVideo {
@@ -87,8 +98,26 @@ async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
     Ok(vids)
 }
 impl Video {
+    pub fn url(&self) -> Arc<str> {
+        Arc::clone(&self.inner.url)
+    }
+    pub fn path(&self) -> PathBuf {
+        self.inner.path.clone()
+    }
+    pub fn title(&self) -> Arc<str> {
+        Arc::clone(&self.inner.title)
+    }
+    pub fn duration(&self) -> f64 {
+        self.inner.duration
+    }
+    pub fn media_type(&self) -> MediaType {
+        self.inner.media_type
+    }
+    pub fn playlist_index(&self) -> usize {
+        self.inner.playlist_index
+    }
     pub fn to_songbird(&self) -> songbird::input::Input {
-        songbird::input::File::new(self.path.clone()).into()
+        songbird::input::File::new(self.path()).into()
     }
     pub async fn get_video(
         url: &str,
@@ -106,11 +135,11 @@ impl Video {
         }
         Ok(v.iter()
             .map(|v| {
-                VideoType::Url(VideoInfo {
-                    title: v.title.clone(),
-                    url: v.url.clone(),
-                    duration: v.duration,
-                })
+                VideoType::Url(VideoInfo::new(
+                    v.title.clone().into(),
+                    v.url.clone().into(),
+                    v.duration,
+                ))
             })
             .collect::<Vec<VideoType>>())
     }
@@ -209,7 +238,7 @@ impl Video {
                 if videos.is_empty() {
                     Err(anyhow::anyhow!("No videos found"))
                 } else {
-                    videos.sort_by(|a, b| a.playlist_index.cmp(&b.playlist_index));
+                    videos.sort_by_key(|a| a.playlist_index());
                     Ok(videos
                         .iter()
                         .map(|v| VideoType::Disk(v.clone()))
@@ -220,10 +249,6 @@ impl Video {
                 }
             }
         }
-    }
-    pub fn delete(&self) -> Result<()> {
-        std::fs::remove_file(self.path.clone())?;
-        Ok(())
     }
     pub fn from_path(
         path: PathBuf,
@@ -254,12 +279,14 @@ impl Video {
             .and_then(|s| s.split('.').next().and_then(|s| s.parse::<usize>().ok()))
             .unwrap_or(0);
         Ok(Self {
-            url,
-            path: path.clone(),
-            title: title.to_string(),
-            duration,
-            media_type,
-            playlist_index,
+            inner: Arc::new(InnerVideo {
+                url: url.into(),
+                path,
+                title: title.into(),
+                duration,
+                media_type,
+                playlist_index,
+            }),
         })
     }
     pub async fn delete_when_finished(self, handle: songbird::tracks::TrackHandle) -> Result<()> {
@@ -276,9 +303,7 @@ impl songbird::EventHandler for Video {
         if let songbird::EventContext::Track(track) = ctx {
             for (state, _handle) in *track {
                 if state.playing.is_done() {
-                    if let Err(e) = self.delete() {
-                        log::error!("Failed to delete video: {}", e);
-                    }
+                    return Some(songbird::Event::Track(songbird::TrackEvent::End));
                 }
             }
         }

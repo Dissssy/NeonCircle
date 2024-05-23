@@ -6,16 +6,16 @@ use super::{
 };
 use crate::{
     commands::music::{Author, LazyLoadedVideo, MetaVideo},
-    global_data::VoiceAction,
+    global_data::voice_data::VoiceAction,
 };
 use anyhow::Result;
 use serenity::all::*;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 #[derive(Debug, Clone)]
-pub struct Add;
+pub struct Command;
 #[async_trait]
-impl crate::CommandTrait for Add {
+impl crate::CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
@@ -77,24 +77,26 @@ impl crate::CommandTrait for Add {
             }
         };
         if let Some(member) = interaction.member.as_ref() {
-            let next_step = match crate::global_data::mutual_channel(&guild_id, &member.user.id)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    log::error!("Failed to get mutual channel: {:?}", e);
-                    if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new().content("Failed to get mutual channel"),
-                        )
-                        .await
-                    {
-                        log::error!("Failed to edit original interaction response: {:?}", e);
+            let next_step =
+                match crate::global_data::voice_data::mutual_channel(&guild_id, &member.user.id)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!("Failed to get mutual channel: {:?}", e);
+                        if let Err(e) = interaction
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .content("Failed to get mutual channel"),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to edit original interaction response: {:?}", e);
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
-                }
-            };
+                };
             let mut userin = None;
             match next_step.action {
                 VoiceAction::UserNotConnected => {
@@ -199,7 +201,7 @@ impl crate::CommandTrait for Add {
                                     .send_message(
                                         &ctx.http,
                                         CreateMessage::new()
-                                            .content("Joining voice channel")
+                                            .content("<a:earloading:979852072998543443>")
                                             .flags(MessageFlags::SUPPRESS_NOTIFICATIONS),
                                     )
                                     .await
@@ -221,8 +223,8 @@ impl crate::CommandTrait for Add {
                                     }
                                 };
                                 let messageref = super::MessageReference::new(
-                                    ctx.http.clone(),
-                                    ctx.cache.clone(),
+                                    Arc::clone(&ctx.http),
+                                    Arc::clone(&ctx.cache),
                                     guild_id,
                                     channel,
                                     msg,
@@ -267,6 +269,7 @@ impl crate::CommandTrait for Add {
                                 if let Err(e) = em.write().await.register(channel).await {
                                     log::error!("Error registering channel: {:?}", e);
                                 }
+                                let this_bot_id = ctx.cache.current_user().id;
                                 let handle = tokio::task::spawn(async move {
                                     let control = ControlData {
                                         call,
@@ -274,14 +277,14 @@ impl crate::CommandTrait for Add {
                                         msg: messageref,
                                         nothing_uri: nothing_path,
                                         settings: SettingsData::default(),
-                                        brk: false,
                                         log: Log::new(format!("{}-{}", guild_id, channel)),
                                         transcribe: em,
                                     };
                                     super::mainloop::the_lüüp(
-                                        cfg.looptime,
+                                        // cfg.looptime,
                                         transcription,
                                         control,
+                                        this_bot_id,
                                     )
                                     .await;
                                 });
@@ -362,9 +365,9 @@ impl crate::CommandTrait for Add {
                     };
                     if let Some(vid) = t.first() {
                         let th = {
-                            let url = vid.url.to_owned();
+                            let url = vid.url();
                             match tokio::task::spawn(async move {
-                                crate::video::Video::get_video(&url, true, false).await
+                                crate::video::Video::get_video(url.as_ref(), true, false).await
                             })
                             .await
                             {
@@ -404,8 +407,8 @@ impl crate::CommandTrait for Add {
                     let key = crate::youtube::get_access_token().await;
                     for v in rawvids {
                         let title = match v.clone() {
-                            super::VideoType::Disk(v) => v.title,
-                            super::VideoType::Url(v) => v.title,
+                            super::VideoType::Disk(v) => v.title(),
+                            super::VideoType::Url(v) => v.title(),
                         };
                         #[cfg(feature = "tts")]
                         if let Ok(key) = key.as_ref() {
@@ -413,9 +416,9 @@ impl crate::CommandTrait for Add {
                             truevideos.push(MetaVideo {
                                 video: v,
                                 ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(
-                                    crate::youtube::get_tts(title.clone(), key.clone(), None),
+                                    crate::youtube::get_tts(Arc::clone(&title), key.clone(), None),
                                 ))),
-                                title,
+                                // title,
                                 author: Author::from_user(
                                     ctx,
                                     &interaction.user,
@@ -427,7 +430,7 @@ impl crate::CommandTrait for Add {
                             truevideos.push(MetaVideo {
                                 video: v,
                                 ttsmsg: None,
-                                title,
+                                // title,
                                 author: Author::from_user(
                                     ctx,
                                     &interaction.user,
@@ -574,7 +577,8 @@ impl crate::CommandTrait for Add {
             if initial_query.starts_with("http://") || initial_query.starts_with("https://") {
                 let video = crate::video::Video::get_video(initial_query, false, true).await?;
                 if let Some(vid) = video.first() {
-                    completions = completions.add_string_choice(vid.get_title(), initial_query);
+                    completions =
+                        completions.add_string_choice(vid.get_title().to_string(), initial_query);
                 } else {
                     completions = completions.add_string_choice(
                         "Could not retrieve title. Is the URL valid?",

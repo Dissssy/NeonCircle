@@ -3,7 +3,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    // clippy::arithmetic_side_effects
+    clippy::implicit_clone,
+    clippy::clone_on_ref_ptr,
 )]
 mod commands;
 mod global_data;
@@ -11,14 +12,15 @@ mod radio;
 mod sam;
 mod video;
 mod youtube;
-use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
+use std::{collections::HashMap, time::Duration};
 use std::path::PathBuf;
 use std::sync::Arc;
 mod context_menu;
 mod voice_events;
 use crate::commands::music::{AudioCommandHandler, AudioPromiseCommand, OrToggle};
 use anyhow::Result;
-use global_data::VoiceAction;
+use global_data::voice_data::VoiceAction;
 use serde::{Deserialize, Serialize};
 use serenity::{
     all::*,
@@ -28,12 +30,14 @@ use songbird::SerenityInit;
 use tokio::sync::{mpsc, oneshot, RwLock};
 struct PlanetHandler {
     commands: Vec<Box<dyn CommandTrait>>,
+    initialized: AtomicBool,
     playing: String,
 }
 impl PlanetHandler {
     fn new(commands: Vec<Box<dyn CommandTrait>>, activity: String) -> Self {
         Self {
             commands,
+            initialized: AtomicBool::new(false),
             playing: activity,
         }
     }
@@ -152,7 +156,7 @@ impl EventHandler for PlanetHandler {
                         return;
                     }
                 };
-                let next_step = match global_data::mutual_channel(&guild_id, &mci.user.id).await {
+                let next_step = match global_data::voice_data::mutual_channel(&guild_id, &mci.user.id).await {
                     Ok(n) => n,
                     Err(e) => {
                         log::error!("Failed to get voice data: {:?}", e);
@@ -208,7 +212,7 @@ impl EventHandler for PlanetHandler {
                                 };
         
                                 if let Some(member) = mci.member.as_ref() {
-                                    let next_step = match global_data::mutual_channel(&guild_id, &member.user.id).await {
+                                    let next_step = match global_data::voice_data::mutual_channel(&guild_id, &member.user.id).await {
                                         Ok(n) => n,
                                         Err(e) => {
                                             log::error!("Failed to get voice data: {:?}", e);
@@ -308,7 +312,7 @@ impl EventHandler for PlanetHandler {
                                 };
         
                                 if let Some(member) = mci.member.as_ref() {
-                                    let next_step = match global_data::mutual_channel(&guild_id, &member.user.id).await {
+                                    let next_step = match global_data::voice_data::mutual_channel(&guild_id, &member.user.id).await {
                                         Ok(n) => n,
                                         Err(e) => {
                                             log::error!("Failed to get voice data: {:?}", e);
@@ -371,7 +375,7 @@ impl EventHandler for PlanetHandler {
                                 };
         
                                 if let Some(member) = mci.member.as_ref() {
-                                    let next_step = match global_data::mutual_channel(&guild_id, &member.user.id).await {
+                                    let next_step = match global_data::voice_data::mutual_channel(&guild_id, &member.user.id).await {
                                         Ok(n) => n,
                                         Err(e) => {
                                             log::error!("Failed to get voice data: {:?}", e);
@@ -412,7 +416,7 @@ impl EventHandler for PlanetHandler {
                                 };
         
                                 if let Some(member) = mci.member.as_ref() {
-                                    let next_step = match global_data::mutual_channel(&guild_id, &member.user.id).await {
+                                    let next_step = match global_data::voice_data::mutual_channel(&guild_id, &member.user.id).await {
                                         Ok(n) => n,
                                         Err(e) => {
                                             log::error!("Failed to get voice data: {:?}", e);
@@ -604,8 +608,13 @@ impl EventHandler for PlanetHandler {
         }
     }
     async fn ready(&self, ctx: Context, ready: Ready) {
+        log::info!("Ready");
+        if self.initialized.load(std::sync::atomic::Ordering::Relaxed) {
+            log::info!("Already initialized");
+            return;
+        }
         log::info!("Initializing Voice Data");
-        if let Err(e) = global_data::initialize_planet(ctx.clone()).await {
+        if let Err(e) = global_data::voice_data::initialize_planet(ctx.clone()).await {
             log::error!("Failed to initialize planet: {}", e);
         }
         log::info!("Refreshing users");
@@ -653,7 +662,7 @@ impl EventHandler for PlanetHandler {
                     });
                     lazy_voicedata.push({
                         async move {
-                            global_data::lazy_refresh_guild(guild.id)
+                            global_data::voice_data::lazy_refresh_guild(guild.id)
                                 .await
                                 .map(|d| (d, format!("{} ({})", guild.name, guild.id)))
                         }
@@ -688,18 +697,18 @@ impl EventHandler for PlanetHandler {
         }
         {
             for (guild_id, voice_data) in final_voice_data {
-                if let Err(e) = global_data::insert_guild(guild_id, voice_data).await {
+                if let Err(e) = global_data::voice_data::insert_guild(guild_id, voice_data).await {
                     log::error!("Failed to insert guild: {}", e);
                 }
             }
         }
-        let mut req = WEB_CLIENT
+        if let Err(e) = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
-            .json(&finalusers);
-        if let Some(token) = Config::get().string_api_token {
-            req = req.bearer_auth(token);
-        }
-        if let Err(e) = req.send().await {
+            .json(&finalusers)
+            .bearer_auth(Config::get().string_api_token)
+            .send()
+            .await
+        {
             log::error!("Failed to send users to api {e}. Users might be out of date");
         }
         log::info!("Registering commands");
@@ -715,12 +724,13 @@ impl EventHandler for PlanetHandler {
             log::error!("Failed to register commands: {}", e);
         }
         ctx.set_activity(Some(ActivityData::playing(&self.playing)));
-        if let Err(e) = global_data::add_satellite(ctx, 0).await {
+        if let Err(e) = global_data::voice_data::add_satellite(ctx, 0).await {
             log::error!("Failed to add satellite: {}", e);
         }
+        self.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
         log::info!("Connected as {}", ready.user.name);
     }
-    async fn voice_state_update(&self, _ctx: Context, old: Option<VoiceState>, new: VoiceState) {
+    async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
         // let data = {
         //     let uh = ctx.data.read().await;
         //     match uh.get::<VoiceData>() {
@@ -731,10 +741,35 @@ impl EventHandler for PlanetHandler {
         //         }
         //     }
         // };
+
+        if let Some(channel_id) = new.channel_id {
+            // get the command handler for the channel if it exists, and fire off a UserConnect command
+            if let Some(audio_command_handler) = ctx
+                .data
+                .read()
+                .await
+                .get::<AudioCommandHandler>().map(Arc::clone) {
+                let mut audio_command_handler = audio_command_handler.write().await;
+                if let Some(tx) = audio_command_handler.get_mut(&channel_id) {
+                    let (rtx, rrx) = oneshot::channel::<String>();
+                    if tx.send((rtx, AudioPromiseCommand::UserConnect(new.user_id))).is_err() {
+                        log::error!("Failed to send UserConnect command");
+                    }
+                    let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
+                    if let Ok(Ok(msg)) = timeout {
+                        log::trace!("UserConnect: {}", msg);
+                    } else {
+                        log::error!("Failed to get UserConnect response");
+                    }
+                } else {
+                    log::trace!("No command handler for channel");
+                }
+            }
+        }
         {
             // let mut data = data.write().await;
             // data.update(old.clone(), new.clone());
-            if let Err(e) = global_data::update_voice(old, new).await {
+            if let Err(e) = global_data::voice_data::update_voice(old, new).await {
                 log::error!("Failed to update voice data: {}", e);
             }
         }
@@ -795,6 +830,7 @@ impl EventHandler for PlanetHandler {
         em.write().await.send_tts(&ctx, &new_message).await;
     }
     async fn resume(&self, ctx: Context, _: ResumedEvent) {
+        log::info!("Resumed");
         log::info!("Refreshing users");
         let mut guilds = Vec::new();
         let mut after = None;
@@ -867,7 +903,7 @@ impl EventHandler for PlanetHandler {
                         // let ctx = ctx.clone();
                         async move {
                             // let mut voicedata = voicedata.write().await;
-                            if let Err(e) = crate::global_data::refresh_guild(guild.id).await {
+                            if let Err(e) = global_data::voice_data::refresh_guild(guild.id).await {
                                 log::error!("Failed to refresh guild: {}", e);
                             }
                             format!("{} ({})", guild.name, guild.id)
@@ -892,13 +928,13 @@ impl EventHandler for PlanetHandler {
         while let Some(guildinfo) = lazy_voicedata.next().await {
             log::info!("Refreshed voice data for {}", guildinfo);
         }
-        let mut req = WEB_CLIENT
+        if let Err(e) = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
-            .json(&finalusers);
-        if let Some(token) = Config::get().string_api_token {
-            req = req.bearer_auth(token);
-        }
-        if let Err(e) = req.send().await {
+            .json(&finalusers)
+            .bearer_auth(Config::get().string_api_token)
+            .send()
+            .await
+        {
             log::error!("Failed to send users to api {e}. Users might be out of date");
         }
     }
@@ -913,13 +949,13 @@ impl EventHandler for PlanetHandler {
         // if let Err(e) = req.send().await {
         //     log::error!("Failed to add user to api {e}. Users might be out of date");
         // }
-        let mut req = WEB_CLIENT
+        if let Err(e) = WEB_CLIENT
             .post("http://localhost:16835/api/add/user")
-            .json(&UserSafe { id });
-        if let Some(token) = Config::get().string_api_token {
-            req = req.bearer_auth(token);
-        }
-        if let Err(e) = req.send().await {
+            .json(&UserSafe { id })
+            .bearer_auth(Config::get().string_api_token)
+            .send()
+            .await
+        {
             log::error!("Failed to add user to api {e}. Users might be out of date");
         }
     }
@@ -940,13 +976,13 @@ impl EventHandler for PlanetHandler {
         // if let Err(e) = req.send().await {
         //     log::error!("Failed to remove user from api {e}. Users might be out of date");
         // }
-        let mut req = WEB_CLIENT
+        if let Err(e) = WEB_CLIENT
             .post("http://localhost:16835/api/remove/user")
-            .json(&UserSafe { id });
-        if let Some(token) = Config::get().string_api_token {
-            req = req.bearer_auth(token);
-        }
-        if let Err(e) = req.send().await {
+            .json(&UserSafe { id })
+            .bearer_auth(Config::get().string_api_token)
+            .send()
+            .await
+        {
             log::error!("Failed to remove user from api {e}. Users might be out of date");
         }
     }
@@ -964,7 +1000,7 @@ impl EventHandler for PlanetHandler {
             // if let Err(e) = voicedata.refresh_guild(&ctx, guild.id).await {
             //     log::error!("Failed to refresh guild: {}", e);
             // }
-            if let Err(e) = global_data::refresh_guild(guild.id).await {
+            if let Err(e) = global_data::voice_data::refresh_guild(guild.id).await {
                 log::error!("Failed to refresh guild: {}", e);
             }
             // resync the users for this guild
@@ -992,13 +1028,12 @@ impl EventHandler for PlanetHandler {
                     log::info!("Retrieved {} users from {}", users.len(), guild.name);
                 }
             }
-            let mut req = WEB_CLIENT
+            if let Err(e) = WEB_CLIENT
                 .post("http://localhost:16835/api/set/user")
-                .json(&users);
-            if let Some(token) = Config::get().string_api_token {
-                req = req.bearer_auth(token);
-            }
-            if let Err(e) = req.send().await {
+                .json(&users)
+                .bearer_auth(Config::get().string_api_token)
+                .send().await
+            {
                 log::error!("Failed to send users to api {e}. Users might be out of date");
             }
         }
@@ -1012,41 +1047,42 @@ struct Timed<T> {
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    global_data::init();
-    let cfg = Config::get();
-    let mut tmp = cfg.data_path.clone();
-    tmp.push("tmp");
-    if let Err(e) = std::fs::remove_dir_all(&tmp) {
-        log::error!("Failed to remove tmp folder: {:?}", e);
-    }
-    match std::fs::create_dir_all(&tmp) {
-        Ok(_) => {}
-        Err(e) => {
-            log::error!("Failed to create tmp folder: {:?}", e);
-            return;
-        }
-    }
+    global_data::init().await;
+    // let cfg = Config::get();
+    // let mut tmp = cfg.data_path.clone();
+    // tmp.push("tmp");
+    // if let Err(e) = std::fs::remove_dir_all(&tmp) {
+    //     log::error!("Failed to remove tmp folder: {:?}", e);
+    // }
+    // match std::fs::create_dir_all(&tmp) {
+    //     Ok(_) => {}
+    //     Err(e) => {
+    //         log::error!("Failed to create tmp folder: {:?}", e);
+    //         return;
+    //     }
+    // }
     let handler = PlanetHandler::new(
         vec![
-            Box::new(commands::music::transcribe::Transcribe),
-            Box::new(commands::music::repeat::Repeat),
-            Box::new(commands::music::loop_queue::Loop),
-            Box::new(commands::music::pause::Pause),
-            Box::new(commands::music::add::Add),
-            Box::new(commands::music::join::Join),
-            Box::new(commands::music::setbitrate::SetBitrate),
-            Box::new(commands::music::remove::Remove),
-            Box::new(commands::music::resume::Resume),
-            Box::new(commands::music::shuffle::Shuffle),
-            Box::new(commands::music::skip::Skip),
-            Box::new(commands::music::stop::Stop),
-            Box::new(commands::music::volume::Volume),
-            Box::new(commands::music::autoplay::Autoplay),
-            Box::new(commands::music::consent::Consent),
+            Box::new(commands::music::transcribe::Command),
+            Box::new(commands::music::repeat::Command),
+            Box::new(commands::music::loop_queue::Command),
+            Box::new(commands::music::pause::Command),
+            Box::new(commands::music::add::Command),
+            Box::new(commands::music::join::Command),
+            Box::new(commands::music::setbitrate::Command),
+            Box::new(commands::music::remove::Command),
+            Box::new(commands::music::resume::Command),
+            Box::new(commands::music::shuffle::Command),
+            Box::new(commands::music::skip::Command),
+            Box::new(commands::music::stop::Command),
+            Box::new(commands::music::volume::Command),
+            Box::new(commands::music::autoplay::Command),
+            Box::new(commands::music::consent::Command),
             Box::new(commands::embed::Video),
             Box::new(commands::embed::Audio),
-            Box::new(commands::john::John),
+            Box::new(commands::john::Command),
             Box::new(commands::feedback::Feedback),
+            Box::new(commands::config::Command::new()),
         ],
         BOTS.planet.playing.clone(),
     );
@@ -1105,29 +1141,29 @@ async fn main() {
             }
         }));
     }
-    let mut tick = tokio::time::interval({
-        let now = chrono::Local::now();
-        let mut next = match chrono::Local::now().date_naive().and_hms_opt(8, 0, 0) {
-            Some(v) => v.and_utc(),
-            None => {
-                log::error!("Failed to get next 8am, did time stop?");
-                return;
-            }
-        };
-        if next < now {
-            next += chrono::Duration::days(1);
-        }
-        let next = next - now.naive_utc().and_utc();
-        tokio::time::Duration::from_secs(next.num_seconds() as u64)
-    });
-    tick.tick().await;
+    // let mut tick = tokio::time::interval({
+    //     let now = chrono::Local::now();
+    //     let mut next = match chrono::Local::now().date_naive().and_hms_opt(8, 0, 0) {
+    //         Some(v) => v.and_utc(),
+    //         None => {
+    //             log::error!("Failed to get next 8am, did time stop?");
+    //             return;
+    //         }
+    //     };
+    //     if next < now {
+    //         next += chrono::Duration::days(1);
+    //     }
+    //     let next = next - now.naive_utc().and_utc();
+    //     tokio::time::Duration::from_secs(next.num_seconds() as u64)
+    // });
+    // tick.tick().await;
     let exit_code;
     tokio::select! {
-        _ = tick.tick() => {
-            log::info!("Exit code 3 {}", chrono::Local::now());
+        // _ = tick.tick() => {
+        //     log::info!("Exit code 3 {}", chrono::Local::now());
 
-            exit_code = 3;
-        }
+        //     exit_code = 3;
+        // }
         t = client.start() => {
             match t {
                 Ok(()) => {
@@ -1216,7 +1252,7 @@ async fn main() {
         }
     }
     // write the consent data to disk
-    global_data::save();
+    global_data::save().await;
     // {
     //     match std::fs::File::create(&cfg.consent_path) {
     //         Ok(f) => {
@@ -1240,9 +1276,9 @@ struct Config {
     data_path: PathBuf,
     shitgpt_path: PathBuf,
     whitelist_path: PathBuf,
-    string_api_token: Option<String>,
+    string_api_token: String,
     idle_url: String,
-    api_url: Option<String>,
+    api_url: String,
     #[cfg(feature = "tts")]
     gcloud_script: String,
     #[cfg(feature = "youtube-search")]
@@ -1262,6 +1298,7 @@ struct Config {
     sam_path: PathBuf,
     #[cfg(feature = "transcribe")]
     consent_path: PathBuf,
+    guild_config_path: PathBuf,
 }
 impl Config {
     pub fn get() -> Self {
@@ -1340,7 +1377,11 @@ impl Config {
                 } else {
                     Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH)\nif you wish to use a file on disk, set this to something as a fallback, and name the file override.mp3 inside the bot directory)\n(appdata/local/ for windows users and ~/.local/share/ for linux users):")
                 },
-                api_url: rec.api_url,
+                api_url: if let Some(api_url) = rec.api_url {
+                    api_url
+                } else {
+                    Self::safe_read("\nPlease enter your api url:")
+                },
                 bumper_url: if let Some(bumper_url) = rec.bumper_url {
                     bumper_url
                 } else {
@@ -1362,9 +1403,9 @@ impl Config {
                     Self::safe_read("\nPlease enter your whitelist path:")
                 },
                 string_api_token: if let Some(string_api_token) = rec.string_api_token {
-                    Some(string_api_token)
+                    string_api_token
                 } else {
-                    Some(Self::safe_read("\nPlease enter your string api token:"))
+                    Self::safe_read("\nPlease enter your string api token:")
                 },
                 #[cfg(feature = "transcribe")]
                 transcribe_url: if let Some(transcribe_url) = rec.transcribe_url {
@@ -1395,6 +1436,11 @@ impl Config {
                 } else {
                     Self::safe_read("\nPlease enter your consent path:")
                 },
+                guild_config_path: if let Some(guild_config_path) = rec.guild_config_path {
+                    guild_config_path
+                } else {
+                    Self::safe_read("\nPlease enter your guild config path:")
+                },
             }
         } else {
             log::error!("Welcome to my shitty Rust Music Bot!");
@@ -1424,16 +1470,17 @@ impl Config {
                 #[cfg(feature = "spotify")]
                 spotify_api_key: Self::safe_read("\nPlease enter your spotify api key:"),
                 idle_url: Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH):"),
-                api_url: None,
+                api_url: Self::safe_read("\nPlease enter your api url:"),
                 bumper_url: Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):"),
                 shitgpt_path: Self::safe_read("\nPlease enter your shitgpt path:"),
                 whitelist_path: Self::safe_read("\nPlease enter your whitelist path:"),
-                string_api_token: Some(Self::safe_read("\nPlease enter your string api token:")),
+                string_api_token: Self::safe_read("\nPlease enter your string api token:"),
                 transcribe_token: Self::safe_read("\nPlease enter your transcribe token:"),
                 transcribe_url: Self::safe_read("\nPlease enter your transcribe url:"),
                 alert_phrases_path: Self::safe_read("\nPlease enter your alert phrase path:"),
                 sam_path: Self::safe_read("\nPlease enter your sam path:"),
                 consent_path: Self::safe_read("\nPlease enter your consent path:"),
+                guild_config_path: Self::safe_read("\nPlease enter your guild config path:"),
             }
         };
         match std::fs::write(
@@ -1526,6 +1573,7 @@ struct RecoverConfig {
     sam_path: Option<PathBuf>,
     #[cfg(feature = "transcribe")]
     consent_path: Option<PathBuf>,
+    guild_config_path: Option<PathBuf>,
 }
 struct SatelliteHandler {
     playing: String,
@@ -1547,6 +1595,6 @@ impl EventHandler for SatelliteHandler {
         ).await {
             log::error!("Failed to register commands: {}", e);
         }
-        global_data::add_satellite_wait(ctx, self.position).await;
+        global_data::voice_data::add_satellite_wait(ctx, self.position).await;
     }
 }

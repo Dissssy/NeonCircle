@@ -2,9 +2,9 @@ use super::AudioPromiseCommand;
 use anyhow::Result;
 use serenity::all::*;
 #[derive(Debug, Clone)]
-pub struct Loop;
+pub struct Command;
 #[async_trait]
-impl crate::CommandTrait for Loop {
+impl crate::CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
@@ -65,24 +65,26 @@ impl crate::CommandTrait for Loop {
             }
         };
         if let Some(member) = interaction.member.as_ref() {
-            let next_step = match crate::global_data::mutual_channel(&guild_id, &member.user.id)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    log::error!("Failed to get mutual channel: {:?}", e);
-                    if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new().content("Failed to get mutual channel"),
-                        )
-                        .await
-                    {
-                        log::error!("Failed to edit original interaction response: {:?}", e);
+            let next_step =
+                match crate::global_data::voice_data::mutual_channel(&guild_id, &member.user.id)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!("Failed to get mutual channel: {:?}", e);
+                        if let Err(e) = interaction
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .content("Failed to get mutual channel"),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to edit original interaction response: {:?}", e);
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
-                }
-            };
+                };
             next_step
                 .send_command_or_respond(interaction, guild_id, AudioPromiseCommand::Loop(option))
                 .await;

@@ -3,9 +3,9 @@ use crate::commands::music::SpecificVolume;
 use anyhow::Result;
 use serenity::all::*;
 #[derive(Debug, Clone)]
-pub struct Volume;
+pub struct Command;
 #[async_trait]
-impl crate::CommandTrait for Volume {
+impl crate::CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
@@ -66,29 +66,35 @@ impl crate::CommandTrait for Volume {
                 }
                 return Ok(());
             }
-        } as f64
+        } as f32
             / 100.0;
         if let Some(member) = interaction.member.as_ref() {
-            let next_step = match crate::global_data::mutual_channel(&guild_id, &member.user.id)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    log::error!("Failed to get mutual channel: {:?}", e);
-                    if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new().content("Failed to get mutual channel"),
-                        )
-                        .await
-                    {
-                        log::error!("Failed to edit original interaction response: {:?}", e);
+            let next_step =
+                match crate::global_data::voice_data::mutual_channel(&guild_id, &member.user.id)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!("Failed to get mutual channel: {:?}", e);
+                        if let Err(e) = interaction
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .content("Failed to get mutual channel"),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to edit original interaction response: {:?}", e);
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
-                }
-            };
+                };
             next_step
-                .send_command_or_respond(interaction, guild_id, AudioPromiseCommand::Volume(option))
+                .send_command_or_respond(
+                    interaction,
+                    guild_id,
+                    AudioPromiseCommand::Volume(SpecificVolume::Current(option)),
+                )
                 .await;
         } else if let Err(e) = interaction
             .edit_response(
@@ -150,15 +156,16 @@ impl crate::CommandTrait for Volume {
                 }
                 return Ok(());
             }
-        };
-        if !(0.0..=100.0).contains(&val) {
-            log::trace!("Volume out of range: {}", val);
+        } as f32
+            / 100.0;
+        if !(0.0..=1.0).contains(&val) {
+            log::trace!("Volume out of range: {}", val * 100.0);
             if let Err(e) = interaction
                 .create_response(
                     &ctx.http,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content(format!("`{}` is outside 0-100", val))
+                            .content(format!("`{}` is outside 0-100", val * 100.0))
                             .ephemeral(true),
                     ),
                 )
@@ -191,7 +198,9 @@ impl crate::CommandTrait for Volume {
         };
         if let Some(member) = interaction.member.as_ref() {
             let next_step =
-                match crate::global_data::mutual_channel(&guild_id, &member.user.id).await {
+                match crate::global_data::voice_data::mutual_channel(&guild_id, &member.user.id)
+                    .await
+                {
                     Ok(v) => v,
                     Err(e) => {
                         log::error!("Failed to get mutual channel: {:?}", e);
@@ -219,12 +228,10 @@ impl crate::CommandTrait for Volume {
                     interaction,
                     guild_id,
                     match raw {
-                        "volume" => {
-                            AudioPromiseCommand::SpecificVolume(SpecificVolume::Volume(val / 100.0))
+                        "volume" => AudioPromiseCommand::Volume(SpecificVolume::SongVolume(val)),
+                        "radiovolume" => {
+                            AudioPromiseCommand::Volume(SpecificVolume::RadioVolume(val))
                         }
-                        "radiovolume" => AudioPromiseCommand::SpecificVolume(
-                            SpecificVolume::RadioVolume(val / 100.0),
-                        ),
                         uh => {
                             log::error!("How: {}", uh);
                             return Ok(());

@@ -1,17 +1,18 @@
 use super::{AudioPromiseCommand, RawMessage, TTSStatus};
 use crate::{
-    global_data::VoiceAction, video::Video, voice_events::PostSomething, youtube::TTSVoice,
+    global_data::voice_data::VoiceAction, video::Video, voice_events::PostSomething,
+    youtube::TTSVoice,
 };
 use anyhow::Result;
 use rand::seq::SliceRandom;
 use serenity::all::*;
-use songbird::{input::Input, tracks::TrackHandle, typemap::TypeMapKey, Call};
+use songbird::{tracks::TrackHandle, typemap::TypeMapKey, Call};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 #[derive(Debug, Clone)]
-pub struct Transcribe;
+pub struct Command;
 #[async_trait]
-impl crate::CommandTrait for Transcribe {
+impl crate::CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
@@ -72,24 +73,26 @@ impl crate::CommandTrait for Transcribe {
             }
         };
         if let Some(member) = interaction.member.as_ref() {
-            let next_step = match crate::global_data::mutual_channel(&guild_id, &member.user.id)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    log::error!("Failed to get mutual channel: {:?}", e);
-                    if let Err(e) = interaction
-                        .edit_response(
-                            &ctx.http,
-                            EditInteractionResponse::new().content("Failed to get mutual channel"),
-                        )
-                        .await
-                    {
-                        log::error!("Failed to edit original interaction response: {:?}", e);
+            let next_step =
+                match crate::global_data::voice_data::mutual_channel(&guild_id, &member.user.id)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!("Failed to get mutual channel: {:?}", e);
+                        if let Err(e) = interaction
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .content("Failed to get mutual channel"),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to edit original interaction response: {:?}", e);
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
-                }
-            };
+                };
             match next_step.action {
                 VoiceAction::NoRemaining => {
                     if let Err(e) = interaction
@@ -274,40 +277,31 @@ impl crate::CommandTrait for Transcribe {
 pub struct Handler {
     call: Arc<Mutex<Call>>,
     queue: Vec<RawMessage>,
-    prepared_next: Option<Deleteable>,
-    current_handle: Option<(TrackHandle, Deleteable)>,
-    channel_names: HashMap<String, Deleteable>,
+    prepared_next: Option<Video>,
+    current_handle: Option<(TrackHandle, Video)>,
+    channel_names: HashMap<String, Video>,
     last_channel_name: String,
     waiting_on: Option<String>,
 }
-#[derive(Debug, Clone)]
-pub enum Deleteable {
-    Delete(Video),
-    Keep(Video),
-}
-impl Deleteable {
-    pub fn delete(&self) -> Result<()> {
-        match self {
-            Self::Delete(v) => v.delete(),
-            Self::Keep(_) => Ok(()),
-        }
-    }
-    pub fn force_delete(&self) -> Result<()> {
-        self.get_video().delete()
-    }
-    pub fn get_video(&self) -> &Video {
-        match self {
-            Self::Delete(v) => v,
-            Self::Keep(v) => v,
-        }
-    }
-    pub fn to_songbird(&self) -> Input {
-        match self {
-            Self::Delete(v) => v.to_songbird(),
-            Self::Keep(v) => v.to_songbird(),
-        }
-    }
-}
+// #[derive(Debug, Clone)]
+// pub enum Deleteable {
+//     Delete(Video),
+//     Keep(Video),
+// }
+// impl Deleteable {
+//     pub fn get_video(&self) -> &Video {
+//         match self {
+//             Self::Delete(v) => v,
+//             Self::Keep(v) => v,
+//         }
+//     }
+//     pub fn to_songbird(&self) -> Input {
+//         match self {
+//             Self::Delete(v) => v.to_songbird(),
+//             Self::Keep(v) => v.to_songbird(),
+//         }
+//     }
+// }
 impl Handler {
     pub fn new(call: Arc<Mutex<Call>>) -> Self {
         Self {
@@ -333,7 +327,7 @@ impl Handler {
         Ok(())
     }
     pub async fn check_current_handle(&mut self) -> Result<()> {
-        if let Some((handle, v)) = &self.current_handle {
+        if let Some((handle, _)) = &self.current_handle {
             match tokio::time::timeout(tokio::time::Duration::from_secs(1), handle.get_info()).await
             {
                 Ok(Ok(info)) => {
@@ -350,7 +344,7 @@ impl Handler {
                 Err(_) => {}
             }
             let _ = handle.stop();
-            v.delete()?;
+            // v.delete()?;
         }
         self.current_handle = None;
         Ok(())
@@ -390,7 +384,7 @@ impl Handler {
                         timestamp: m.timestamp,
                         tts_audio_handle: match self.channel_names.get(mn) {
                             Some(v) => {
-                                let v = v.clone().get_video().clone();
+                                let v = v.clone();
                                 let tts = Arc::clone(&tts);
                                 Some(tokio::task::spawn(async move {
                                     let mut tts = tts.write().await;
@@ -410,10 +404,7 @@ impl Handler {
                                         let sendtts = Arc::clone(&tts);
                                         match &*tts.read().await {
                                             TTSStatus::Finished(v) => {
-                                                self.channel_names.insert(
-                                                    mn.clone(),
-                                                    Deleteable::Keep(v.clone()),
-                                                );
+                                                self.channel_names.insert(mn.clone(), v.clone());
                                                 let v = v.clone();
                                                 Some(tokio::task::spawn(async move {
                                                     let mut tts = sendtts.write().await;
@@ -437,36 +428,32 @@ impl Handler {
             self.queue.insert(0, m);
         }
         if let Some(m) = self.queue.get_mut(0) {
-            let deleteable = !m.author_id.is_empty();
             let v = match m.check_tts().await {
                 super::TTSStatus::Finished(v) => Some(v),
                 _ => None,
             };
             if let Some(v) = v {
-                self.prepared_next = if deleteable {
-                    Some(Deleteable::Delete(v))
-                } else {
-                    Some(Deleteable::Keep(v))
-                };
+                self.prepared_next = Some(v);
             }
             self.queue.remove(0);
         }
         Ok(())
     }
     pub async fn stop(&mut self) {
-        if let Some((handle, v)) = &self.current_handle {
+        if let Some((handle, v)) = self.current_handle.take() {
             if let Err(e) = handle.stop() {
                 log::error!("Error stopping audio: {:?}", e);
             }
-            if let Err(e) = v.delete() {
-                log::error!("Error deleting video: {:?}", e);
-            }
+            // if let Err(e) = v.delete() {
+            //     log::error!("Error deleting video: {:?}", e);
+            // }
+            drop(v);
         }
-        self.current_handle = None;
         if let Some(v) = self.prepared_next.take() {
-            if let Err(e) = v.delete() {
-                log::error!("Error deleting video: {:?}", e);
-            }
+            // if let Err(e) = v.delete() {
+            //     log::error!("Error deleting video: {:?}", e);
+            // }
+            drop(v);
         }
         self.prepared_next = None;
         for m in self.queue.iter_mut() {
@@ -475,9 +462,7 @@ impl Handler {
                 match h.await {
                     Ok(Ok(())) => {
                         if let super::TTSStatus::Finished(v) = m.check_tts().await {
-                            if let Err(e) = v.delete() {
-                                log::error!("Error deleting video: {:?}", e);
-                            }
+                            drop(v);
                         }
                     }
                     Ok(Err(e)) => {
@@ -489,10 +474,13 @@ impl Handler {
                 }
             }
         }
-        for v in self.channel_names.values() {
-            if let Err(e) = v.force_delete() {
-                log::error!("Error deleting video: {:?}", e);
-            }
+        let mut channel_names = HashMap::new();
+        std::mem::swap(&mut channel_names, &mut self.channel_names);
+        for v in channel_names.into_values() {
+            // if let Err(e) = v.force_delete() {
+            //     log::error!("Error deleting video: {:?}", e);
+            // }
+            drop(v);
         }
         self.queue.clear();
     }

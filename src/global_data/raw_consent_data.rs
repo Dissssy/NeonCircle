@@ -52,6 +52,7 @@ pub fn set_consent(user_id: UserId, consent: bool) {
             v.insert(AtomicBool::new(consent));
         }
     }
+    save();
 }
 pub fn get_consent(user_id: UserId) -> bool {
     let init = unsafe { INITIALIZED };

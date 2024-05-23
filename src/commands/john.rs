@@ -7,9 +7,9 @@ use image::{
 use serenity::all::*;
 use std::io::{BufWriter, Cursor};
 #[derive(Debug, Clone)]
-pub struct John;
+pub struct Command;
 #[async_trait]
-impl CommandTrait for John {
+impl CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
