@@ -19,7 +19,7 @@ while true; do
             echo "Build failed, using last good build"
         else
             echo "Build successful, moving binary to ./bin"
-            cp ./target/release/alrightguysnewprojecttime ./bin/alrightguysnewprojecttime
+            cp ./target/release/alrightguysnewprojecttime ./data/bin/alrightguysnewprojecttime
         fi
     else
         echo "Running in debug mode"
@@ -29,11 +29,11 @@ while true; do
             echo "Build failed, using last good build"
         else
             echo "Build successful, moving binary to ./bin"
-            cp ./target/debug/alrightguysnewprojecttime ./bin/alrightguysnewprojecttime
+            cp ./target/debug/alrightguysnewprojecttime ./data/bin/alrightguysnewprojecttime
         fi
     fi
     # run the application
-    ./bin/alrightguysnewprojecttime
+    ./data/bin/alrightguysnewprojecttime
 
     # save the return code
     ret=$?

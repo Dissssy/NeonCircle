@@ -5,8 +5,9 @@ use crate::{
     commands::music::transcribe::TranscriptionMessage, utils::DeleteAfterFinish, video::Video,
 };
 use anyhow::Result;
+use common::log;
+use common::serenity::all::*;
 use serde::Deserialize as _;
-use serenity::all::*;
 use songbird::{
     events::{
         context_data::{VoiceData, VoiceTick},
@@ -28,7 +29,7 @@ static EVENTS: &[Event] = &[
     Event::Core(CoreEvent::VoiceTick),
 ];
 pub async fn transcription_thread(
-    call: Arc<serenity::prelude::Mutex<Call>>,
+    call: Arc<common::serenity::prelude::Mutex<Call>>,
     http: Arc<Http>,
     otx: mpsc::UnboundedSender<(
         oneshot::Sender<Arc<str>>,

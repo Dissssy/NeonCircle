@@ -1,5 +1,6 @@
 use anyhow::Result;
-use serenity::all::*;
+use common::log;
+use common::serenity::all::*;
 pub struct Command {
     subcommands: Vec<Box<dyn crate::traits::SubCommandTrait>>,
 }

@@ -22,19 +22,20 @@ use crate::video::Video;
 use crate::voice_events::PostSomething;
 use crate::youtube::{TTSVoice, VideoInfo};
 use anyhow::Result;
-#[cfg(feature = "transcribe")]
-use serde_json::json;
+use common::log;
 #[cfg(not(feature = "new-controls"))]
-use serenity::all::{ButtonStyle, CreateButton};
-use serenity::all::{
+use common::serenity::all::{ButtonStyle, CreateButton};
+use common::serenity::all::{
     Cache, Channel, ChannelId, ChannelType, CommandInteraction, Context, CreateActionRow,
     CreateMessage, EditInteractionResponse, EditMessage, GetMessages, GuildChannel, GuildId, Http,
     Message, MessageFlags, ModalInteraction, User, UserId,
 };
 #[cfg(feature = "new-controls")]
-use serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption};
+use common::serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption};
 #[cfg(feature = "transcribe")]
-use serenity::all::{CreateThread, CreateWebhook};
+use common::serenity::all::{CreateThread, CreateWebhook};
+#[cfg(feature = "transcribe")]
+use serde_json::json;
 use songbird::tracks::Track;
 use songbird::typemap::TypeMapKey;
 use std::collections::HashMap;

@@ -10,14 +10,15 @@ use crate::video::Video;
 use crate::voice_events::PostSomething;
 use crate::youtube::TTSVoice;
 use anyhow::Result;
-use rand::seq::SliceRandom;
-use rand::Rng;
-use serenity::all::{
+use common::log;
+use common::serenity::all::{
     ChannelId, Color, CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, Message, UserId,
 };
-use serenity::async_trait;
-use serenity::futures::stream::FuturesOrdered;
-use serenity::futures::StreamExt as _;
+use common::serenity::async_trait;
+use common::serenity::futures::stream::FuturesOrdered;
+use common::serenity::futures::StreamExt as _;
+use rand::seq::SliceRandom;
+use rand::Rng;
 use songbird::driver::Bitrate;
 use songbird::input::{File, Input, YoutubeDl};
 use songbird::tracks::{Track, TrackHandle, TrackState};
@@ -52,7 +53,7 @@ pub async fn the_lüüp(
     mut transcription: TranscriptionThread,
     mut control: ControlData,
     this_bot_id: UserId,
-    planet_ctx: serenity::all::Context,
+    planet_ctx: common::serenity::all::Context,
     original_channel: ChannelId,
     command_handler: Arc<RwLock<HashMap<ChannelId, SenderAndGuildId>>>,
 ) {
@@ -2118,7 +2119,7 @@ struct ManuallySet {
     read_titles: bool,
 }
 async fn generate_tts(
-    ctx: serenity::all::Context,
+    ctx: common::serenity::all::Context,
     msg: Arc<Message>,
     voice: Result<TTSVoice, TTSVoice>,
 ) -> Vec<Video> {

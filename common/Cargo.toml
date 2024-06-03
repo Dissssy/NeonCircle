@@ -1,0 +1,27 @@
+[package]
+name = "common"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+serenity = { version = "0.12.2", default-features = false, features = [
+    "client",
+    "gateway",
+    "rustls_backend",
+    "model",
+    "voice",
+    "cache",
+    "collector",
+] }
+anyhow = "1.0.86"
+log = "0.4.21"
+serde = { version = "1.0.203", features = ["rc"] }
+serde_json = { version = "1.0.117", features = ["preserve_order"] }
+dirs = "5.0.1"
+
+[features]
+default = ["transcribe", "youtube-search", "tts", "spotify"]
+transcribe = []                                              #["songbird/receive"]
+youtube-search = []
+tts = []
+spotify = []

@@ -1,3 +1,5 @@
 [workspace]
-
-members = ["neon_circles"]
+members = [
+    "neon_circles",
+    "common",
+]

@@ -1,6 +1,6 @@
 use crate::commands::music::mainloop::friendly_duration;
 use anyhow::Result;
-use serenity::all::*;
+use common::serenity::all::*;
 pub struct Command;
 #[async_trait]
 impl crate::traits::SubCommandTrait for Command {

@@ -3,7 +3,8 @@ use crate::{
     video::Video,
 };
 use anyhow::Result;
-use serenity::all::*;
+use common::log;
+use common::serenity::all::*;
 use std::{pin::Pin, sync::Arc};
 fn filter_input(s: &str) -> String {
     s.to_lowercase()

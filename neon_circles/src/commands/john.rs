@@ -1,10 +1,11 @@
 use crate::traits::CommandTrait;
 use anyhow::Result;
+use common::log;
+use common::serenity::all::*;
 use image::{
     codecs::gif::{GifDecoder, GifEncoder, Repeat::Infinite},
     AnimationDecoder, DynamicImage, Frame, GenericImage, GenericImageView, ImageFormat, Pixel,
 };
-use serenity::all::*;
 use std::io::{BufWriter, Cursor};
 #[derive(Debug, Clone)]
 pub struct Command;

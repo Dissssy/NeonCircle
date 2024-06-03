@@ -1,5 +1,5 @@
 use super::OrAuto;
-use serenity::all::GuildId;
+use common::serenity::all::GuildId;
 #[derive(Clone, PartialEq, Debug)]
 pub struct SettingsData {
     // pub something_playing: bool,

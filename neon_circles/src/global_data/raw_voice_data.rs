@@ -1,6 +1,7 @@
 use crate::commands::music::{AudioCommandHandler, AudioPromiseCommand, GenericInteraction};
 use anyhow::Result;
-use serenity::all::*;
+use common::log;
+use common::serenity::all::*;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,

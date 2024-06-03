@@ -19,13 +19,18 @@ use std::sync::Arc;
 mod context_menu;
 #[cfg(feature = "transcribe")]
 mod voice_events;
-mod config;
 use crate::commands::music::{AudioCommandHandler, AudioPromiseCommand, OrToggle};
 use commands::music::MetaCommand;
 use global_data::voice_data::VoiceAction;
 use serde::{Deserialize, Serialize};
-mod traits;
-use serenity::{
+mod traits {
+    pub use common::{CommandTrait, SubCommandTrait};
+}
+mod config {
+    pub use common::get_config;
+}
+use common::log;
+use common::serenity::{
     all::*,
     futures::{stream::FuturesUnordered, StreamExt},
 };
@@ -1018,7 +1023,7 @@ async fn main() {
     global_data::init().await;
     #[cfg(feature = "debug")]
     console_subscriber::init();
-    let cfg = config::get_config();
+    // let cfg = config::get_config();
     // let mut tmp = cfg.data_path.clone();
     // tmp.push("tmp");
     // if let Err(e) = std::fs::remove_dir_all(&tmp) {

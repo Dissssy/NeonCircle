@@ -1,6 +1,7 @@
 use super::{AudioPromiseCommand, OrAuto};
 use anyhow::Result;
-use serenity::all::*;
+use common::log;
+use common::serenity::all::*;
 #[derive(Debug, Clone)]
 pub struct Command;
 #[async_trait]

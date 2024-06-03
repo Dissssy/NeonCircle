@@ -5,11 +5,12 @@ use crate::{
     radio::{RadioData, RadioDataKind},
 };
 use anyhow::Result;
-use serde::Deserialize;
-use serenity::{
+use common::log;
+use common::serenity::{
     all::*,
     futures::{stream::FuturesUnordered, StreamExt},
 };
+use serde::Deserialize;
 use std::sync::Arc;
 pub struct Command {
     subcommands: Vec<Box<dyn SubCommandTrait>>,

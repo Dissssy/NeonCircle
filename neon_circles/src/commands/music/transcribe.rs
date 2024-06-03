@@ -4,7 +4,7 @@ use super::AudioPromiseCommand;
 #[cfg(feature = "transcribe")]
 use crate::voice_events::PostSomething;
 use anyhow::Result;
-use serenity::all::*;
+use common::serenity::all::*;
 #[cfg(feature = "transcribe")]
 use songbird::Call;
 use std::sync::Arc;

@@ -1,4 +1,5 @@
-use serenity::all::UserId;
+use common::log;
+use common::serenity::all::UserId;
 use std::{
     collections::{hash_map::Entry, HashMap},
     mem::MaybeUninit,

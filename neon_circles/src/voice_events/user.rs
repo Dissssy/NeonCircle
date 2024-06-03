@@ -3,7 +3,8 @@ use super::{
     ThreadResponseAction, MIN_SAMPLES_FOR_TRANSCRIPTION,
 };
 use crate::{utils::OptionalTimeout, voice_events::transcribe};
-use serenity::{
+use common::log;
+use common::serenity::{
     all::UserId,
     futures::{stream::FuturesUnordered, StreamExt as _},
 };

@@ -1,6 +1,7 @@
 use crate::commands::music::{AudioCommandHandler, AudioPromiseCommand, MetaCommand};
 use anyhow::Result;
-use serenity::{
+use common::log;
+use common::serenity::{
     all::*,
     futures::{stream::FuturesUnordered, StreamExt as _},
 };

@@ -1,4 +1,5 @@
 use crate::radio::{AzuraCastThread, OriginalOrCustom};
+use common::log;
 use std::{mem::MaybeUninit, sync::Arc};
 use tokio::sync::broadcast;
 static mut AZURACAST: MaybeUninit<AzuraCastThread> = MaybeUninit::uninit();

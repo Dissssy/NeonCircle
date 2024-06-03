@@ -4,7 +4,8 @@ use crate::{
     global_data::guild_config::GuildConfig,
 };
 use anyhow::Result;
-use serenity::{
+use common::log;
+use common::serenity::{
     all::*,
     futures::{stream::FuturesUnordered, StreamExt},
 };

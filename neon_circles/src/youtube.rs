@@ -4,6 +4,7 @@ use crate::video::RawVideo;
 #[cfg(feature = "tts")]
 use crate::{commands::music::VideoType, video::Video};
 use anyhow::Result;
+use common::log;
 use serde::{Deserialize, Serialize};
 use songbird::tracks::Track;
 use std::sync::Arc;

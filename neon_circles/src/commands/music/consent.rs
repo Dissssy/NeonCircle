@@ -1,6 +1,7 @@
 use crate::global_data::consent_data::{get_consent, set_consent};
 use anyhow::Result;
-use serenity::all::*;
+use common::log;
+use common::serenity::all::*;
 #[derive(Debug, Clone)]
 pub struct Command;
 #[async_trait]
