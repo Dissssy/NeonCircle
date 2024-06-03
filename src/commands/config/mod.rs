@@ -1,24 +1,28 @@
 use anyhow::Result;
 use serenity::all::*;
-mod default_radio_volume;
-mod default_song_volume;
+mod default_volume;
 mod empty_channel_timeout;
+mod radio_source;
+mod read_titles;
+mod transcribe;
 pub struct Command {
-    subcommands: Vec<Box<dyn SubCommandTrait>>,
+    subcommands: Vec<Box<dyn crate::traits::SubCommandTrait>>,
 }
 impl Command {
     pub fn new() -> Self {
         Self {
             subcommands: vec![
                 Box::new(empty_channel_timeout::Command),
-                Box::new(default_song_volume::Command),
-                Box::new(default_radio_volume::Command),
+                Box::new(default_volume::Command::new()),
+                Box::new(read_titles::Command),
+                Box::new(transcribe::Command::new()),
+                Box::new(radio_source::Command::new()),
             ],
         }
     }
 }
 #[async_trait]
-impl crate::CommandTrait for Command {
+impl crate::traits::CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
@@ -35,9 +39,44 @@ impl crate::CommandTrait for Command {
         if let Err(e) = interaction.defer_ephemeral(&ctx.http).await {
             log::error!("Failed to send response: {}", e);
         }
-        if let Some(ref member) = interaction.member {
-            if !member.permissions(&ctx.cache)?.manage_guild() {
+        let member = match interaction.member {
+            Some(ref member) => member,
+            None => {
                 if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .ephemeral(true)
+                            .content("This command can only be run in a guild"),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
+        let (subcommand, opts) = match interaction.data.options().into_iter().find_map(|o| match o
+            .value
+        {
+            ResolvedValue::SubCommand(opts) => Some((o.name, opts)),
+            ResolvedValue::SubCommandGroup(opts) => Some((o.name, opts)),
+            _ => None,
+        }) {
+            None => {
+                todo!("Print the entire config as a fancy embed probably");
+            }
+            Some(s) => s,
+        };
+        for sc in &self.subcommands {
+            if sc.command_name() == subcommand {
+                if member
+                    .permissions(&ctx.cache)
+                    .map(|p| p.contains(sc.permissions()))
+                    .unwrap_or(false)
+                {
+                    return sc.run(ctx, interaction, &opts).await;
+                } else if let Err(e) = interaction
                     .create_followup(
                         &ctx.http,
                         CreateInteractionResponseFollowup::new()
@@ -48,36 +87,6 @@ impl crate::CommandTrait for Command {
                 {
                     log::error!("Failed to send response: {}", e);
                 }
-                return Ok(());
-            }
-        } else {
-            if let Err(e) = interaction
-                .create_followup(
-                    &ctx.http,
-                    CreateInteractionResponseFollowup::new()
-                        .ephemeral(true)
-                        .content("This command can only be run in a guild"),
-                )
-                .await
-            {
-                log::error!("Failed to send response: {}", e);
-            }
-            return Ok(());
-        }
-        let (subcommand, opts) = match interaction.data.options().into_iter().find_map(|o| match o
-            .value
-        {
-            ResolvedValue::SubCommand(opts) => Some((o.name, opts)),
-            _ => None,
-        }) {
-            None => {
-                todo!("Print the entire config as a fancy embed probably");
-            }
-            Some(s) => s,
-        };
-        for sc in &self.subcommands {
-            if sc.command_name() == subcommand {
-                return sc.run(ctx, interaction, &opts).await;
             }
         }
         if let Err(e) = interaction
@@ -96,18 +105,4 @@ impl crate::CommandTrait for Command {
     fn command_name(&self) -> &str {
         "config"
     }
-}
-#[async_trait]
-trait SubCommandTrait
-where
-    Self: Send + Sync,
-{
-    fn register_command(&self) -> CreateCommandOption;
-    async fn run(
-        &self,
-        ctx: &Context,
-        interaction: &CommandInteraction,
-        options: &[ResolvedOption],
-    ) -> Result<()>;
-    fn command_name(&self) -> &str;
 }

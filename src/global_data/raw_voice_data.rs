@@ -83,6 +83,16 @@ pub async fn mutual_channel(guild: &GuildId, member: &UserId) -> Result<VoiceAct
         None => Err(anyhow::anyhow!("Voice data uninitialized")),
     }
 }
+pub async fn bot_connected(guild: &GuildId, bot: &UserId) -> Result<bool> {
+    let data = VOICE_DATA.read().await;
+    match data.as_ref() {
+        Some(data) => Ok(data
+            .guilds
+            .get(guild)
+            .map_or(false, |guild| guild.bots_connected.contains(bot))),
+        None => Err(anyhow::anyhow!("Voice data uninitialized")),
+    }
+}
 pub async fn channel_count_besides(
     guild: &GuildId,
     channel: &ChannelId,
@@ -157,10 +167,11 @@ impl VoiceData {
             };
         }
         let mut invite_bot = None;
+        let mut join_bot = None;
         for (_, satellite, context) in self.bot_ids.iter() {
             // check if the satellite can see the channel (if not it might not be in the guild! it should be invited!)
-            if context.http.get_channel(memberstate).await.is_err() {
-                // we only want to prompt the user to invite the first bot we find (so if they have 1 and 2, it will prompt them to invite 3 next, then 4)
+            if let Err(e) = context.http.get_channel(memberstate).await {
+                log::trace!("Failed to get channel: {:?}", e); // this is normal behavior, so trace
                 if invite_bot.is_none() {
                     invite_bot = Some(context.clone());
                 }
@@ -176,12 +187,21 @@ impl VoiceData {
                     }
                 }
                 None => {
-                    return VoiceActionWithContext {
-                        planet_ctx: self.planet_context.clone(),
-                        action: VoiceAction::SatelliteShouldJoin(memberstate, context.clone()),
-                    };
+                    // return VoiceActionWithContext {
+                    //     planet_ctx: self.planet_context.clone(),
+                    //     action: VoiceAction::SatelliteShouldJoin(memberstate, context.clone()),
+                    // };
+                    if join_bot.is_none() {
+                        join_bot = Some(context.clone());
+                    }
                 }
             }
+        }
+        if let Some(joinbot) = join_bot {
+            return VoiceActionWithContext {
+                planet_ctx: self.planet_context.clone(),
+                action: VoiceAction::SatelliteShouldJoin(memberstate, joinbot),
+            };
         }
         match invite_bot {
             Some(context) => VoiceActionWithContext {
@@ -356,8 +376,9 @@ impl<'a> VoiceActionWithContext {
                 };
                 let mut audio_command_handler = audio_command_handler.write().await;
                 if let Some(tx) = audio_command_handler.get_mut(&channel) {
-                    let (rtx, rrx) = oneshot::channel::<String>();
-                    if tx.send((rtx, command)).is_err() {
+                    let (rtx, rrx) = oneshot::channel::<Arc<str>>();
+                    if let Err(e) = tx.send((rtx, command)) {
+                        log::error!("Failed to send volume change: {:?}", e);
                         if let Err(e) = interaction
                             .edit_response(
                                 &self.planet_ctx.http,
@@ -375,7 +396,7 @@ impl<'a> VoiceActionWithContext {
                         if let Err(e) = interaction
                             .edit_response(
                                 &self.planet_ctx.http,
-                                EditInteractionResponse::new().content(msg),
+                                EditInteractionResponse::new().content(msg.as_ref()),
                             )
                             .await
                         {

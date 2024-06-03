@@ -1,7 +1,8 @@
 use super::{
-    human_readable_bytes, transcribe, InnerThreadCommand, OptionalTimeout, PacketData,
-    PacketDuration, ThreadResponse, ThreadResponseAction, MIN_SAMPLES_FOR_TRANSCRIPTION,
+    human_readable_bytes, InnerThreadCommand, PacketData, PacketDuration, ThreadResponse,
+    ThreadResponseAction, MIN_SAMPLES_FOR_TRANSCRIPTION,
 };
+use crate::{utils::OptionalTimeout, voice_events::transcribe};
 use serenity::{
     all::UserId,
     futures::{stream::FuturesUnordered, StreamExt as _},
@@ -24,17 +25,13 @@ impl TranscriptionThread {
         }
     }
     pub fn send(&self, packet: PacketData) {
-        if self
-            .command
-            .send(InnerThreadCommand::Process(packet))
-            .is_err()
-        {
-            log::error!("Failed to send packet to thread");
+        if let Err(e) = self.command.send(InnerThreadCommand::Process(packet)) {
+            log::error!("Failed to send packet to thread: {:?}", e);
         }
     }
     pub async fn stop(self) {
-        if self.command.send(InnerThreadCommand::Stop).is_err() {
-            log::error!("Failed to send stop command to thread");
+        if let Err(e) = self.command.send(InnerThreadCommand::Stop) {
+            log::error!("Failed to send stop command to thread: {:?}", e);
         }
         if let Err(e) = self.handle.await {
             log::error!("Failed to join thread: {:?}", e);
@@ -64,7 +61,6 @@ async fn user_thread(
                 } else {
                     log::trace!("{} did not talk long enough", user_id);
                 }
-                timeout.end_now();
                 last_received = None;
             }
             Some(command) = rx.recv() => {
@@ -100,12 +96,14 @@ async fn user_thread(
             Some(audio) = pending.next() => {
                 match audio {
                     Ok(Ok(resp)) => {
-                        if responses.send(ThreadResponse {
-                            audio: None,
-                            action: ThreadResponseAction::SendMessage { content: resp.to_string() },
+                        let content = resp.to_string();
+                        if let Err(e) = responses.send(ThreadResponse {
+                            // audio: None,
+                            audio: crate::sam::get_speech(&content).inspect_err(|e| log::error!("Failed to get speech: {}", e)).ok(),
+                            action: ThreadResponseAction::SendMessage { content },
                             user_id,
-                        }).is_err() {
-                            log::error!("Failed to send response to main thread");
+                        }) {
+                            log::error!("Failed to send response to main thread: {}", e);
                         }
                     }
                     Ok(Err(e)) => {

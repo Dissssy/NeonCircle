@@ -5,7 +5,7 @@ use serenity::all::*;
 #[derive(Debug, Clone)]
 pub struct Command;
 #[async_trait]
-impl crate::CommandTrait for Command {
+impl crate::traits::CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())

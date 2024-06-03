@@ -1,4 +1,4 @@
-use crate::CommandTrait;
+use crate::traits::CommandTrait;
 use anyhow::Result;
 use image::{
     codecs::gif::{GifDecoder, GifEncoder, Repeat::Infinite},

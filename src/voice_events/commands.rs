@@ -428,7 +428,7 @@ fn human_readable_size(size: usize) -> String {
 }
 lazy_static::lazy_static!(
     pub static ref ALERT_PHRASES: Alerts = {
-        let file = crate::Config::get().alert_phrases_path;
+        let file = crate::config::get_config().alert_phrases_path;
         let text = match std::fs::read_to_string(file) {
             Ok(text) => text,
             Err(e) => {

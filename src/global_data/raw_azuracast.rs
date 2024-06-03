@@ -1,5 +1,4 @@
-use crate::radio::{AzuraCastThread, Root};
-use anyhow::Result;
+use crate::radio::{AzuraCastThread, OriginalOrCustom};
 use std::{mem::MaybeUninit, sync::Arc};
 use tokio::sync::broadcast;
 static mut AZURACAST: MaybeUninit<AzuraCastThread> = MaybeUninit::uninit();
@@ -19,12 +18,18 @@ pub async fn init() {
         INITIALIZED = true;
     }
 }
-pub async fn resubscribe() -> Result<(broadcast::Receiver<Arc<Root>>, Arc<Root>)> {
+pub async fn resubscribe() -> broadcast::Receiver<Arc<OriginalOrCustom>> {
     while unsafe { !INITIALIZED } {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
     unsafe { AZURACAST.assume_init_mut() }.resubscribe().await
 }
+// pub async fn signal_resend() {
+//     if unsafe { !INITIALIZED } {
+//         return;
+//     }
+//     unsafe { AZURACAST.assume_init_mut() }.signal_resend().await
+// }
 pub async fn save() {
     if unsafe { !INITIALIZED } {
         return;

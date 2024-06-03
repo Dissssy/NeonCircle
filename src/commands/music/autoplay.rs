@@ -4,7 +4,7 @@ use serenity::all::*;
 #[derive(Debug, Clone)]
 pub struct Command;
 #[async_trait]
-impl crate::CommandTrait for Command {
+impl crate::traits::CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(CreateCommand::new(self.command_name()).description("Autoplay with youtube recommendations, only works if the last video was a youtube video").set_options(vec![CreateCommandOption::new(CommandOptionType::Boolean, "value", "Specific value, otherwise toggle")]))
     }

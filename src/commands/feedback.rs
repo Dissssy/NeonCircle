@@ -3,7 +3,7 @@ use serenity::all::*;
 #[derive(Debug, Clone)]
 pub struct Feedback;
 #[async_trait]
-impl crate::CommandTrait for Feedback {
+impl crate::traits::CommandTrait for Feedback {
     fn register_command(&self) -> Option<CreateCommand> {
         // no options because this is going to open a modal for the user to type the feedback into, with a dropdown for the type of feedback and a dropdown at the end for whether or not to make the feedback anonymous
         Some(CreateCommand::new(self.command_name()).description("Send feedback to the developers"))

@@ -7,6 +7,7 @@ use crate::{commands::music::VideoType, youtube::VideoInfo};
 use anyhow::Result;
 use serde::Deserialize;
 use serenity::async_trait;
+use songbird::{input::File, tracks::Track};
 use std::{path::PathBuf, sync::Arc};
 use ytd_rs::Arg;
 #[derive(Debug, Clone)]
@@ -24,6 +25,7 @@ struct InnerVideo {
 }
 impl Drop for InnerVideo {
     fn drop(&mut self) {
+        log::trace!("Dropping video: {}", self.title);
         if let Err(e) = std::fs::remove_file(&self.path) {
             log::error!("Failed to delete video: {}", e);
         }
@@ -37,7 +39,7 @@ pub struct RawVideo {
     pub duration: Option<f64>,
 }
 async fn get_videos(url: &str, allow_search: bool) -> Result<Vec<RawVideo>> {
-    let mut bot_path = crate::Config::get().data_path.clone();
+    let mut bot_path = crate::config::get_config().data_path.clone();
     bot_path.push("cookies.txt");
     let url = if !(url.starts_with("http://") || url.starts_with("https://")) {
         if !allow_search {
@@ -116,8 +118,8 @@ impl Video {
     pub fn playlist_index(&self) -> usize {
         self.inner.playlist_index
     }
-    pub fn to_songbird(&self) -> songbird::input::Input {
-        songbird::input::File::new(self.path()).into()
+    pub fn to_songbird(&self) -> Track {
+        Track::new(File::new(self.path()).into())
     }
     pub async fn get_video(
         url: &str,
@@ -159,7 +161,7 @@ impl Video {
                     if spoiler { "SPOILER_" } else { "" },
                     nanoid::nanoid!(10)
                 );
-                let mut path = crate::Config::get().data_path.clone();
+                let mut path = crate::config::get_config().data_path.clone();
                 path.push("tmp");
                 std::fs::create_dir_all(&path)?;
                 let mut args = vec![
@@ -171,7 +173,7 @@ impl Video {
                     ),
                     Arg::new("--embed-metadata"),
                 ];
-                let mut bot_path = crate::Config::get().data_path.clone();
+                let mut bot_path = crate::config::get_config().data_path.clone();
                 bot_path.push("cookies.txt");
                 if bot_path.exists() {
                     args.push(Arg::new_with_arg(
@@ -341,7 +343,7 @@ pub async fn get_spotify_shiz(url: String) -> Result<Vec<VideoType>> {
     }
 }
 async fn run_preprocessor(filepath: &PathBuf) -> Result<()> {
-    let mut path = crate::Config::get().data_path.clone();
+    let mut path = crate::config::get_config().data_path.clone();
     path.push("preprocessor.sh");
     if path.exists() {
         let mut cmd = tokio::process::Command::new(path);

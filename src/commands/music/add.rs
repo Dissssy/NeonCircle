@@ -1,7 +1,8 @@
+#[cfg(feature = "transcribe")]
+use super::transcribe::TranscriptionThread;
 use super::{
     mainloop::{ControlData, Log},
     settingsdata::SettingsData,
-    transcribe::TranscriptionThread,
     AudioCommandHandler, AudioHandler, AudioPromiseCommand,
 };
 use crate::{
@@ -15,7 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 #[derive(Debug, Clone)]
 pub struct Command;
 #[async_trait]
-impl crate::CommandTrait for Command {
+impl crate::traits::CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
@@ -188,9 +189,10 @@ impl crate::CommandTrait for Command {
                         match manager.join(guild_id, channel).await {
                             Ok(call) => {
                                 let (tx, rx) = mpsc::unbounded_channel::<(
-                                    oneshot::Sender<String>,
+                                    oneshot::Sender<Arc<str>>,
                                     AudioPromiseCommand,
                                 )>();
+                                #[cfg(feature = "transcribe")]
                                 let transcription = TranscriptionThread::new(
                                     Arc::clone(&call),
                                     Arc::clone(&ctx.http),
@@ -229,7 +231,7 @@ impl crate::CommandTrait for Command {
                                     channel,
                                     msg,
                                 );
-                                let cfg = crate::Config::get();
+                                let cfg = crate::config::get_config();
                                 let mut nothing_path = cfg.data_path.clone();
                                 nothing_path.push("override.mp3");
                                 let nothing_path = if nothing_path.exists() {
@@ -241,57 +243,35 @@ impl crate::CommandTrait for Command {
                                     Some(guild) => guild,
                                     None => return Ok(()),
                                 };
-                                let em = match super::get_transcribe_channel_handler(ctx, &guild_id)
-                                    .await
-                                {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        log::error!(
-                                            "Failed to get transcribe channel handler: {:?}",
-                                            e
-                                        );
-                                        if let Err(e) = interaction
-                                            .edit_response(
-                                                &ctx.http,
-                                                EditInteractionResponse::new()
-                                                    .content("Failed to get handler"),
-                                            )
-                                            .await
-                                        {
-                                            log::error!(
-                                    "Failed to edit original interaction response: {:?}",
-                                    e
-                                );
-                                        }
-                                        return Ok(());
-                                    }
-                                };
-                                if let Err(e) = em.write().await.register(channel).await {
-                                    log::error!("Error registering channel: {:?}", e);
-                                }
+                                // let em = match super::get_transcribe_channel_handler(ctx, &guild_id)
+                                //     .await
+                                // {
+                                //     Ok(v) => v,
+                                //     Err(e) => {
+                                //         log::error!(
+                                //             "Failed to get transcribe channel handler: {:?}",
+                                //             e
+                                //         );
+                                //         if let Err(e) = interaction
+                                //             .edit_response(
+                                //                 &ctx.http,
+                                //                 EditInteractionResponse::new()
+                                //                     .content("Failed to get handler"),
+                                //             )
+                                //             .await
+                                //         {
+                                //             log::error!(
+                                //     "Failed to edit original interaction response: {:?}",
+                                //     e
+                                // );
+                                //         }
+                                //         return Ok(());
+                                //     }
+                                // };
+                                // if let Err(e) = em.write().await.register(channel).await {
+                                //     log::error!("Error registering channel: {:?}", e);
+                                // }
                                 let this_bot_id = ctx.cache.current_user().id;
-                                let handle = tokio::task::spawn(async move {
-                                    let control = ControlData {
-                                        call,
-                                        rx,
-                                        msg: messageref,
-                                        nothing_uri: nothing_path,
-                                        settings: SettingsData::default(),
-                                        log: Log::new(format!("{}-{}", guild_id, channel)),
-                                        transcribe: em,
-                                    };
-                                    super::mainloop::the_lüüp(
-                                        // cfg.looptime,
-                                        transcription,
-                                        control,
-                                        this_bot_id,
-                                    )
-                                    .await;
-                                });
-                                audio_handler
-                                    .write()
-                                    .await
-                                    .insert(guild_id.to_string(), handle);
                                 let audio_command_handler = {
                                     let read_lock = ctx.data.read().await;
                                     match read_lock.get::<super::AudioCommandHandler>() {
@@ -316,8 +296,44 @@ impl crate::CommandTrait for Command {
                                         }
                                     }
                                 };
+                                let handle = {
+                                    let ctx = ctx.clone();
+                                    let ach = Arc::clone(&audio_command_handler);
+                                    tokio::task::spawn(async move {
+                                        let control = ControlData {
+                                            call,
+                                            rx,
+                                            msg: messageref,
+                                            nothing_uri: nothing_path,
+                                            settings: SettingsData::new(guild_id),
+                                            log: Log::new(format!("{}-{}", guild_id, channel)),
+                                            // transcribe: em,
+                                        };
+                                        #[cfg(feature = "transcribe")]
+                                        super::mainloop::the_lüüp(
+                                            // cfg.looptime,
+                                            transcription,
+                                            control,
+                                            this_bot_id,
+                                            ctx,
+                                            channel,
+                                            ach,
+                                        )
+                                        .await;
+                                        #[cfg(not(feature = "transcribe"))]
+                                        super::mainloop::the_lüüp(
+                                            // cfg.looptime,
+                                            control,
+                                            this_bot_id,
+                                        );
+                                    })
+                                };
+                                audio_handler.write().await.insert(channel, handle);
                                 userin = Some(channel);
-                                audio_command_handler.write().await.insert(channel, tx);
+                                audio_command_handler
+                                    .write()
+                                    .await
+                                    .insert(channel, super::SenderAndGuildId::new(tx, guild_id));
                             }
                             Err(e) => {
                                 log::error!("Failed to join channel: {:?}", e);
@@ -413,11 +429,26 @@ impl crate::CommandTrait for Command {
                         #[cfg(feature = "tts")]
                         if let Ok(key) = key.as_ref() {
                             log::trace!("Getting tts for {}", title);
+                            let key = key.clone();
                             truevideos.push(MetaVideo {
                                 video: v,
-                                ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(
-                                    crate::youtube::get_tts(Arc::clone(&title), key.clone(), None),
-                                ))),
+                                ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(async move {
+                                    match crate::youtube::get_tts(
+                                        Arc::clone(&title),
+                                        key.clone(),
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(v) => Ok(v),
+                                        Err(original_error) => {
+                                            match crate::sam::get_speech(&title) {
+                                                Ok(v) => Ok(v),
+                                                Err(_) => Err(original_error),
+                                            }
+                                        }
+                                    }
+                                }))),
                                 // title,
                                 author: Author::from_user(
                                     ctx,
@@ -485,11 +516,9 @@ impl crate::CommandTrait for Command {
                     let mut audio_command_handler = audio_command_handler.write().await;
                     let tx = audio_command_handler.get_mut(&userin);
                     if let Some(tx) = tx {
-                        let (rtx, rrx) = oneshot::channel::<String>();
-                        if tx
-                            .send((rtx, AudioPromiseCommand::Play(truevideos)))
-                            .is_err()
-                        {
+                        let (rtx, rrx) = oneshot::channel::<Arc<str>>();
+                        if let Err(e) = tx.send((rtx, AudioPromiseCommand::Play(truevideos))) {
+                            log::error!("Failed to send message to audio handler: {:?}", e);
                             if let Err(e) = interaction
                                 .edit_response(
                                     &ctx.http,
@@ -509,7 +538,7 @@ impl crate::CommandTrait for Command {
                             if let Err(e) = interaction
                                 .edit_response(
                                     &ctx.http,
-                                    EditInteractionResponse::new().content(msg),
+                                    EditInteractionResponse::new().content(msg.as_ref()),
                                 )
                                 .await
                             {
@@ -588,7 +617,7 @@ impl crate::CommandTrait for Command {
             } else {
                 let query = crate::youtube::youtube_search(
                     initial_query,
-                    crate::Config::get().autocomplete_limit,
+                    crate::config::get_config().autocomplete_limit,
                 )
                 .await;
                 if let Ok(query) = query {

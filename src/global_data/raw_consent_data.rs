@@ -1,4 +1,3 @@
-use crate::Config;
 use serenity::all::UserId;
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -11,17 +10,17 @@ lazy_static::lazy_static! {
     static ref RWLOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
 }
 pub fn init() {
-    let file = match std::fs::File::open(Config::get().consent_path) {
+    let file = match std::fs::File::open(crate::config::get_config().consent_path) {
         Ok(f) => f,
         Err(_) => {
-            let f = match std::fs::File::create(Config::get().consent_path) {
+            let f = match std::fs::File::create(crate::config::get_config().consent_path) {
                 Ok(f) => f,
                 Err(e) => panic!("Failed to create consent file: {}", e),
             };
             if let Err(e) = serde_json::to_writer(f, &HashMap::<UserId, bool>::new()) {
                 panic!("Failed to write default consent file: {}", e);
             }
-            match std::fs::File::open(Config::get().consent_path) {
+            match std::fs::File::open(crate::config::get_config().consent_path) {
                 Ok(f) => f,
                 Err(e) => panic!("Failed to open consent file: {}", e),
             }
@@ -72,7 +71,7 @@ pub fn save() {
         log::trace!("Database uninitialized when calling write_map");
         return;
     }
-    let file = match std::fs::File::create(Config::get().consent_path) {
+    let file = match std::fs::File::create(crate::config::get_config().consent_path) {
         Ok(f) => f,
         Err(e) => {
             log::error!("Failed to create consent file: {}", e);

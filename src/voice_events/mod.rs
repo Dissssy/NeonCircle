@@ -1,7 +1,9 @@
 mod commands;
 mod structs;
 mod user;
-use crate::{commands::music::transcribe::TranscriptionMessage, video::Video};
+use crate::{
+    commands::music::transcribe::TranscriptionMessage, utils::DeleteAfterFinish, video::Video,
+};
 use anyhow::Result;
 use serde::Deserialize as _;
 use serenity::all::*;
@@ -11,6 +13,7 @@ use songbird::{
         Event,
     },
     model::payload::Speaking,
+    tracks::Track,
     Call, CoreEvent, EventContext,
 };
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
@@ -28,7 +31,7 @@ pub async fn transcription_thread(
     call: Arc<serenity::prelude::Mutex<Call>>,
     http: Arc<Http>,
     otx: mpsc::UnboundedSender<(
-        oneshot::Sender<String>,
+        oneshot::Sender<Arc<str>>,
         crate::commands::music::AudioPromiseCommand,
     )>,
     mut commands: mpsc::UnboundedReceiver<TranscriptionMessage>,
@@ -70,7 +73,14 @@ pub async fn transcription_thread(
             Some(response) = rx.recv() => {
                 let ThreadResponse { audio, action, user_id } = response;
                 if let Some(audio) = audio {
-                    // todo: play audio if it exists
+                    log::trace!("Playing audio for {}", user_id);
+                    let mut call = call.lock().await;
+                    if let Err(e) = call.play(audio.to_songbird()).add_event(
+                        songbird::events::Event::Track(songbird::events::TrackEvent::End),
+                        DeleteAfterFinish::new_disk(audio),
+                    ) {
+                        log::error!("Failed to register deleter: {:?}", e);
+                    }
                 }
                 match action {
                     ThreadResponseAction::UploadFile { name, data } => {
@@ -106,9 +116,6 @@ enum ThreadResponseAction {
     None,
     UploadFile { name: String, data: Vec<u8> },
     SendMessage { content: String },
-}
-struct EnabledFor {
-    map: HashMap<UserId, bool>,
 }
 struct PacketDuration {
     duration: Duration,
@@ -172,24 +179,20 @@ impl songbird::EventHandler for VoiceEventSender {
                         }),
                         decoded_voice,
                     ) {
-                        if self
-                            .sender
-                            .send(PacketData {
-                                user_id,
-                                // audio: audio
-                                //     .chunks(2)
-                                //     .flat_map(|c| match (c.first(), c.get(1)) {
-                                //         (Some(&l), Some(&r)) => ((l >> 1) + (r >> 1)).to_le_bytes(),
-                                //         (Some(&l), None) => l.to_le_bytes(),
-                                //         _ => unreachable!(),
-                                //     })
-                                //     .collect::<Vec<u8>>(),
-                                audio: audio.clone(),
-                                received: Instant::now(),
-                            })
-                            .is_err()
-                        {
-                            log::error!("Failed to send packet data");
+                        if let Err(e) = self.sender.send(PacketData {
+                            user_id,
+                            // audio: audio
+                            //     .chunks(2)
+                            //     .flat_map(|c| match (c.first(), c.get(1)) {
+                            //         (Some(&l), Some(&r)) => ((l >> 1) + (r >> 1)).to_le_bytes(),
+                            //         (Some(&l), None) => l.to_le_bytes(),
+                            //         _ => unreachable!(),
+                            //     })
+                            //     .collect::<Vec<u8>>(),
+                            audio: audio.clone(),
+                            received: Instant::now(),
+                        }) {
+                            log::error!("Failed to send packet data: {:?}", e);
                         }
                     }
                 }
@@ -205,50 +208,6 @@ pub struct PacketData {
     pub user_id: UserId,
     pub audio: Vec<i16>,
     pub received: Instant,
-}
-// this struct will implement the Future trait, and only ever return if there is an active timeout and it has expired, turning the timeout into a None
-pub struct OptionalTimeout {
-    // from: Option<Instant>,
-    opt: Option<Pin<Box<Sleep>>>,
-    duration: Duration,
-}
-impl OptionalTimeout {
-    pub fn new(duration: Duration) -> Self {
-        // Self {
-        //     from: None,
-        //     duration,
-        // }
-        Self {
-            opt: None,
-            duration,
-        }
-    }
-    pub fn set_duration(&mut self, duration: Duration) {
-        self.duration = duration;
-    }
-    pub fn begin_now(&mut self) {
-        let duration = self.duration;
-        self.opt = Some(Box::pin(tokio::time::sleep(duration)));
-    }
-    pub fn end_now(&mut self) {
-        self.opt = None;
-    }
-}
-impl Future for OptionalTimeout {
-    type Output = ();
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
-        let poll = match self.as_mut().opt {
-            None => std::task::Poll::Pending,
-            Some(ref mut fut) => fut.poll_unpin(cx),
-        };
-        if poll.is_ready() {
-            self.as_mut().end_now();
-        }
-        poll
-    }
 }
 // async fn pcm_s16le_to_mp3(data: &[u8]) -> Result<Vec<u8>> {
 //     // log::info!("Processing {} of audio", human_readable_bytes(data.len()));
@@ -314,7 +273,7 @@ pub fn human_readable_bytes(size: usize) -> String {
     format!("{:.2} {}", size, units.get(i).unwrap_or(&"??"))
 }
 async fn transcribe(audio: &[i16]) -> Result<TranscriptionResult> {
-    let cfg = crate::Config::get();
+    let cfg = crate::config::get_config();
     let response = crate::WEB_CLIENT
         .post(format!(
             "{}/transcribe/raw?format=s16le&sample_rate=48000&channels=2",

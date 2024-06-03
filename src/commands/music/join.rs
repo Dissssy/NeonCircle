@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 #[derive(Debug, Clone)]
 pub struct Command;
 #[async_trait]
-impl crate::CommandTrait for Command {
+impl crate::traits::CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(CreateCommand::new(self.command_name()).description("Join the voice channel"))
     }
@@ -163,7 +163,7 @@ impl crate::CommandTrait for Command {
                         match manager.join(guild_id, channel).await {
                             Ok(call) => {
                                 let (tx, rx) = mpsc::unbounded_channel::<(
-                                    oneshot::Sender<String>,
+                                    oneshot::Sender<Arc<str>>,
                                     AudioPromiseCommand,
                                 )>();
                                 let transcription = TranscriptionThread::new(
@@ -204,7 +204,7 @@ impl crate::CommandTrait for Command {
                                     channel,
                                     msg,
                                 );
-                                let cfg = crate::Config::get();
+                                let cfg = crate::config::get_config();
                                 let mut nothing_path = cfg.data_path.clone();
                                 nothing_path.push("override.mp3");
                                 let nothing_path = if nothing_path.exists() {
@@ -216,57 +216,35 @@ impl crate::CommandTrait for Command {
                                     Some(guild) => guild,
                                     None => return Ok(()),
                                 };
-                                let em = match super::get_transcribe_channel_handler(ctx, &guild_id)
-                                    .await
-                                {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        log::error!(
-                                            "Failed to get transcribe channel handler: {:?}",
-                                            e
-                                        );
-                                        if let Err(e) = interaction
-                                            .edit_response(
-                                                &ctx.http,
-                                                EditInteractionResponse::new()
-                                                    .content("Failed to get handler"),
-                                            )
-                                            .await
-                                        {
-                                            log::error!(
-                                    "Failed to edit original interaction response: {:?}",
-                                    e
-                                );
-                                        }
-                                        return Ok(());
-                                    }
-                                };
-                                if let Err(e) = em.write().await.register(channel).await {
-                                    log::error!("Error registering channel: {:?}", e);
-                                }
+                                // let em = match super::get_transcribe_channel_handler(ctx, &guild_id)
+                                //     .await
+                                // {
+                                //     Ok(v) => v,
+                                //     Err(e) => {
+                                //         log::error!(
+                                //             "Failed to get transcribe channel handler: {:?}",
+                                //             e
+                                //         );
+                                //         if let Err(e) = interaction
+                                //             .edit_response(
+                                //                 &ctx.http,
+                                //                 EditInteractionResponse::new()
+                                //                     .content("Failed to get handler"),
+                                //             )
+                                //             .await
+                                //         {
+                                //             log::error!(
+                                //     "Failed to edit original interaction response: {:?}",
+                                //     e
+                                // );
+                                //         }
+                                //         return Ok(());
+                                //     }
+                                // };
+                                // if let Err(e) = em.write().await.register(channel).await {
+                                //     log::error!("Error registering channel: {:?}", e);
+                                // }
                                 let this_bot_id = ctx.cache.current_user().id;
-                                let handle = tokio::task::spawn(async move {
-                                    let control = ControlData {
-                                        call,
-                                        rx,
-                                        msg: messageref,
-                                        nothing_uri: nothing_path,
-                                        settings: SettingsData::default(),
-                                        log: Log::new(format!("{}-{}", guild_id, channel)),
-                                        transcribe: em,
-                                    };
-                                    super::mainloop::the_lüüp(
-                                        // cfg.looptime,
-                                        transcription,
-                                        control,
-                                        this_bot_id,
-                                    )
-                                    .await;
-                                });
-                                audio_handler
-                                    .write()
-                                    .await
-                                    .insert(guild_id.to_string(), handle);
                                 let audio_command_handler = {
                                     let read_lock = ctx.data.read().await;
                                     match read_lock.get::<super::AudioCommandHandler>() {
@@ -290,7 +268,36 @@ impl crate::CommandTrait for Command {
                                         }
                                     }
                                 };
-                                audio_command_handler.write().await.insert(channel, tx);
+                                let handle = {
+                                    let ctx = ctx.clone();
+                                    let ach = Arc::clone(&audio_command_handler);
+                                    tokio::task::spawn(async move {
+                                        let control = ControlData {
+                                            call,
+                                            rx,
+                                            msg: messageref,
+                                            nothing_uri: nothing_path,
+                                            settings: SettingsData::new(guild_id),
+                                            log: Log::new(format!("{}-{}", guild_id, channel)),
+                                            // transcribe: em,
+                                        };
+                                        super::mainloop::the_lüüp(
+                                            // cfg.looptime,
+                                            transcription,
+                                            control,
+                                            this_bot_id,
+                                            ctx,
+                                            channel,
+                                            ach,
+                                        )
+                                        .await;
+                                    })
+                                };
+                                audio_handler.write().await.insert(channel, handle);
+                                audio_command_handler
+                                    .write()
+                                    .await
+                                    .insert(channel, super::SenderAndGuildId::new(tx, guild_id));
                                 if let Err(e) = interaction.delete_response(&ctx.http).await {
                                     log::error!("Error deleting interaction: {:?}", e);
                                 }

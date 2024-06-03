@@ -8,20 +8,23 @@
 )]
 mod commands;
 mod global_data;
+mod utils;
 mod radio;
 mod sam;
 mod video;
 mod youtube;
 use std::sync::atomic::AtomicBool;
 use std::{collections::HashMap, time::Duration};
-use std::path::PathBuf;
 use std::sync::Arc;
 mod context_menu;
+#[cfg(feature = "transcribe")]
 mod voice_events;
+mod config;
 use crate::commands::music::{AudioCommandHandler, AudioPromiseCommand, OrToggle};
-use anyhow::Result;
+use commands::music::MetaCommand;
 use global_data::voice_data::VoiceAction;
 use serde::{Deserialize, Serialize};
+mod traits;
 use serenity::{
     all::*,
     futures::{stream::FuturesUnordered, StreamExt},
@@ -29,12 +32,12 @@ use serenity::{
 use songbird::SerenityInit;
 use tokio::sync::{mpsc, oneshot, RwLock};
 struct PlanetHandler {
-    commands: Vec<Box<dyn CommandTrait>>,
+    commands: Vec<Box<dyn traits::CommandTrait>>,
     initialized: AtomicBool,
     playing: String,
 }
 impl PlanetHandler {
-    fn new(commands: Vec<Box<dyn CommandTrait>>, activity: String) -> Self {
+    fn new(commands: Vec<Box<dyn traits::CommandTrait>>, activity: String) -> Self {
         Self {
             commands,
             initialized: AtomicBool::new(false),
@@ -44,7 +47,7 @@ impl PlanetHandler {
 }
 lazy_static::lazy_static! {
     static ref WHITELIST: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new({
-        let file = match std::fs::File::open(Config::get().whitelist_path) {
+        let file = match std::fs::File::open(config::get_config().whitelist_path) {
             Ok(f) => f,
             Err(e) => panic!("Failed to open whitelist file: {}", e)
         };
@@ -55,7 +58,7 @@ lazy_static::lazy_static! {
     }));
     static ref WEB_CLIENT: reqwest::Client = reqwest::Client::new();
     static ref BOTS: BotsConfig = {
-        let file = match std::fs::File::open(Config::get().bots_config_path) {
+        let file = match std::fs::File::open(config::get_config().bots_config_path) {
             Ok(f) => f,
             Err(e) => panic!("Failed to open bot config file: {}", e)
         };
@@ -75,42 +78,7 @@ pub struct BotConfig {
     pub token: String,
     pub playing: String,
 }
-#[async_trait]
-pub trait CommandTrait
-where
-    Self: Send + Sync,
-{
-    fn register_command(&self) -> Option<CreateCommand> {
-        None
-    }
-    fn command_name(&self) -> &str {
-        ""
-    }
-    #[allow(unused_variables)]
-    async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
-        log::error!("Run not implemented for {}", self.command_name());
-        Ok(())
-    }
-    fn modal_names(&self) -> &'static [&'static str] {
-        &[]
-    }
-    #[allow(unused_variables)]
-    async fn run_modal(&self, ctx: &Context, interaction: &ModalInteraction) -> Result<()> {
-        log::error!(
-            "Modal not implemented for {}",
-            std::any::type_name::<Self>()
-        );
-        Ok(())
-    }
-    #[allow(unused_variables)]
-    async fn autocomplete(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
-        log::error!(
-            "Autocomplete not implemented for {}",
-            std::any::type_name::<Self>()
-        );
-        Ok(())
-    }
-}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UserSafe {
     pub id: String,
@@ -137,8 +105,9 @@ impl EventHandler for PlanetHandler {
                 let commandn = autocomplete.data.name.clone();
                 let command = self.commands.iter().find(|c| c.command_name() == commandn);
                 if let Some(command) = command {
-                    let r = command.autocomplete(&ctx, autocomplete).await;
-                    if r.is_err() {}
+                    if let Err(e) = command.autocomplete(&ctx, autocomplete).await {
+                        log::error!("Failed to run autocomplete for {} ERR: {}", commandn, e);
+                    }
                 } else {
                     log::warn!("Command not found: {}", commandn);
                 }
@@ -238,7 +207,7 @@ impl EventHandler for PlanetHandler {
                                         let mut audio_command_handler = audio_command_handler.write().await;
         
                                         if let Some(tx) = audio_command_handler.get_mut(&channel) {
-                                            let (rtx, rrx) = oneshot::channel::<String>();
+                                            let (rtx, rrx) = oneshot::channel::<Arc<str>>();
                                             if let Err(e) = tx.send((
                                                 rtx,
                                                 match original_command {
@@ -442,9 +411,9 @@ impl EventHandler for PlanetHandler {
                                         let mut audio_command_handler = audio_command_handler.write().await;
         
                                         if let Some(tx) = audio_command_handler.get_mut(&channel) {
-                                            let (rtx, rrx) = oneshot::channel::<String>();
+                                            let (rtx, rrx) = oneshot::channel::<Arc<str>>();
                                             let (realrtx, mut realrrx) = mpsc::channel::<Vec<String>>(1);
-                                            if let Err(e) = tx.send((rtx, AudioPromiseCommand::RetrieveLog(realrtx))) {
+                                            if let Err(e) = tx.send((rtx, AudioPromiseCommand::MetaCommand(MetaCommand::RetrieveLog(realrtx)))) {
                                                 if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for `log` ERR {}", e)).ephemeral(true))).await {
                                                     log::error!("Failed to send response: {}", e);
                                                 }
@@ -705,7 +674,7 @@ impl EventHandler for PlanetHandler {
         if let Err(e) = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
             .json(&finalusers)
-            .bearer_auth(Config::get().string_api_token)
+            .bearer_auth(config::get_config().string_api_token)
             .send()
             .await
         {
@@ -751,9 +720,9 @@ impl EventHandler for PlanetHandler {
                 .get::<AudioCommandHandler>().map(Arc::clone) {
                 let mut audio_command_handler = audio_command_handler.write().await;
                 if let Some(tx) = audio_command_handler.get_mut(&channel_id) {
-                    let (rtx, rrx) = oneshot::channel::<String>();
-                    if tx.send((rtx, AudioPromiseCommand::UserConnect(new.user_id))).is_err() {
-                        log::error!("Failed to send UserConnect command");
+                    let (rtx, rrx) = oneshot::channel::<Arc<str>>();
+                    if let Err(e) = tx.send((rtx, AudioPromiseCommand::MetaCommand(MetaCommand::UserConnect(new.user_id)))) {
+                        log::error!("Failed to send UserConnect command: {}", e);
                     }
                     let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
                     if let Ok(Ok(msg)) = timeout {
@@ -812,22 +781,21 @@ impl EventHandler for PlanetHandler {
         //     }
         // }
     }
-    async fn message(&self, ctx: Context, new_message: Message) {
+    async fn message(&self, _ctx: Context, new_message: Message) {
         if new_message.author.bot || new_message.content.trim().is_empty() {
             return;
         }
-        let guild_id = match new_message.guild_id {
-            Some(guild) => guild,
-            None => return,
-        };
-        let em = match commands::music::get_transcribe_channel_handler(&ctx, &guild_id).await {
-            Ok(e) => e,
-            Err(e) => {
-                log::error!("Failed to get transcribe channel handler: {}", e);
-                return;
-            }
-        };
-        em.write().await.send_tts(&ctx, &new_message).await;
+        // if let Some(guild_id) = global_data::transcribe::get_transcribe(new_message.channel_id) {
+        //     let em = match commands::music::get_transcribe_channel_handler(&ctx, &guild_id).await {
+        //         Ok(e) => e,
+        //         Err(e) => {
+        //             log::error!("Failed to get transcribe channel handler: {}", e);
+        //             return;
+        //         }
+        //     };
+        //     em.write().await.send_tts(&ctx, &new_message).await;
+        // }
+        global_data::transcribe::send_message(new_message).await;
     }
     async fn resume(&self, ctx: Context, _: ResumedEvent) {
         log::info!("Resumed");
@@ -931,7 +899,7 @@ impl EventHandler for PlanetHandler {
         if let Err(e) = WEB_CLIENT
             .post("http://localhost:16835/api/set/user")
             .json(&finalusers)
-            .bearer_auth(Config::get().string_api_token)
+            .bearer_auth(config::get_config().string_api_token)
             .send()
             .await
         {
@@ -943,7 +911,7 @@ impl EventHandler for PlanetHandler {
         // let mut req = WEB_CLIENT
         //     .post("http://localhost:16834/api/add/user")
         //     .json(&UserSafe { id: id.clone() });
-        // if let Some(token) = Config::get().string_api_token {
+        // if let Some(token) = config::get_config().string_api_token {
         //     req = req.bearer_auth(token);
         // }
         // if let Err(e) = req.send().await {
@@ -952,7 +920,7 @@ impl EventHandler for PlanetHandler {
         if let Err(e) = WEB_CLIENT
             .post("http://localhost:16835/api/add/user")
             .json(&UserSafe { id })
-            .bearer_auth(Config::get().string_api_token)
+            .bearer_auth(config::get_config().string_api_token)
             .send()
             .await
         {
@@ -970,7 +938,7 @@ impl EventHandler for PlanetHandler {
         // let mut req = WEB_CLIENT
         //     .post("http://localhost:16834/api/remove/user")
         //     .json(&UserSafe { id: id.clone() });
-        // if let Some(token) = Config::get().string_api_token {
+        // if let Some(token) = config::get_config().string_api_token {
         //     req = req.bearer_auth(token);
         // }
         // if let Err(e) = req.send().await {
@@ -979,7 +947,7 @@ impl EventHandler for PlanetHandler {
         if let Err(e) = WEB_CLIENT
             .post("http://localhost:16835/api/remove/user")
             .json(&UserSafe { id })
-            .bearer_auth(Config::get().string_api_token)
+            .bearer_auth(config::get_config().string_api_token)
             .send()
             .await
         {
@@ -1031,7 +999,7 @@ impl EventHandler for PlanetHandler {
             if let Err(e) = WEB_CLIENT
                 .post("http://localhost:16835/api/set/user")
                 .json(&users)
-                .bearer_auth(Config::get().string_api_token)
+                .bearer_auth(config::get_config().string_api_token)
                 .send().await
             {
                 log::error!("Failed to send users to api {e}. Users might be out of date");
@@ -1048,7 +1016,9 @@ struct Timed<T> {
 async fn main() {
     env_logger::init();
     global_data::init().await;
-    // let cfg = Config::get();
+    #[cfg(feature = "debug")]
+    console_subscriber::init();
+    let cfg = config::get_config();
     // let mut tmp = cfg.data_path.clone();
     // tmp.push("tmp");
     // if let Err(e) = std::fs::remove_dir_all(&tmp) {
@@ -1063,7 +1033,7 @@ async fn main() {
     // }
     let handler = PlanetHandler::new(
         vec![
-            Box::new(commands::music::transcribe::Command),
+            // Box::new(commands::music::transcribe::Command),
             Box::new(commands::music::repeat::Command),
             Box::new(commands::music::loop_queue::Command),
             Box::new(commands::music::pause::Command),
@@ -1083,13 +1053,14 @@ async fn main() {
             Box::new(commands::john::Command),
             Box::new(commands::feedback::Feedback),
             Box::new(commands::config::Command::new()),
+            Box::new(commands::remind::Command::new())
         ],
         BOTS.planet.playing.clone(),
     );
     let config = songbird::Config::default()
-        .preallocated_tracks(2)
+        .preallocated_tracks(4)
         .decode_mode(songbird::driver::DecodeMode::Decode)
-        .crypto_mode(songbird::driver::CryptoMode::Lite);
+        .crypto_mode(songbird::driver::CryptoMode::Normal);
     let mut client = match Client::builder(&BOTS.planet.token, GatewayIntents::all())
         .register_songbird_from_config(config.clone())
         .event_handler(handler)
@@ -1108,9 +1079,9 @@ async fn main() {
         // data.insert::<commands::music::VoiceData>(Arc::new(RwLock::new(
         //     commands::music::InnerVoiceData::new(client.cache.current_user().id),
         // )));
-        data.insert::<commands::music::transcribe::TranscribeData>(Arc::new(RwLock::new(
-            HashMap::new(),
-        )));
+        // data.insert::<commands::music::transcribe::TranscribeData>(Arc::new(RwLock::new(
+        //     HashMap::new(),
+        // )));
     }
     let (kill_tx, kill_rx) = tokio::sync::broadcast::channel::<()>(1);
     let mut clients = FuturesUnordered::new();
@@ -1213,7 +1184,7 @@ async fn main() {
     if let Some(v) = dw.get::<commands::music::AudioCommandHandler>().take() {
         for (i, x) in v.read().await.values().enumerate() {
             log::info!("Sending stop command {}", i);
-            let (tx, rx) = oneshot::channel::<String>();
+            let (tx, rx) = oneshot::channel::<Arc<str>>();
             if let Err(e) = x.send((tx, commands::music::AudioPromiseCommand::Stop(None))) {
                 log::error!("Failed to send stop command: {}", e);
             };
@@ -1236,12 +1207,12 @@ async fn main() {
             }
         }
     }
-    if let Some(v) = dw
-        .get::<commands::music::transcribe::TranscribeData>()
-        .take()
-    {
-        v.write().await.clear();
-    }
+    // if let Some(v) = dw
+    //     .get::<commands::music::transcribe::TranscribeData>()
+    //     .take()
+    // {
+    //     v.write().await.clear();
+    // }
     client.shard_manager.shutdown_all().await;
     for client in clients {
         let timeout = tokio::time::timeout(std::time::Duration::from_secs(3), client);
@@ -1267,314 +1238,7 @@ async fn main() {
     // }
     std::process::exit(exit_code);
 }
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct Config {
-    bots_config_path: PathBuf,
-    guild_id: String,
-    app_name: String,
-    looptime: u64,
-    data_path: PathBuf,
-    shitgpt_path: PathBuf,
-    whitelist_path: PathBuf,
-    string_api_token: String,
-    idle_url: String,
-    api_url: String,
-    #[cfg(feature = "tts")]
-    gcloud_script: String,
-    #[cfg(feature = "youtube-search")]
-    youtube_api_key: String,
-    #[cfg(feature = "youtube-search")]
-    autocomplete_limit: u64,
-    #[cfg(feature = "spotify")]
-    spotify_api_key: String,
-    bumper_url: String,
-    #[cfg(feature = "transcribe")]
-    transcribe_url: String,
-    #[cfg(feature = "transcribe")]
-    transcribe_token: String,
-    #[cfg(feature = "transcribe")]
-    alert_phrases_path: PathBuf,
-    #[cfg(feature = "transcribe")]
-    sam_path: PathBuf,
-    #[cfg(feature = "transcribe")]
-    consent_path: PathBuf,
-    guild_config_path: PathBuf,
-}
-impl Config {
-    pub fn get() -> Self {
-        let path = dirs::data_dir();
-        let mut path = if let Some(path) = path {
-            path
-        } else {
-            PathBuf::from(".")
-        };
-        path.push("RmbConfig.json");
-        Self::get_from_path(path)
-    }
-    fn onboarding(config_path: &PathBuf, recovered_config: Option<RecoverConfig>) {
-        let config = if let Some(rec) = recovered_config {
-            log::error!("Welcome back to my shitty Rust Music Bot!");
-            log::error!(
-                "It appears that you have run the bot before, but the config got biffed up."
-            );
-            log::error!("I will take you through a short onboarding process to get you back up and running.");
-            let app_name = if let Some(app_name) = rec.app_name {
-                app_name
-            } else {
-                Self::safe_read("\nPlease enter your application name:")
-            };
-            let mut data_path = match config_path.parent() {
-                Some(p) => p.to_path_buf(),
-                None => {
-                    log::error!("Failed to get parent, this should never happen.");
-                    return;
-                }
-            };
-            data_path.push(app_name.clone());
-            Config {
-                bots_config_path: if let Some(bots_config_path) = rec.bots_config_path {
-                    bots_config_path
-                } else {
-                    Self::safe_read("\nPlease enter your bots config path:")
-                },
-                guild_id: if let Some(guild_id) = rec.guild_id {
-                    guild_id
-                } else {
-                    Self::safe_read("\nPlease enter your guild id:")
-                },
-                app_name,
-                looptime: if let Some(looptime) = rec.looptime {
-                    looptime
-                } else {
-                    Self::safe_read("\nPlease enter your loop time in ms\nlower time means faster response but potentially higher cpu utilization (50 is a good compromise):")
-                },
-                #[cfg(feature = "tts")]
-                gcloud_script: if let Some(gcloud_script) = rec.gcloud_script {
-                    gcloud_script
-                } else {
-                    Self::safe_read("\nPlease enter your gcloud script location:")
-                },
-                #[cfg(feature = "youtube-search")]
-                youtube_api_key: if let Some(youtube_api_key) = rec.youtube_api_key {
-                    youtube_api_key
-                } else {
-                    Self::safe_read("\nPlease enter your youtube api key:")
-                },
-                #[cfg(feature = "youtube-search")]
-                autocomplete_limit: if let Some(autocomplete_limit) = rec.autocomplete_limit {
-                    autocomplete_limit
-                } else {
-                    Self::safe_read("\nPlease enter your youtube autocomplete limit:")
-                },
-                #[cfg(feature = "spotify")]
-                spotify_api_key: if let Some(spotify_api_key) = rec.spotify_api_key {
-                    spotify_api_key
-                } else {
-                    Self::safe_read("\nPlease enter your spotify api key:")
-                },
-                idle_url: if let Some(idle_audio) = rec.idle_url {
-                    idle_audio
-                } else {
-                    Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH)\nif you wish to use a file on disk, set this to something as a fallback, and name the file override.mp3 inside the bot directory)\n(appdata/local/ for windows users and ~/.local/share/ for linux users):")
-                },
-                api_url: if let Some(api_url) = rec.api_url {
-                    api_url
-                } else {
-                    Self::safe_read("\nPlease enter your api url:")
-                },
-                bumper_url: if let Some(bumper_url) = rec.bumper_url {
-                    bumper_url
-                } else {
-                    Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):")
-                },
-                data_path: if let Some(data_path) = rec.data_path {
-                    data_path
-                } else {
-                    data_path
-                },
-                shitgpt_path: if let Some(shitgpt_path) = rec.shitgpt_path {
-                    shitgpt_path
-                } else {
-                    Self::safe_read("\nPlease enter your shitgpt path:")
-                },
-                whitelist_path: if let Some(whitelist_path) = rec.whitelist_path {
-                    whitelist_path
-                } else {
-                    Self::safe_read("\nPlease enter your whitelist path:")
-                },
-                string_api_token: if let Some(string_api_token) = rec.string_api_token {
-                    string_api_token
-                } else {
-                    Self::safe_read("\nPlease enter your string api token:")
-                },
-                #[cfg(feature = "transcribe")]
-                transcribe_url: if let Some(transcribe_url) = rec.transcribe_url {
-                    transcribe_url
-                } else {
-                    Self::safe_read("\nPlease enter your transcribe url:")
-                },
-                #[cfg(feature = "transcribe")]
-                transcribe_token: if let Some(transcribe_token) = rec.transcribe_token {
-                    transcribe_token
-                } else {
-                    Self::safe_read("\nPlease enter your transcribe token:")
-                },
-                #[cfg(feature = "transcribe")]
-                alert_phrases_path: if let Some(alert_phrase_path) = rec.alert_phrase_path {
-                    alert_phrase_path
-                } else {
-                    Self::safe_read("\nPlease enter your alert phrase path:")
-                },
-                #[cfg(feature = "transcribe")]
-                sam_path: if let Some(sam_path) = rec.sam_path {
-                    sam_path
-                } else {
-                    Self::safe_read("\nPlease enter your sam path:")
-                },
-                consent_path: if let Some(consent_path) = rec.consent_path {
-                    consent_path
-                } else {
-                    Self::safe_read("\nPlease enter your consent path:")
-                },
-                guild_config_path: if let Some(guild_config_path) = rec.guild_config_path {
-                    guild_config_path
-                } else {
-                    Self::safe_read("\nPlease enter your guild config path:")
-                },
-            }
-        } else {
-            log::error!("Welcome to my shitty Rust Music Bot!");
-            log::error!("It appears that this may be the first time you are running the bot.");
-            log::error!("I will take you through a short onboarding process to get you started.");
-            let app_name: String = Self::safe_read("\nPlease enter your application name:");
-            let mut data_path = match config_path.parent() {
-                Some(p) => p.to_path_buf(),
-                None => {
-                    log::error!("Failed to get parent, this should never happen.");
-                    return;
-                }
-            };
-            data_path.push(app_name.clone());
-            Config {
-                bots_config_path: Self::safe_read("\nPlease enter your bots config path:"),
-                guild_id: Self::safe_read("\nPlease enter your guild id:"),
-                app_name,
-                looptime: Self::safe_read("\nPlease enter your loop time in ms\nlower time means faster response but higher utilization:"),
-                #[cfg(feature = "tts")]
-                gcloud_script: Self::safe_read("\nPlease enter your gcloud script location:"),
-                data_path,
-                #[cfg(feature = "youtube-search")]
-                youtube_api_key: Self::safe_read("\nPlease enter your youtube api key:"),
-                #[cfg(feature = "youtube-search")]
-                autocomplete_limit: Self::safe_read("\nPlease enter your youtube autocomplete limit:"),
-                #[cfg(feature = "spotify")]
-                spotify_api_key: Self::safe_read("\nPlease enter your spotify api key:"),
-                idle_url: Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH):"),
-                api_url: Self::safe_read("\nPlease enter your api url:"),
-                bumper_url: Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):"),
-                shitgpt_path: Self::safe_read("\nPlease enter your shitgpt path:"),
-                whitelist_path: Self::safe_read("\nPlease enter your whitelist path:"),
-                string_api_token: Self::safe_read("\nPlease enter your string api token:"),
-                transcribe_token: Self::safe_read("\nPlease enter your transcribe token:"),
-                transcribe_url: Self::safe_read("\nPlease enter your transcribe url:"),
-                alert_phrases_path: Self::safe_read("\nPlease enter your alert phrase path:"),
-                sam_path: Self::safe_read("\nPlease enter your sam path:"),
-                consent_path: Self::safe_read("\nPlease enter your consent path:"),
-                guild_config_path: Self::safe_read("\nPlease enter your guild config path:"),
-            }
-        };
-        match std::fs::write(
-            config_path.clone(),
-            match serde_json::to_string_pretty(&config) {
-                Ok(c) => c,
-                Err(e) => {
-                    log::error!("Failed to serialize config: {}", e);
-                    return;
-                }
-            },
-        ) {
-            Ok(_) => {
-                log::info!("Config written to {:?}", config_path);
-            }
-            Err(e) => {
-                log::error!("Failed to write config to {:?}: {}", config_path, e);
-            }
-        }
-    }
-    fn safe_read<T: std::str::FromStr>(prompt: &str) -> T {
-        loop {
-            log::error!("{}", prompt);
-            let mut input = String::new();
-            if let Err(e) = std::io::stdin().read_line(&mut input) {
-                log::error!("Failed to read input: {}", e);
-                continue;
-            }
-            let input = input.trim();
-            match input.parse::<T>() {
-                Ok(input) => return input,
-                Err(_) => log::error!("Invalid input"),
-            }
-        }
-    }
-    fn get_from_path(path: std::path::PathBuf) -> Self {
-        if !path.exists() {
-            Self::onboarding(&path, None);
-        }
-        let config = std::fs::read_to_string(&path);
-        if let Ok(config) = config {
-            let x: Result<Config, serde_json::Error> = serde_json::from_str(&config);
-            if let Ok(x) = x {
-                x
-            } else {
-                log::error!("Failed to parse config.json, Attempting recovery");
-                let recovered = serde_json::from_str(&config);
-                if let Ok(recovered) = recovered {
-                    Self::onboarding(&path, Some(recovered));
-                } else {
-                    Self::onboarding(&path, None);
-                }
-                Self::get()
-            }
-        } else {
-            log::error!("Failed to read config.json");
-            Self::onboarding(&path, None);
-            Self::get_from_path(path)
-        }
-    }
-}
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct RecoverConfig {
-    bots_config_path: Option<PathBuf>,
-    guild_id: Option<String>,
-    app_name: Option<String>,
-    looptime: Option<u64>,
-    data_path: Option<PathBuf>,
-    #[cfg(feature = "tts")]
-    gcloud_script: Option<String>,
-    #[cfg(feature = "youtube-search")]
-    youtube_api_key: Option<String>,
-    #[cfg(feature = "youtube-search")]
-    autocomplete_limit: Option<u64>,
-    #[cfg(feature = "spotify")]
-    spotify_api_key: Option<String>,
-    idle_url: Option<String>,
-    api_url: Option<String>,
-    shitgpt_path: Option<PathBuf>,
-    whitelist_path: Option<PathBuf>,
-    string_api_token: Option<String>,
-    bumper_url: Option<String>,
-    #[cfg(feature = "transcribe")]
-    transcribe_url: Option<String>,
-    #[cfg(feature = "transcribe")]
-    transcribe_token: Option<String>,
-    #[cfg(feature = "transcribe")]
-    alert_phrase_path: Option<PathBuf>,
-    #[cfg(feature = "transcribe")]
-    sam_path: Option<PathBuf>,
-    #[cfg(feature = "transcribe")]
-    consent_path: Option<PathBuf>,
-    guild_config_path: Option<PathBuf>,
-}
+
 struct SatelliteHandler {
     playing: String,
     position: usize,

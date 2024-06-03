@@ -1,22 +1,21 @@
-use crate::Config;
 use serde::{Deserialize, Serialize};
 use serenity::all::GuildId;
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 lazy_static::lazy_static! {
     static ref RWLOCK: RwLock<HashMap<GuildId, InnerGuildConfig>> = {
-        let file = match std::fs::File::open(Config::get().guild_config_path) {
+        let file = match std::fs::File::open(crate::config::get_config().guild_config_path) {
             Ok(f) => f,
             Err(_) => {
-                let f = match std::fs::File::create(Config::get().guild_config_path) {
+                let f = match std::fs::File::create(crate::config::get_config().guild_config_path) {
                     Ok(f) => f,
                     Err(e) => panic!("Failed to create guild config file: {}", e),
                 };
                 if let Err(e) = serde_json::to_writer(f, &HashMap::<GuildId, InnerGuildConfig>::new()) {
                     panic!("Failed to write default guild config file: {}", e);
                 }
-                match std::fs::File::open(Config::get().guild_config_path) {
+                match std::fs::File::open(crate::config::get_config().guild_config_path) {
                     Ok(f) => f,
                     Err(e) => panic!("Failed to open guild config file: {}", e),
                 }
@@ -42,7 +41,7 @@ pub fn save() {
             e.into_inner()
         }
     };
-    let file = match std::fs::File::create(Config::get().guild_config_path) {
+    let file = match std::fs::File::create(crate::config::get_config().guild_config_path) {
         Ok(f) => f,
         Err(e) => panic!("Failed to create guild config file: {}", e),
     };
@@ -55,6 +54,9 @@ struct InnerGuildConfig {
     pub empty_channel_timeout: Duration,
     pub default_song_volume: f32,
     pub default_radio_volume: f32,
+    pub read_titles_by_default: bool,
+    pub radio_audio_url: Option<Arc<str>>,
+    pub radio_data_url: Option<Arc<str>>,
 }
 impl Default for InnerGuildConfig {
     fn default() -> Self {
@@ -63,14 +65,20 @@ impl Default for InnerGuildConfig {
             empty_channel_timeout: Duration::from_secs(30),
             default_song_volume: 1.0,
             default_radio_volume: 1.0 / 3.0,
+            read_titles_by_default: true,
+            radio_audio_url: None,
+            radio_data_url: None,
         }
     }
 }
 #[derive(Debug, Clone, Deserialize)]
 struct RawInnerGuildConfig {
-    pub empty_channel_timeout: Option<Duration>,
-    pub default_song_volume: Option<f32>,
-    pub default_radio_volume: Option<f32>,
+    empty_channel_timeout: Option<Duration>,
+    default_song_volume: Option<f32>,
+    default_radio_volume: Option<f32>,
+    read_titles_by_default: Option<bool>,
+    radio_audio_url: Option<Arc<str>>,
+    radio_data_url: Option<Arc<str>>,
 }
 impl RawInnerGuildConfig {
     fn with_defaults(self) -> InnerGuildConfig {
@@ -80,6 +88,9 @@ impl RawInnerGuildConfig {
                 .unwrap_or(Duration::from_secs(30)),
             default_song_volume: self.default_song_volume.unwrap_or(1.0),
             default_radio_volume: self.default_radio_volume.unwrap_or(1.0 / 3.0),
+            read_titles_by_default: self.read_titles_by_default.unwrap_or(true),
+            radio_audio_url: self.radio_audio_url,
+            radio_data_url: self.radio_data_url,
         }
     }
 }
@@ -112,6 +123,7 @@ impl GuildConfig {
         }
         save();
     }
+    // Time until the bot leaves the channel if it's empty
     pub fn get_empty_channel_timeout(&self) -> Duration {
         self.inner.empty_channel_timeout
     }
@@ -119,6 +131,7 @@ impl GuildConfig {
         self.inner.empty_channel_timeout = timeout;
         self
     }
+    // Default volume for songs when the bot joins
     pub fn get_default_song_volume(&self) -> f32 {
         self.inner.default_song_volume
     }
@@ -126,11 +139,36 @@ impl GuildConfig {
         self.inner.default_song_volume = volume;
         self
     }
+    // Default volume for radio when the bot joins
     pub fn get_default_radio_volume(&self) -> f32 {
         self.inner.default_radio_volume
     }
     pub fn set_default_radio_volume(mut self, volume: f32) -> Self {
         self.inner.default_radio_volume = volume;
+        self
+    }
+    // Whether the bot should read titles by default
+    pub fn get_read_titles_by_default(&self) -> bool {
+        self.inner.read_titles_by_default
+    }
+    pub fn set_read_titles_by_default(mut self, read: bool) -> Self {
+        self.inner.read_titles_by_default = read;
+        self
+    }
+    // The url for the audio stream
+    pub fn get_radio_audio_url(&self) -> Option<Arc<str>> {
+        self.inner.radio_audio_url.as_ref().map(Arc::clone)
+    }
+    pub fn set_radio_audio_url(mut self, url: Option<Arc<str>>) -> Self {
+        self.inner.radio_audio_url = url;
+        self
+    }
+    // The url for the data stream
+    pub fn get_radio_data_url(&self) -> Option<Arc<str>> {
+        self.inner.radio_data_url.as_ref().map(Arc::clone)
+    }
+    pub fn set_radio_data_url(mut self, url: Option<Arc<str>>) -> Self {
+        self.inner.radio_data_url = url;
         self
     }
 }

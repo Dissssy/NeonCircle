@@ -5,6 +5,7 @@ use crate::video::RawVideo;
 use crate::{commands::music::VideoType, video::Video};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use songbird::tracks::Track;
 use std::sync::Arc;
 #[cfg(feature = "tts")]
 use tokio::io::AsyncWriteExt;
@@ -202,7 +203,7 @@ pub struct RawVidInfo {
 }
 #[cfg(feature = "spotify")]
 pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>> {
-    let token = crate::Config::get().spotify_api_key;
+    let token = crate::config::get_config().spotify_api_key;
     let url = format!("https://api.spotify.com/v1/tracks/{}", id);
     let res = crate::WEB_CLIENT
         .get(url.as_str())
@@ -292,8 +293,11 @@ impl VideoInfo {
     pub fn duration(&self) -> Option<f64> {
         self.duration
     }
-    pub fn to_songbird(&self) -> songbird::input::Input {
-        songbird::input::YoutubeDl::new(crate::WEB_CLIENT.clone(), self.url().to_string()).into()
+    pub fn to_songbird(&self) -> Track {
+        Track::new(
+            songbird::input::YoutubeDl::new(crate::WEB_CLIENT.clone(), self.url().to_string())
+                .into(),
+        )
     }
     pub async fn to_metavideo(&self) -> anyhow::Result<MetaVideo> {
         let v = crate::video::Video::get_video(&self.url, true, false)
@@ -406,7 +410,7 @@ where
         json.audio_content,
     )?;
     let id = nanoid::nanoid!(10);
-    let mut path = crate::Config::get().data_path;
+    let mut path = crate::config::get_config().data_path;
     path.push("tmp");
     path.push(format!("GTTS{}_NA.ogg", id));
     let mut file = tokio::fs::File::create(path.clone()).await?;
@@ -430,7 +434,7 @@ pub async fn get_access_token() -> Result<String> {
         .non_interactive(true)
         .hidden(true)
         .build()
-        .run(crate::Config::get().gcloud_script.as_str())
+        .run(crate::config::get_config().gcloud_script.as_str())
     {
         Ok(token) => {
             let t = format!("{}", token).trim().to_string();
@@ -446,7 +450,7 @@ pub async fn get_access_token() -> Result<String> {
     {
         let output = tokio::process::Command::new("sh")
             .arg("-c")
-            .arg(crate::Config::get().gcloud_script.as_str())
+            .arg(crate::config::get_config().gcloud_script.as_str())
             .output()
             .await?;
         let t = String::from_utf8(output.stdout)? + &String::from_utf8(output.stderr)?;
@@ -465,7 +469,7 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>> {
         urlencoding::encode(url)
     );
     let lim = lim.to_string();
-    let mut bot_path = crate::Config::get().data_path.clone();
+    let mut bot_path = crate::config::get_config().data_path.clone();
     bot_path.push("cookies.txt");
     let output = if bot_path.exists() {
         tokio::process::Command::new("yt-dlp")

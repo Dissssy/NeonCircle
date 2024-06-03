@@ -3,7 +3,7 @@ use anyhow::Result;
 use serenity::all::*;
 pub struct Command;
 #[async_trait]
-impl super::SubCommandTrait for Command {
+impl crate::traits::SubCommandTrait for Command {
     fn register_command(&self) -> CreateCommandOption {
         CreateCommandOption::new(
             CommandOptionType::SubCommand,
@@ -83,5 +83,8 @@ impl super::SubCommandTrait for Command {
     }
     fn command_name(&self) -> &str {
         "empty_channel_timeout"
+    }
+    fn permissions(&self) -> Permissions {
+        Permissions::MANAGE_GUILD
     }
 }

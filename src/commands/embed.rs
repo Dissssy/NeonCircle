@@ -5,7 +5,7 @@ use serenity::all::*;
 #[derive(Debug, Clone)]
 pub struct Video;
 #[async_trait]
-impl crate::CommandTrait for Video {
+impl crate::traits::CommandTrait for Video {
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         dotheroar(ctx, interaction).await;
         Ok(())
@@ -37,7 +37,7 @@ impl crate::CommandTrait for Video {
 #[derive(Debug, Clone)]
 pub struct Audio;
 #[async_trait]
-impl crate::CommandTrait for Audio {
+impl crate::traits::CommandTrait for Audio {
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         dotheroar(ctx, interaction).await;
         Ok(())
