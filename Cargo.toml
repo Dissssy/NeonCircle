@@ -1,5 +1,12 @@
 [workspace]
-members = ["neon_circles", "common", "config-command", "music-commands", "lts", "national-debt"]
+members = [
+    "neon_circle",
+    "common",
+    "config-command",
+    "music-commands",
+    "lts",
+    "national-debt",
+]
 resolver = "2"
 
 [profile.release]

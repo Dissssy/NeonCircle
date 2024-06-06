@@ -5,7 +5,7 @@
 # It is also used to notify the user if the application crashes.
 
 # set log level
-export RUST_LOG="alrightguysnewprojecttime=trace"
+export RUST_LOG="neon_circle=trace"
 
 # loop until the application has a return code of != 0
 while true; do
@@ -19,7 +19,7 @@ while true; do
             echo "Build failed, using last good build"
         else
             echo "Build successful, moving binary to ./bin"
-            cp ./target/release/alrightguysnewprojecttime ./data/bin/alrightguysnewprojecttime
+            cp ./target/release/neon_circle ./data/bin/neon_circle
         fi
     else
         echo "Running in debug mode"
@@ -29,11 +29,11 @@ while true; do
             echo "Build failed, using last good build"
         else
             echo "Build successful, moving binary to ./bin"
-            cp ./target/debug/alrightguysnewprojecttime ./data/bin/alrightguysnewprojecttime
+            cp ./target/debug/neon_circle ./data/bin/neon_circle
         fi
     fi
     # run the application
-    ./data/bin/alrightguysnewprojecttime
+    ./data/bin/neon_circle
 
     # save the return code
     ret=$?
