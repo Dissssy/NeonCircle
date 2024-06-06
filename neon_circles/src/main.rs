@@ -7,21 +7,14 @@
     clippy::clone_on_ref_ptr,
 )]
 mod commands;
-mod global_data;
-mod utils;
-mod radio;
-mod sam;
 mod video;
-mod youtube;
 use std::sync::atomic::AtomicBool;
 use std::{collections::HashMap, time::Duration};
 use std::sync::Arc;
 mod context_menu;
-#[cfg(feature = "transcribe")]
-mod voice_events;
-use crate::commands::music::{AudioCommandHandler, AudioPromiseCommand, OrToggle};
-use commands::music::MetaCommand;
-use global_data::voice_data::VoiceAction;
+
+use common::audio::{AudioCommandHandler, AudioPromiseCommand, MetaCommand, OrToggle};
+use common::global_data::voice_data::VoiceAction;
 use serde::{Deserialize, Serialize};
 mod traits {
     pub use common::{CommandTrait, SubCommandTrait};
@@ -29,7 +22,7 @@ mod traits {
 mod config {
     pub use common::get_config;
 }
-use common::log;
+use common::{chrono, global_data, lazy_static, log, songbird, tokio, WEB_CLIENT};
 use common::serenity::{
     all::*,
     futures::{stream::FuturesUnordered, StreamExt},
@@ -61,7 +54,6 @@ lazy_static::lazy_static! {
             Err(e) => panic!("Failed to read whitelist file: {}", e)
         }
     }));
-    static ref WEB_CLIENT: reqwest::Client = reqwest::Client::new();
     static ref BOTS: BotsConfig = {
         let file = match std::fs::File::open(config::get_config().bots_config_path) {
             Ok(f) => f,
@@ -1039,26 +1031,27 @@ async fn main() {
     let handler = PlanetHandler::new(
         vec![
             // Box::new(commands::music::transcribe::Command),
-            Box::new(commands::music::repeat::Command),
-            Box::new(commands::music::loop_queue::Command),
-            Box::new(commands::music::pause::Command),
-            Box::new(commands::music::add::Command),
-            Box::new(commands::music::join::Command),
-            Box::new(commands::music::setbitrate::Command),
-            Box::new(commands::music::remove::Command),
-            Box::new(commands::music::resume::Command),
-            Box::new(commands::music::shuffle::Command),
-            Box::new(commands::music::skip::Command),
-            Box::new(commands::music::stop::Command),
-            Box::new(commands::music::volume::Command),
-            Box::new(commands::music::autoplay::Command),
-            Box::new(commands::music::consent::Command),
-            Box::new(commands::embed::Video),
-            Box::new(commands::embed::Audio),
+            Box::new(music_commands::repeat::Command),
+            Box::new(music_commands::loop_queue::Command),
+            Box::new(music_commands::pause::Command),
+            Box::new(music_commands::add::Command),
+            Box::new(music_commands::join::Command),
+            Box::new(music_commands::setbitrate::Command),
+            Box::new(music_commands::remove::Command),
+            Box::new(music_commands::resume::Command),
+            Box::new(music_commands::shuffle::Command),
+            Box::new(music_commands::skip::Command),
+            Box::new(music_commands::stop::Command),
+            Box::new(music_commands::volume::Command),
+            Box::new(music_commands::autoplay::Command),
+            Box::new(music_commands::consent::Command),
+            Box::new(national_debt::Command),
+            Box::new(commands::embed::DlVideo),
+            Box::new(commands::embed::DlAudio),
             Box::new(commands::john::Command),
             Box::new(commands::feedback::Feedback),
-            Box::new(commands::config::Command::new()),
-            Box::new(commands::remind::Command::new())
+            Box::new(config_command::Command::new()),
+            Box::new(commands::remind::Command::new()),
         ],
         BOTS.planet.playing.clone(),
     );
@@ -1079,8 +1072,8 @@ async fn main() {
     };
     {
         let mut data = client.data.write().await;
-        data.insert::<commands::music::AudioHandler>(Arc::new(RwLock::new(HashMap::new())));
-        data.insert::<commands::music::AudioCommandHandler>(Arc::new(RwLock::new(HashMap::new())));
+        data.insert::<music_commands::AudioHandler>(Arc::new(RwLock::new(HashMap::new())));
+        data.insert::<AudioCommandHandler>(Arc::new(RwLock::new(HashMap::new())));
         // data.insert::<commands::music::VoiceData>(Arc::new(RwLock::new(
         //     commands::music::InnerVoiceData::new(client.cache.current_user().id),
         // )));
@@ -1186,11 +1179,11 @@ async fn main() {
     log::info!("Getting write lock on data");
     let dw = client.data.read().await;
     log::info!("Got write lock on data");
-    if let Some(v) = dw.get::<commands::music::AudioCommandHandler>().take() {
+    if let Some(v) = dw.get::<AudioCommandHandler>().take() {
         for (i, x) in v.read().await.values().enumerate() {
             log::info!("Sending stop command {}", i);
             let (tx, rx) = oneshot::channel::<Arc<str>>();
-            if let Err(e) = x.send((tx, commands::music::AudioPromiseCommand::Stop(None))) {
+            if let Err(e) = x.send((tx, AudioPromiseCommand::Stop(None))) {
                 log::error!("Failed to send stop command: {}", e);
             };
             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rx);
@@ -1201,7 +1194,7 @@ async fn main() {
             }
         }
     }
-    if let Some(v) = dw.get::<commands::music::AudioHandler>().take() {
+    if let Some(v) = dw.get::<music_commands::AudioHandler>().take() {
         for (i, x) in v.write().await.values_mut().enumerate() {
             log::info!("Joining handle {}", i);
             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), x);

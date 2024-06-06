@@ -1,0 +1,9 @@
+[package]
+name = "config_command"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }
+serde = { version = "1.0.203", features = ["rc"] }
+serde_json = { version = "1.0.117", features = ["preserve_order"] }

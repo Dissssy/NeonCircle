@@ -1,0 +1,19 @@
+[package]
+name = "music_commands"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }
+serde = { version = "1.0.203", features = ["rc"] }
+serde_json = { version = "1.0.117", features = ["preserve_order"] }
+regex = "1.10.4"
+linkify = "0.10.0"
+
+
+[features]
+default = ["tts", "youtube-search", "transcribe", "new-controls"]
+tts = []
+youtube-search = []
+transcribe = []
+new-controls = []

@@ -1,12 +1,11 @@
-use super::music::VideoType;
-use crate::video::MediaType;
 use anyhow::Result;
 use common::log;
 use common::serenity::all::*;
+use common::video::{MediaType, Video, VideoType};
 #[derive(Debug, Clone)]
-pub struct Video;
+pub struct DlVideo;
 #[async_trait]
-impl crate::traits::CommandTrait for Video {
+impl crate::traits::CommandTrait for DlVideo {
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         dotheroar(ctx, interaction).await;
         Ok(())
@@ -36,9 +35,9 @@ impl crate::traits::CommandTrait for Video {
     }
 }
 #[derive(Debug, Clone)]
-pub struct Audio;
+pub struct DlAudio;
 #[async_trait]
-impl crate::traits::CommandTrait for Audio {
+impl crate::traits::CommandTrait for DlAudio {
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         dotheroar(ctx, interaction).await;
         Ok(())
@@ -128,7 +127,7 @@ async fn dotheroar(ctx: &Context, interaction: &CommandInteraction) {
     } else {
         log::trace!("No guild id in interaction");
     }
-    match crate::video::Video::download_video(option, media_type, spoiler, max_size).await {
+    match Video::download_video(option, media_type, spoiler, max_size).await {
         Err(e) => match interaction
             .edit_response(
                 &ctx.http,
