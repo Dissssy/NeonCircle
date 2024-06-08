@@ -449,9 +449,9 @@ impl MessageReference {
     fn get_ars(settings: &SettingsData) -> Vec<CreateActionRow> {
         use common::audio::OrAuto;
         let mut options = vec![
-            CreateSelectMenuOption::new("Bot Controls", "controls")
-                .description("🎛️")
-                .default_selection(true),
+            // CreateSelectMenuOption::new("Bot Controls", "controls")
+            //     .description("🎛️")
+            //     .default_selection(true),
             CreateSelectMenuOption::new("Volume", "volume").description(format!(
                 "{} {:.0}%",
                 match settings.display_song_volume() {
@@ -542,6 +542,7 @@ impl MessageReference {
         }
         vec![CreateActionRow::SelectMenu(
             CreateSelectMenu::new("::controls", CreateSelectMenuKind::String { options })
+                .placeholder("Bot Controls")
                 .max_values(1)
                 .min_values(1),
         )]

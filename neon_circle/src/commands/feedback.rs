@@ -63,11 +63,27 @@ impl crate::traits::CommandTrait for Feedback {
         match ctx.http.get_user(UserId::new(156533151198478336)).await {
             Ok(user) => {
                 if let Err(e) = user
-                    .dm(&ctx.http, CreateMessage::default().content(feedback))
+                    .dm(
+                        &ctx.http,
+                        CreateMessage::default()
+                            .content(format!("Anonymous Feedback:\n```{}```", feedback))
+                            .button(
+                                CreateButton::new(FeedbackCustomId::new(interaction.user.id))
+                                    .style(ButtonStyle::Success)
+                                    .label("Respond"),
+                            ),
+                    )
                     .await
                 {
                     log::error!("Failed to send feedback to developer: {}", e);
-                    content = format!("{}{}\n{}\n{}\n{}", content, "Unfortunately, I failed to send your feedback to the developer.", "If you're able to, be sure to send it to him yourself!", "He's <@156533151198478336> (monkey_d._issy)\n\nHere's a copy if you need it.", feedback);
+                    content = format!(
+                        "Unfortunately, I failed to send your feedback to the developer.\n\
+                        If you're able to, be sure to send it to him yourself.\n\
+                        He's <@156533151198478336> (@monkey_d._issy)\n\
+                        Here's a copy if you need it.\n\
+                        ```\n{}\n```",
+                        feedback
+                    );
                 }
             }
             Err(e) => {
@@ -96,5 +112,52 @@ impl crate::traits::CommandTrait for Feedback {
             log::error!("Failed to send response: {}", e);
         }
         Ok(())
+    }
+}
+
+pub struct FeedbackCustomId {
+    pub user_id: UserId,
+}
+
+impl FeedbackCustomId {
+    pub fn new(user_id: UserId) -> Self {
+        Self { user_id }
+    }
+    // pub fn from_id(id: &str) -> Option<Self> {
+    //     // id is in the format "respond:123456789012345678"
+    //     let mut split = id.split(':');
+    //     match (split.next(), split.next(), split.next()) {
+    //         (Some("respond"), Some(user_id), None) => match user_id.parse::<u64>() {
+    //             Ok(user_id) => Some(Self::new(UserId::new(user_id))),
+    //             Err(e) => {
+    //                 log::error!("Failed to parse user id: {}", e);
+    //                 None
+    //             }
+    //         },
+    //         _ => None,
+    //     }
+    // }
+}
+
+impl From<FeedbackCustomId> for String {
+    fn from(val: FeedbackCustomId) -> Self {
+        format!("respond:{}", val.user_id.get())
+    }
+}
+
+impl TryFrom<&str> for FeedbackCustomId {
+    type Error = anyhow::Error;
+    fn try_from(id: &str) -> Result<Self> {
+        let mut split = id.split(':');
+        match (split.next(), split.next(), split.next()) {
+            (Some("respond"), Some(user_id), None) => match user_id.parse::<u64>() {
+                Ok(user_id) => Ok(Self::new(UserId::new(user_id))),
+                Err(e) => {
+                    log::error!("Failed to parse user id: {}", e);
+                    Err(e.into())
+                }
+            },
+            _ => Err(anyhow::anyhow!("Invalid feedback custom id")),
+        }
     }
 }

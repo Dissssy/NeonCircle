@@ -5,6 +5,7 @@ use common::serenity::{
     futures::{stream::FuturesUnordered, StreamExt as _},
 };
 use common::{log, tokio, SubCommandTrait};
+use long_term_storage::Guild;
 use std::sync::Arc;
 pub struct Command;
 #[async_trait]
@@ -48,7 +49,24 @@ impl SubCommandTrait for Command {
                 ResolvedValue::Boolean(i) => Some(i),
                 _ => None,
             });
-        let config = common::global_data::guild_config::GuildConfig::get(guild_id);
+        let mut config = match Guild::load(guild_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load guild: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load guild")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
         match read_titles {
             None => {
                 interaction
@@ -57,26 +75,39 @@ impl SubCommandTrait for Command {
                         CreateInteractionResponseFollowup::new()
                             .content(format!(
                                 "Currently reading titles by default: {}",
-                                config.get_read_titles_by_default()
+                                config.read_titles
                             )) // Remove trailing zeros and periods
                             .ephemeral(true),
                     )
                     .await?;
             }
             Some(value) => {
-                let config = config.set_read_titles_by_default(value);
+                config.read_titles = value;
                 interaction
                     .create_followup(
                         &ctx.http,
                         CreateInteractionResponseFollowup::new()
                             .content(format!(
                                 "Reading titles by default is now {}",
-                                config.get_read_titles_by_default()
+                                config.read_titles
                             ))
                             .ephemeral(true),
                     )
                     .await?;
-                config.write();
+                if let Err(e) = config.save().await {
+                    log::error!("Failed to save new value: {:?}", e);
+                    if let Err(e) = interaction
+                        .create_followup(
+                            &ctx.http,
+                            CreateInteractionResponseFollowup::new()
+                                .content("Failed to save new value")
+                                .ephemeral(true),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to send response: {}", e);
+                    }
+                }
                 // we need to iterate over EVERY guild that has a connection, and update the read_titles value
                 let connection_handler = {
                     let data = ctx.data.read().await;

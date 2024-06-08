@@ -1,10 +1,10 @@
-use crate::AudioHandler;
 #[cfg(feature = "transcribe")]
 use super::transcribe::TranscriptionThread;
 use super::{
     mainloop::{ControlData, Log},
     settingsdata::SettingsData,
 };
+use crate::AudioHandler;
 use common::{
     anyhow,
     video::{Author, LazyLoadedVideo, MetaVideo, VideoType},
@@ -23,7 +23,8 @@ impl CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
-                .description("Add a song to the queue")
+                .contexts(vec![InteractionContext::Guild])
+                .description("Add a song to the queue and play it.")
                 .set_options(vec![CreateCommandOption::new(
                     CommandOptionType::String,
                     "search",
@@ -246,6 +247,26 @@ impl CommandTrait for Command {
                                     Some(guild) => guild,
                                     None => return Ok(()),
                                 };
+                                let settings = match SettingsData::new(guild_id).await {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        log::error!("Failed to get settings: {:?}", e);
+                                        if let Err(e) = interaction
+                                            .edit_response(
+                                                &ctx.http,
+                                                EditInteractionResponse::new()
+                                                    .content("Failed to get settings"),
+                                            )
+                                            .await
+                                        {
+                                            log::error!(
+                                                "Failed to edit original interaction response: {:?}",
+                                                e
+                                            );
+                                        }
+                                        return Ok(());
+                                    }
+                                };
                                 // let em = match super::get_transcribe_channel_handler(ctx, &guild_id)
                                 //     .await
                                 // {
@@ -299,6 +320,7 @@ impl CommandTrait for Command {
                                         }
                                     }
                                 };
+
                                 let handle = {
                                     let ctx = ctx.clone();
                                     let ach = Arc::clone(&audio_command_handler);
@@ -308,7 +330,7 @@ impl CommandTrait for Command {
                                             rx,
                                             msg: messageref,
                                             nothing_uri: nothing_path,
-                                            settings: SettingsData::new(guild_id),
+                                            settings,
                                             log: Log::new(format!("{}-{}", guild_id, channel)),
                                             // transcribe: em,
                                         };

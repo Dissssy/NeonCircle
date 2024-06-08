@@ -1,4 +1,4 @@
-use common::{audio::OrAuto, serenity::all::GuildId};
+use common::{anyhow::Result, audio::OrAuto, serenity::all::GuildId};
 #[derive(Clone, PartialEq, Debug)]
 pub struct SettingsData {
     // pub something_playing: bool,
@@ -16,12 +16,13 @@ pub struct SettingsData {
     pub read_titles: bool,
 }
 impl SettingsData {
-    pub fn new(guild: GuildId) -> Self {
-        let cfg = common::global_data::guild_config::GuildConfig::get(guild);
-        Self {
+    pub async fn new(guild: GuildId) -> Result<Self> {
+        // let cfg = common::global_data::guild_config::GuildConfig::get(guild).await;
+        let cfg = long_term_storage::Guild::load(guild).await?;
+        Ok(Self {
             // something_playing: false,
-            song_volume: cfg.get_default_song_volume(),
-            radio_volume: cfg.get_default_radio_volume(),
+            song_volume: cfg.default_song_volume,
+            radio_volume: cfg.default_radio_volume,
             autoplay: false,
             looped: false,
             repeat: false,
@@ -29,8 +30,8 @@ impl SettingsData {
             pause: false,
             bitrate: OrAuto::Auto,
             log_empty: true,
-            read_titles: cfg.get_read_titles_by_default(),
-        }
+            read_titles: cfg.read_titles,
+        })
     }
     pub fn song_volume(&self) -> f32 {
         // self.something_playing = true;

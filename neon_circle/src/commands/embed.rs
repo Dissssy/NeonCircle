@@ -13,6 +13,7 @@ impl crate::traits::CommandTrait for DlVideo {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
+                .contexts(vec![InteractionContext::Guild, InteractionContext::BotDm])
                 .description("Embed a video using ytdl")
                 .set_options(vec![
                     CreateCommandOption::new(
@@ -45,6 +46,7 @@ impl crate::traits::CommandTrait for DlAudio {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
+                .contexts(vec![InteractionContext::Guild, InteractionContext::BotDm])
                 .description("Embed some audio using ytdl")
                 .set_options(vec![CreateCommandOption::new(
                     CommandOptionType::String,

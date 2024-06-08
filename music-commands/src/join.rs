@@ -18,7 +18,11 @@ pub struct Command;
 #[async_trait]
 impl CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
-        Some(CreateCommand::new(self.command_name()).description("Join the voice channel"))
+        Some(
+            CreateCommand::new(self.command_name())
+                .contexts(vec![InteractionContext::Guild])
+                .description("Join the voice channel"),
+        )
     }
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         if let Err(e) = interaction
@@ -220,6 +224,26 @@ impl CommandTrait for Command {
                                     Some(guild) => guild,
                                     None => return Ok(()),
                                 };
+                                let settings = match SettingsData::new(guild_id).await {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        log::error!("Failed to get settings: {:?}", e);
+                                        if let Err(e) = interaction
+                                            .edit_response(
+                                                &ctx.http,
+                                                EditInteractionResponse::new()
+                                                    .content("Failed to get settings"),
+                                            )
+                                            .await
+                                        {
+                                            log::error!(
+                                                "Failed to edit original interaction response: {:?}",
+                                                e
+                                            );
+                                        }
+                                        return Ok(());
+                                    }
+                                };
                                 // let em = match super::get_transcribe_channel_handler(ctx, &guild_id)
                                 //     .await
                                 // {
@@ -272,6 +296,7 @@ impl CommandTrait for Command {
                                         }
                                     }
                                 };
+
                                 let handle = {
                                     let ctx = ctx.clone();
                                     let ach = Arc::clone(&audio_command_handler);
@@ -281,7 +306,7 @@ impl CommandTrait for Command {
                                             rx,
                                             msg: messageref,
                                             nothing_uri: nothing_path,
-                                            settings: SettingsData::new(guild_id),
+                                            settings,
                                             log: Log::new(format!("{}-{}", guild_id, channel)),
                                             // transcribe: em,
                                         };

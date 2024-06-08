@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "neon_circle",
+    "voice_events",
     "common",
     "config-command",
     "music-commands",

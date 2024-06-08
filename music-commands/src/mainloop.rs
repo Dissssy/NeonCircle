@@ -59,7 +59,14 @@ pub async fn the_lüüp(
     let mut current_channel = control.msg.channel_id;
     log.log("Starting loop").await;
     log.log("Creating control data").await;
-    let guild_config = common::global_data::guild_config::GuildConfig::get(control.msg.guild_id);
+    let guild_config = match long_term_storage::Guild::load(control.msg.guild_id).await {
+        Ok(g) => g,
+        Err(e) => {
+            log.log(&format!("Error loading guild: {}", e)).await;
+            return;
+        }
+    };
+    // common::global_data::guild_config::GuildConfig::get(control.msg.guild_id).await;
     let global_config = common::get_config();
     {
         log.log("Locking call").await;
@@ -132,7 +139,14 @@ pub async fn the_lüüp(
     let mut last_settings = None;
     let mut nothing_handle: Option<TrackHandle> = None;
     let mut nothing_muted = false;
-    let mut ttsrx = common::global_data::transcribe::get_receiver(current_channel).await;
+    // let mut ttsrx = common::global_data::transcribe::get_receiver(current_channel).await;
+    let mut ttsrx = match long_term_storage::get_tts_receiver(current_channel).await {
+        Ok(r) => r,
+        Err(e) => {
+            log.log(&format!("Error getting ttsrx: {}", e)).await;
+            return;
+        }
+    };
     let mut assigned_voice: HashMap<UserId, TTSVoice> = HashMap::new();
     let mut voice_cycle: Vec<TTSVoice> = {
         let mut v = youtube::VOICES.clone();
@@ -213,8 +227,9 @@ pub async fn the_lüüp(
     let mut connection_events = DisconnectEvents::register(&control.call).await;
     let mut pending_reconnect = OptionalTimeout::new(std::time::Duration::from_millis(500));
     let mut check_if_alone = OptionalTimeout::new(std::time::Duration::from_millis(500)); // will check in 500 ms if the bot is alone to give the data time to populate, if alone it will begin the pending disconnect timer
-    let mut pending_disconnect = { OptionalTimeout::new(guild_config.get_empty_channel_timeout()) };
-    let mut custom_radio_audio_url: Option<Arc<str>> = guild_config.get_radio_audio_url();
+    let mut pending_disconnect = { OptionalTimeout::new(guild_config.empty_channel_timeout) };
+    let mut custom_radio_audio_url: Option<Arc<str>> =
+        guild_config.radio_audio_url.as_ref().map(Arc::clone);
     let custom_video = if let Some(ref url) = custom_radio_audio_url {
         radio_data = None;
         Video::get_video(url.as_ref(), false, false)
@@ -227,7 +242,7 @@ pub async fn the_lüüp(
     let (radio_data_thread, message_radio_thread, mut recv_radio_data) = {
         let (tx, mut inner_rx) = tokio::sync::mpsc::channel::<RadioCommand>(1);
         let (inner_tx, rx) = tokio::sync::mpsc::unbounded_channel::<Arc<OriginalOrCustom>>();
-        let mut custom_radio_data_url = guild_config.get_radio_data_url();
+        let mut custom_radio_data_url = guild_config.radio_data_url.as_ref().map(Arc::clone);
         let mut listen_to_custom = custom_radio_audio_url.is_some();
         let handle = tokio::task::spawn({
             let log = log.clone();
@@ -318,7 +333,7 @@ pub async fn the_lüüp(
     // the characters after the last / in the radio audio url (either the custom one set OR the default one)
     let mut rerun = OptionalTimeout::new(std::time::Duration::from_millis(10));
     let mut manually_set = ManuallySet::default();
-    let empty_channel_timeout = guild_config.get_empty_channel_timeout();
+    let empty_channel_timeout = guild_config.empty_channel_timeout;
     drop(guild_config);
     drop(global_config);
     rerun.begin_now();
@@ -858,7 +873,15 @@ pub async fn the_lüüp(
                                 }
                                 log.log("Channel changed, updating it as well as the tts receiver").await;
                                 current_channel = channel;
-                                ttsrx = common::global_data::transcribe::get_receiver(current_channel).await;
+                                match long_term_storage::get_tts_receiver(current_channel).await {
+                                    Ok(r) => {
+                                        ttsrx = r;
+                                    }
+                                    Err(e) => {
+                                        log.log(&format!("Error getting ttsrx: {}", e)).await;
+                                        // should we break here?
+                                    }
+                                };
                                 if let Err(e) = change_channel.send(channel) {
                                     log.log(&format!("Error joining channel: {}\n", e)).await;
                                 }

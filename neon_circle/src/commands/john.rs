@@ -14,6 +14,7 @@ impl CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
+                .contexts(vec![InteractionContext::Guild, InteractionContext::BotDm])
                 .description("John")
                 .set_options(vec![CreateCommandOption::new(
                     CommandOptionType::Attachment,

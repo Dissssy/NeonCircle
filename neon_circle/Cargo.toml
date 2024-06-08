@@ -11,6 +11,7 @@ common = { path = "../common" }
 config_command = { path = "../config-command" }
 music_commands = { path = "../music-commands" }
 national_debt = { path = "../national-debt" }
+long_term_storage = { path = "../lts" }
 serde = { version = "1.0.203", features = ["rc"] }
 serde_json = { version = "1.0.117", features = ["preserve_order"] }
 # poll-promise = { version = "0.3.0", features = ["tokio"] }
@@ -24,6 +25,7 @@ anyhow = "1.0.86"
 env_logger = "0.11.3"
 image = "0.25.1"
 console-subscriber = { version = "0.2.0", optional = true }
+dotenv = "0.15.0"
 
 
 [features]

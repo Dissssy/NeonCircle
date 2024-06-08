@@ -1,12 +1,12 @@
 use common::anyhow::{self, Result};
 use common::audio::{AudioCommandHandler, AudioPromiseCommand, MetaCommand};
-use common::global_data::guild_config::GuildConfig;
 use common::radio::{RadioData, RadioDataKind};
 use common::serenity::{
     all::*,
     futures::{stream::FuturesUnordered, StreamExt},
 };
 use common::{log, tokio, SubCommandTrait};
+use long_term_storage::Guild;
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Command {
@@ -143,7 +143,24 @@ impl SubCommandTrait for StreamUrl {
                 return Ok(());
             }
         };
-        let config = GuildConfig::get(guild_id);
+        let mut config = match Guild::load(guild_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load guild: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load guild")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
         match url {
             None => {
                 interaction
@@ -152,7 +169,7 @@ impl SubCommandTrait for StreamUrl {
                         CreateInteractionResponseFollowup::new()
                             .content(format!(
                                 "Stream url is currently set to `{}`",
-                                match config.get_radio_audio_url() {
+                                match config.radio_audio_url {
                                     Some(url) => url.to_string(),
                                     None => "Default".to_owned(),
                                 }
@@ -174,7 +191,7 @@ impl SubCommandTrait for StreamUrl {
                     return Ok(());
                 };
                 let note: Option<String> = try {
-                    let url = config.get_radio_data_url()?;
+                    let url = config.radio_data_url?;
                     let d = RadioData::get(url.as_ref()).await.ok()?;
                     (d.kind() == RadioDataKind::IceCast).then_some(())?;
                     let search_for = value.split('/').last()?;
@@ -187,7 +204,7 @@ impl SubCommandTrait for StreamUrl {
                         "Otherwise the data will always be unknown"
                     )
                 };
-                let config = config.set_radio_audio_url(Some(Arc::clone(&value)));
+                config.radio_data_url = Some(Arc::clone(&value));
                 interaction
                     .create_followup(
                         &ctx.http,
@@ -200,7 +217,20 @@ impl SubCommandTrait for StreamUrl {
                             .ephemeral(true),
                     )
                     .await?;
-                config.write();
+                if let Err(e) = config.save().await {
+                    log::error!("Failed to save new value: {:?}", e);
+                    if let Err(e) = interaction
+                        .create_followup(
+                            &ctx.http,
+                            CreateInteractionResponseFollowup::new()
+                                .content("Failed to save new value")
+                                .ephemeral(true),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to send response: {}", e);
+                    }
+                }
                 // we need to iterate over EVERY guild that has a connection, and update the stream url
                 let connection_handler = {
                     let data = ctx.data.read().await;
@@ -272,7 +302,7 @@ impl SubCommandTrait for DataUrl {
             ResolvedValue::String(s) => Some(s.into()),
             _ => None,
         });
-        let guild = match interaction.guild_id {
+        let guild_id = match interaction.guild_id {
             Some(g) => g,
             None => {
                 interaction
@@ -286,7 +316,24 @@ impl SubCommandTrait for DataUrl {
                 return Ok(());
             }
         };
-        let config = GuildConfig::get(guild);
+        let mut config = match Guild::load(guild_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load guild: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load guild")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
         match url {
             None => {
                 interaction
@@ -295,7 +342,7 @@ impl SubCommandTrait for DataUrl {
                         CreateInteractionResponseFollowup::new()
                             .content(format!(
                                 "Data url is currently set to `{}`",
-                                match config.get_radio_data_url() {
+                                match config.radio_data_url {
                                     Some(url) => url.to_string(),
                                     None => "Default".to_owned(),
                                 }
@@ -323,7 +370,7 @@ impl SubCommandTrait for DataUrl {
                     }
                     Ok(d) => {
                         let note: Option<String> = try {
-                            let url = config.get_radio_audio_url()?;
+                            let url = config.radio_data_url?;
                             (d.kind() == RadioDataKind::IceCast).then_some(())?;
                             let search_for = url.split('/').last()?;
                             format!(
@@ -335,7 +382,7 @@ impl SubCommandTrait for DataUrl {
                                 "Otherwise the data will always be unknown"
                             )
                         };
-                        let config = config.set_radio_data_url(Some(Arc::clone(&value)));
+                        config.radio_data_url = Some(Arc::clone(&value));
                         interaction
                             .create_followup(
                                 &ctx.http,
@@ -348,7 +395,20 @@ impl SubCommandTrait for DataUrl {
                                     .ephemeral(true),
                             )
                             .await?;
-                        config.write();
+                        if let Err(e) = config.save().await {
+                            log::error!("Failed to save new value: {:?}", e);
+                            if let Err(e) = interaction
+                                .create_followup(
+                                    &ctx.http,
+                                    CreateInteractionResponseFollowup::new()
+                                        .content("Failed to save new value")
+                                        .ephemeral(true),
+                                )
+                                .await
+                            {
+                                log::error!("Failed to send response: {}", e);
+                            }
+                        }
                         // we need to iterate over EVERY guild that has a connection, and update the data url
                         let connection_handler = {
                             let data = ctx.data.read().await;
@@ -364,7 +424,7 @@ impl SubCommandTrait for DataUrl {
                             let mut map = connection_handler.write().await;
                             let mut res = FuturesUnordered::new();
                             for sender in map.values_mut() {
-                                if sender.guild_id != guild {
+                                if sender.guild_id != guild_id {
                                     continue;
                                 }
                                 let (tx, rx) = tokio::sync::oneshot::channel();
@@ -412,7 +472,7 @@ impl SubCommandTrait for Reset {
         interaction: &CommandInteraction,
         _options: &[ResolvedOption],
     ) -> Result<()> {
-        let guild = match interaction.guild_id {
+        let guild_id = match interaction.guild_id {
             Some(g) => g,
             None => {
                 interaction
@@ -426,8 +486,26 @@ impl SubCommandTrait for Reset {
                 return Ok(());
             }
         };
-        let config = GuildConfig::get(guild);
-        let config = config.set_radio_audio_url(None).set_radio_data_url(None);
+        let mut config = match Guild::load(guild_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load guild: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load guild")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
+        config.radio_audio_url = None;
+        config.radio_data_url = None;
         interaction
             .create_followup(
                 &ctx.http,
@@ -436,7 +514,20 @@ impl SubCommandTrait for Reset {
                     .ephemeral(true),
             )
             .await?;
-        config.write();
+        if let Err(e) = config.save().await {
+            log::error!("Failed to save new value: {:?}", e);
+            if let Err(e) = interaction
+                .create_followup(
+                    &ctx.http,
+                    CreateInteractionResponseFollowup::new()
+                        .content("Failed to save new value")
+                        .ephemeral(true),
+                )
+                .await
+            {
+                log::error!("Failed to send response: {}", e);
+            }
+        }
         // we need to iterate over EVERY guild that has a connection, and update the stream url
         let connection_handler = {
             let data = ctx.data.read().await;
@@ -452,7 +543,7 @@ impl SubCommandTrait for Reset {
             let mut map = connection_handler.write().await;
             let mut res = FuturesUnordered::new();
             for sender in map.values_mut() {
-                if sender.guild_id != guild {
+                if sender.guild_id != guild_id {
                     continue;
                 }
                 let (tx, rx) = tokio::sync::oneshot::channel();

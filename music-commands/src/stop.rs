@@ -7,7 +7,11 @@ pub struct Command;
 #[async_trait]
 impl CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
-        Some(CreateCommand::new(self.command_name()).description("Stop all playback"))
+        Some(
+            CreateCommand::new(self.command_name())
+                .contexts(vec![InteractionContext::Guild])
+                .description("Stop all playback"),
+        )
     }
     async fn run(&self, ctx: &Context, interaction: &CommandInteraction) -> Result<()> {
         if let Err(e) = interaction

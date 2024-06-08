@@ -1,6 +1,7 @@
 use common::anyhow::Result;
 use common::serenity::all::*;
 use common::{log, SubCommandTrait};
+use long_term_storage::Channel;
 pub struct Command {
     subcommands: Vec<Box<dyn SubCommandTrait>>,
 }
@@ -159,8 +160,25 @@ impl SubCommandTrait for List {
             }
             return Ok(());
         }
-        let channels = common::global_data::transcribe::list_all_channels(voice_channel.id).await;
-        if channels.is_empty() {
+        let channels = match Channel::load(voice_channel.id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load channel: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load channel")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
+        if channels.text_ids.is_empty() {
             if let Err(e) = interaction
                 .create_followup(
                     &ctx.http,
@@ -175,7 +193,7 @@ impl SubCommandTrait for List {
             return Ok(());
         } else {
             let mut content = format!("Transcribed channels for {}:\n", voice_channel.id.mention());
-            for channel in channels {
+            for channel in channels.text_ids {
                 content.push_str(&format!("{}\n", channel.mention(),));
             }
             if let Err(e) = interaction
@@ -287,13 +305,58 @@ impl SubCommandTrait for Add {
                 return Ok(());
             }
         };
-        // it can be voice or text channel both work fine
-        common::global_data::transcribe::set_channel(
-            voice_channel.id,
-            transcribed_channel.id,
-            true,
-        )
-        .await;
+        let mut channels = match Channel::load(voice_channel.id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load channel: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load channel")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
+        if channels.text_ids.contains(&transcribed_channel.id) {
+            if let Err(e) = interaction
+                .create_followup(
+                    &ctx.http,
+                    CreateInteractionResponseFollowup::new()
+                        .ephemeral(true)
+                        .content(format!(
+                            "{} is already in the transcription list for {}",
+                            transcribed_channel.id.mention(),
+                            voice_channel.id.mention()
+                        )),
+                )
+                .await
+            {
+                log::error!("Failed to send response: {}", e);
+            }
+            return Ok(());
+        }
+        channels.text_ids.insert(transcribed_channel.id);
+        if let Err(e) = channels.save().await {
+            log::error!("Failed to save channel: {:?}", e);
+            if let Err(e) = interaction
+                .create_followup(
+                    &ctx.http,
+                    CreateInteractionResponseFollowup::new()
+                        .content("Failed to save channel")
+                        .ephemeral(true),
+                )
+                .await
+            {
+                log::error!("Failed to send response: {}", e);
+            }
+            return Ok(());
+        }
         if let Err(e) = interaction
             .create_followup(
                 &ctx.http,
@@ -406,13 +469,58 @@ impl SubCommandTrait for Remove {
                 return Ok(());
             }
         };
-        // it can be voice or text channel both work fine
-        common::global_data::transcribe::set_channel(
-            voice_channel.id,
-            transcribed_channel.id,
-            false,
-        )
-        .await;
+        let mut channels = match Channel::load(voice_channel.id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load channel: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load channel")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
+        if !channels.text_ids.contains(&transcribed_channel.id) {
+            if let Err(e) = interaction
+                .create_followup(
+                    &ctx.http,
+                    CreateInteractionResponseFollowup::new()
+                        .ephemeral(true)
+                        .content(format!(
+                            "{} is not in the transcription list for {}",
+                            transcribed_channel.id.mention(),
+                            voice_channel.id.mention()
+                        )),
+                )
+                .await
+            {
+                log::error!("Failed to send response: {}", e);
+            }
+            return Ok(());
+        }
+        channels.text_ids.remove(&transcribed_channel.id);
+        if let Err(e) = channels.save().await {
+            log::error!("Failed to save channel: {:?}", e);
+            if let Err(e) = interaction
+                .create_followup(
+                    &ctx.http,
+                    CreateInteractionResponseFollowup::new()
+                        .content("Failed to save channel")
+                        .ephemeral(true),
+                )
+                .await
+            {
+                log::error!("Failed to send response: {}", e);
+            }
+            return Ok(());
+        }
         if let Err(e) = interaction
             .create_followup(
                 &ctx.http,
@@ -497,7 +605,54 @@ impl SubCommandTrait for Clear {
             }
             return Ok(());
         }
-        common::global_data::transcribe::clear_channel(voice_channel.id).await;
+        let mut channels = match Channel::load(voice_channel.id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load channel: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load channel")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
+        if channels.text_ids.is_empty() {
+            if let Err(e) = interaction
+                .create_followup(
+                    &ctx.http,
+                    CreateInteractionResponseFollowup::new()
+                        .ephemeral(true)
+                        .content("No transcribed channels for this voice channel"),
+                )
+                .await
+            {
+                log::error!("Failed to send response: {}", e);
+            }
+            return Ok(());
+        }
+        channels.text_ids.clear();
+        if let Err(e) = channels.save().await {
+            log::error!("Failed to save channel: {:?}", e);
+            if let Err(e) = interaction
+                .create_followup(
+                    &ctx.http,
+                    CreateInteractionResponseFollowup::new()
+                        .content("Failed to save channel")
+                        .ephemeral(true),
+                )
+                .await
+            {
+                log::error!("Failed to send response: {}", e);
+            }
+            return Ok(());
+        };
         if let Err(e) = interaction
             .create_followup(
                 &ctx.http,

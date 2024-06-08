@@ -1,14 +1,19 @@
+use crate::transcribe;
+
 use super::{
     human_readable_bytes, InnerThreadCommand, PacketData, PacketDuration, ThreadResponse,
     ThreadResponseAction, MIN_SAMPLES_FOR_TRANSCRIPTION,
 };
-use crate::{utils::OptionalTimeout, voice_events::transcribe};
-use serenity::{
-    all::UserId,
-    futures::{stream::FuturesUnordered, StreamExt as _},
+use common::{
+    log,
+    serenity::{
+        all::UserId,
+        futures::{stream::FuturesUnordered, StreamExt as _},
+    },
+    tokio::{self, sync::mpsc, time::Instant},
+    utils::OptionalTimeout,
 };
 use std::time::Duration;
-use tokio::{sync::mpsc, time::Instant};
 pub struct TranscriptionThread {
     handle: tokio::task::JoinHandle<()>,
     pub command: mpsc::UnboundedSender<InnerThreadCommand>,
@@ -99,7 +104,7 @@ async fn user_thread(
                         let content = resp.to_string();
                         if let Err(e) = responses.send(ThreadResponse {
                             // audio: None,
-                            audio: crate::sam::get_speech(&content).inspect_err(|e| log::error!("Failed to get speech: {}", e)).ok(),
+                            audio: common::sam::get_speech(&content).inspect_err(|e| log::error!("Failed to get speech: {}", e)).ok(),
                             action: ThreadResponseAction::SendMessage { content },
                             user_id,
                         }) {

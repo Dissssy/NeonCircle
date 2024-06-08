@@ -1,6 +1,15 @@
+use common::anyhow::Result;
+use common::tokio::sync::OnceCell;
+use sqlx::{PgPool, Postgres, Transaction};
+
 mod channel;
+pub use channel::{get_receiver as get_tts_receiver, send_message as send_tts_message, Channel};
 mod guild;
+pub use guild::Guild;
 mod user;
+pub use user::User;
+mod reminder;
+pub use reminder::Reminder;
 // This crate is for LTS (Long Term Storage) of data for the Neon Circle Discord bot.
 // Uses PostgreSQL as the database.
 //
@@ -18,3 +27,26 @@ mod user;
 //  the empty channel timeout (a duration between 0 and 600 seconds)
 //
 // channel will be a map from a voice channel id to a text channel id, and usually be queried in reverse, getting a list of voice channels from a text channel id.
+
+static POOL: OnceCell<PgPool> = OnceCell::const_new();
+
+async fn get_connection() -> Result<Transaction<'static, Postgres>> {
+    Ok(POOL
+        .get_or_init(|| async {
+            PgPool::connect(&std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"))
+                .await
+                .expect("Failed to connect to database")
+        })
+        .await
+        .begin()
+        .await?)
+}
+
+pub async fn migrate_data_from_json() -> Result<()> {
+    let mut conn = get_connection().await?;
+    user::migrate_data_from_json(&mut conn).await?;
+    guild::migrate_data_from_json(&mut conn).await?;
+    channel::migrate_data_from_json(&mut conn).await?;
+    conn.commit().await?;
+    Ok(())
+}

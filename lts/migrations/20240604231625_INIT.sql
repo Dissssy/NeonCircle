@@ -21,8 +21,8 @@ CREATE TABLE IF NOT EXISTS guilds (
     radio_url TEXT,
     -- Custom Radio Data URL for the guild
     radio_data_url TEXT,
-    -- Empty channel timeout in milliseconds (between 0 and 600000, enforced by an ON INSERT OR UPDATE trigger)
-    empty_channel_timeout INTEGER NOT NULL DEFAULT 0
+    -- Empty channel timeout in milliseconds (between 0 and 600000, enforced by an ON INSERT OR UPDATE trigger), defaults to 30 seconds: 30000
+    empty_channel_timeout INTEGER NOT NULL DEFAULT 30000
 );
 
 CREATE OR REPLACE FUNCTION validate_settings() RETURNS TRIGGER AS $$
@@ -34,7 +34,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER validate_settings_trigger
+CREATE OR REPLACE TRIGGER validate_settings_trigger
     BEFORE INSERT OR UPDATE ON guilds
     FOR EACH ROW
     EXECUTE FUNCTION validate_settings();
@@ -49,12 +49,15 @@ CREATE TABLE IF NOT EXISTS channels (
 -- now we need to default the text_ids to an array containing the voice_id
 CREATE OR REPLACE FUNCTION default_text_ids() RETURNS TRIGGER AS $$
 BEGIN
-    NEW.text_ids = ARRAY[NEW.voice_id];
+    IF OLD IS NULL THEN
+        -- append the voice_id to the text_ids array since we might be writing a value into it too
+        NEW.text_ids = NEW.text_ids || ARRAY[NEW.voice_id];
+    END IF;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER default_text_ids_trigger
+CREATE OR REPLACE TRIGGER default_text_ids_trigger
     BEFORE INSERT ON channels
     FOR EACH ROW
     EXECUTE FUNCTION default_text_ids();

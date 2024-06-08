@@ -1,29 +1,33 @@
+#![feature(if_let_guard, duration_millis_float, try_blocks)]
 mod commands;
 mod structs;
 mod user;
-use crate::{
+use common::{
+    anyhow::{self, Result},
     audio::AudioPromiseCommand,
+    get_config, log,
+    serenity::all::*,
+    songbird::{
+        self,
+        events::{
+            context_data::{VoiceData, VoiceTick},
+            Event,
+        },
+        model::payload::Speaking,
+        tracks::Track,
+        Call, CoreEvent, EventContext,
+    },
+    tokio::{
+        self,
+        sync::{mpsc, oneshot, RwLock},
+        time::{Duration, Instant, Sleep},
+    },
     utils::{DeleteAfterFinish, TranscriptionMessage},
     video::Video,
-    PostSomething,
+    PostSomething, WEB_CLIENT,
 };
-use anyhow::Result;
 use serde::Deserialize as _;
-use serenity::all::*;
-use songbird::{
-    events::{
-        context_data::{VoiceData, VoiceTick},
-        Event,
-    },
-    model::payload::Speaking,
-    tracks::Track,
-    Call, CoreEvent, EventContext,
-};
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
-use tokio::{
-    sync::{mpsc, oneshot, RwLock},
-    time::{Duration, Instant, Sleep},
-};
 const SAMPLES_PER_MILLISECOND: f64 = 96.0;
 const MIN_SAMPLES_FOR_TRANSCRIPTION: usize = 64 * 1024;
 static EVENTS: &[Event] = &[
@@ -31,7 +35,7 @@ static EVENTS: &[Event] = &[
     Event::Core(CoreEvent::VoiceTick),
 ];
 pub async fn transcription_thread(
-    call: Arc<serenity::prelude::Mutex<Call>>,
+    call: Arc<common::serenity::prelude::Mutex<Call>>,
     http: Arc<Http>,
     otx: mpsc::UnboundedSender<(oneshot::Sender<Arc<str>>, AudioPromiseCommand)>,
     mut commands: mpsc::UnboundedReceiver<TranscriptionMessage>,
@@ -172,11 +176,25 @@ impl songbird::EventHandler for VoiceEventSender {
             }
             EventContext::VoiceTick(VoiceTick { speaking, .. }) => {
                 for (ssrc, VoiceData { decoded_voice, .. }) in speaking.iter() {
-                    let ssrc_to_user_id = self.ssrc_to_user_id.read().await;
+                    let user_id = try {
+                        let user_id = {
+                            let ssrc_to_user_id = self.ssrc_to_user_id.read().await;
+                            *ssrc_to_user_id.get(ssrc)?
+                        };
+                        match long_term_storage::User::mic_consent(user_id).await {
+                            Ok(true) => Some(user_id),
+                            Ok(false) => None,
+                            Err(e) => {
+                                log::error!("Failed to get consent: {:?}", e);
+                                None
+                            }
+                        }?
+                    };
                     if let (Some(user_id), Some(audio)) = (
-                        ssrc_to_user_id.get(ssrc).and_then(|u| {
-                            crate::global_data::consent_data::get_consent(*u).then_some(*u)
-                        }),
+                        // ssrc_to_user_id.get(ssrc).and_then(|u| {
+                        //     // common::global_data::consent_data::get_consent(*u).then_some(*u)
+                        // }),
+                        user_id,
                         decoded_voice,
                     ) {
                         if let Err(e) = self.sender.send(PacketData {
@@ -269,8 +287,8 @@ pub fn human_readable_bytes(size: usize) -> String {
     format!("{:.2} {}", size, units.get(i).unwrap_or(&"??"))
 }
 async fn transcribe(audio: &[i16]) -> Result<TranscriptionResult> {
-    let cfg = crate::config::get_config();
-    let response = crate::WEB_CLIENT
+    let cfg = get_config();
+    let response = WEB_CLIENT
         .post(format!(
             "{}/transcribe/raw?format=s16le&sample_rate=48000&channels=2",
             cfg.transcribe_url
@@ -294,7 +312,7 @@ async fn transcribe(audio: &[i16]) -> Result<TranscriptionResult> {
         }
     };
     let url = format!("{}/result/{}/wait", cfg.transcribe_url, request_id);
-    let response = crate::WEB_CLIENT
+    let response = WEB_CLIENT
         .get(url)
         .header("x-token", cfg.transcribe_token)
         .send()

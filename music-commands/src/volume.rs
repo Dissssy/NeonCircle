@@ -9,6 +9,7 @@ impl CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
+                .contexts(vec![InteractionContext::Guild])
                 .description("Change the volume of the bot for this session")
                 .set_options(vec![CreateCommandOption::new(
                     CommandOptionType::Number,

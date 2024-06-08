@@ -10,6 +10,7 @@ impl CommandTrait for Command {
         Some(
             CreateCommand::new(self.command_name())
                 .description("Remove a song from the queue")
+                .contexts(vec![InteractionContext::Guild])
                 .set_options(vec![CreateCommandOption::new(
                     CommandOptionType::Integer,
                     "index",

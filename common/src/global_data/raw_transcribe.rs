@@ -151,3 +151,7 @@ pub async fn save() {
         log::error!("Failed to write guild config file: {}", e);
     }
 }
+
+pub async fn extract_all() -> HashMap<VoiceChannel, Vec<TextChannel>> {
+    RWLOCK.read().await.clone()
+}

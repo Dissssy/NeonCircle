@@ -4,42 +4,83 @@
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::implicit_clone,
-    clippy::clone_on_ref_ptr,
+    clippy::clone_on_ref_ptr
 )]
 mod commands;
 mod video;
 use std::sync::atomic::AtomicBool;
-use std::{collections::HashMap, time::Duration};
 use std::sync::Arc;
+use std::{collections::HashMap, time::Duration};
 mod context_menu;
 
+use commands::feedback::FeedbackCustomId;
+use commands::remind::ReminderCustomId;
 use common::audio::{AudioCommandHandler, AudioPromiseCommand, MetaCommand, OrToggle};
 use common::global_data::voice_data::VoiceAction;
+use common::tokio::sync::Mutex;
 use serde::{Deserialize, Serialize};
 mod traits {
-    pub use common::{CommandTrait, SubCommandTrait};
+    pub use common::CommandTrait;
 }
 mod config {
     pub use common::get_config;
 }
-use common::{chrono, global_data, lazy_static, log, songbird, tokio, WEB_CLIENT};
 use common::serenity::{
     all::*,
     futures::{stream::FuturesUnordered, StreamExt},
 };
+use common::{chrono, global_data, lazy_static, log, songbird, tokio, WEB_CLIENT};
 use songbird::SerenityInit;
 use tokio::sync::{mpsc, oneshot, RwLock};
 struct PlanetHandler {
     commands: Vec<Box<dyn traits::CommandTrait>>,
     initialized: AtomicBool,
+    reminder_thread: Arc<Mutex<Option<ThreadHandle>>>,
     playing: String,
 }
+
+impl Drop for PlanetHandler {
+    fn drop(&mut self) {
+        let mut reminder_thread = match self.reminder_thread.try_lock() {
+            Ok(r) => r,
+            Err(e) => {
+                log::error!("Failed to lock reminder thread: {}", e);
+                return;
+            }
+        };
+        if let Some(reminder_thread) = reminder_thread.take() {
+            reminder_thread.shutdown();
+        }
+    }
+}
+
+struct ThreadHandle {
+    #[allow(dead_code)]
+    handle: tokio::task::JoinHandle<()>,
+    shutdown: tokio::sync::oneshot::Sender<()>,
+}
+
+impl ThreadHandle {
+    fn new(
+        handle: tokio::task::JoinHandle<()>,
+        shutdown: tokio::sync::oneshot::Sender<()>,
+    ) -> Self {
+        Self { handle, shutdown }
+    }
+    fn shutdown(self) {
+        if self.shutdown.send(()).is_err() {
+            log::error!("Failed to send shutdown signal");
+        }
+    }
+}
+
 impl PlanetHandler {
     fn new(commands: Vec<Box<dyn traits::CommandTrait>>, activity: String) -> Self {
         Self {
             commands,
             initialized: AtomicBool::new(false),
             playing: activity,
+            reminder_thread: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -82,8 +123,8 @@ pub struct UserSafe {
 }
 #[async_trait]
 impl EventHandler for PlanetHandler {
-    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        match &interaction {
+    async fn interaction_create(&self, ctx: Context, mut interaction: Interaction) {
+        match &mut interaction {
             Interaction::Command(rawcommand) => {
                 let command_name = rawcommand.data.name.clone();
                 let command = self
@@ -113,29 +154,480 @@ impl EventHandler for PlanetHandler {
                 log::info!("Ping received: {:?}", p);
             }
             Interaction::Component(mci) => {
+                // special case for feedback response
+                if let Ok(feedback_id) = FeedbackCustomId::try_from(mci.data.custom_id.as_str()) {
+                    let feedback = {
+                        let v = &mci.message.content;
+                        let v = v.strip_prefix("Anonymous Feedback:\n```").unwrap_or(v);
+                        v.strip_suffix("```").unwrap_or(v)
+                    };
+                    if let Err(e) = mci
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Modal(
+                                CreateModal::new(feedback_id, "Feedback Response").components(
+                                    vec![
+                                        CreateActionRow::InputText(
+                                            CreateInputText::new(
+                                                InputTextStyle::Paragraph,
+                                                "Original Feedback",
+                                                "feedback",
+                                            )
+                                            .value(feedback)
+                                            .placeholder(feedback),
+                                        ),
+                                        CreateActionRow::InputText(
+                                            CreateInputText::new(
+                                                InputTextStyle::Paragraph,
+                                                "Response",
+                                                "response",
+                                            )
+                                            .placeholder("Type your response here")
+                                            .required(true),
+                                        ),
+                                    ],
+                                ),
+                            ),
+                        )
+                        .await
+                    {
+                        if let Err(e) = mci
+                            .create_response(
+                                &ctx.http,
+                                CreateInteractionResponse::Message(
+                                    CreateInteractionResponseMessage::new()
+                                        .content(format!("Failed to create response modal: {}", e))
+                                        .ephemeral(true),
+                                ),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to send response: {}", e);
+                        }
+                    }
+                    // and edit the component to turn the button green so the user knows it's been clicked
+                    if let Err(e) = mci
+                        .message
+                        .edit(&ctx.http, {
+                            EditMessage::new().button(
+                                CreateButton::new(&mci.data.custom_id)
+                                    .label("Responded")
+                                    .style(ButtonStyle::Danger),
+                            )
+                        })
+                        .await
+                    {
+                        log::error!("Failed to edit original interaction response: {}", e);
+                    }
+                    return;
+                }
+
+                let reminder_id =
+                    ReminderCustomId::try_from(mci.data.custom_id.as_str()).and_then(|r| {
+                        if r.is_list() {
+                            // extract from the value instead
+                            match mci.data.kind {
+                                ComponentInteractionDataKind::StringSelect { ref values } => {
+                                    match values.first() {
+                                        Some(v) => {
+                                            return ReminderCustomId::try_from(v.as_str());
+                                        }
+                                        None => Err(anyhow::anyhow!("No values in string select")),
+                                    }
+                                }
+                                _ => Err(anyhow::anyhow!("Unknown component interaction kind")),
+                            }
+                        } else {
+                            Ok(r)
+                        }
+                    });
+
+                if let Ok(reminder_id) = reminder_id {
+                    match reminder_id {
+                        ReminderCustomId::TimeWrong => {
+                            if let Err(e) = mci
+                                .create_response(
+                                    &ctx.http,
+                                    CreateInteractionResponse::Message(
+                                        CreateInteractionResponseMessage::new()
+                                            .content(
+                                                "If your timezone is incorrect, set it with `/timezone`\n\
+                                                If it's correct and the time is displaying improperly, \
+                                                contact your local congressman/government official and \
+                                                tell them to get rid of daylight savings time. (Or use \
+                                                the nudge buttons to adjust the time until it's correct)",
+                                            )
+                                            .ephemeral(true),
+                                    ),
+                                )
+                                .await
+                            {
+                                log::error!("Failed to send response: {}", e);
+                            }
+                        },
+                        ReminderCustomId::List => {
+                            log::error!("Reminder list case should never occur");
+                        },
+                        ReminderCustomId::Return => {
+                            if let Err(e) = mci
+                                .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+                                .await
+                            {
+                                log::error!("Failed to send response: {}", e);
+                            }
+                            let edit = match commands::remind::list_reminders(mci.user.id, 0).await {
+                                Ok(Some((menu, button1, button2))) => {
+                                    EditInteractionResponse::new()
+                                        .content(String::new())
+                                        .select_menu(menu)
+                                        .button(button1)
+                                        .button(button2)
+                                },
+                                Ok(None) => {
+                                    EditInteractionResponse::new().content("You have no reminders.").components(vec![])
+                                },
+                                Err(e) => {
+                                    log::error!("Failed to list reminders: {}", e);
+                                    if let Err(e) = mci
+                                        .create_response(
+                                            &ctx.http,
+                                            CreateInteractionResponse::Message(
+                                                CreateInteractionResponseMessage::new()
+                                                    .content(format!("Failed to list reminders: {}", e))
+                                                    .ephemeral(true),
+                                            ),
+                                        )
+                                        .await
+                                    {
+                                        log::error!("Failed to send response: {}", e);
+                                    }
+                                    return;
+                                }
+                            };
+                            if let Err(e) = mci.edit_response(
+                                    &ctx.http,
+                                    edit,
+                                )
+                                .await
+                            {
+                                log::error!("Failed to edit response: {}", e);
+                            }
+                        },
+                        ReminderCustomId::NudgeForward(uuid) => {
+                            if let Err(e) = mci
+                                .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+                                .await
+                            {
+                                log::error!("Failed to send response: {}", e);
+                            }
+                            match long_term_storage::Reminder::nudge_forward(&uuid).await {
+                                Ok(reminder) => {
+                                    let mut iter = mci.message.content.split("<t:");
+                                    match (iter.next(), iter.next(), iter.next()) {
+                                        (Some(prefix), Some(remaining), None) => {
+                                            let mut iter = remaining.split(":F>");
+                                            match (iter.next(), iter.next(), iter.next()) {
+                                                (Some(_), Some(rest), None) => {
+                                                    if let Err(e) = mci
+                                                        .edit_response(&ctx.http, EditInteractionResponse::new().content(format!("{}<t:{}:F>{}", prefix, reminder.remind_at.timestamp(), rest)))
+                                                        .await
+                                                    {
+                                                        log::error!("Failed to edit message: {}", e);
+                                                    }
+                                                }
+                                                _ => {
+                                                    log::error!("Failed to split content");
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            log::error!("Failed to split content");
+                                        }
+                                    }
+                                },
+                                Err(e) => {
+                                    log::error!("Failed to nudge forward: {}", e);
+                                    if let Err(e) = mci
+                                        .create_response(
+                                            &ctx.http,
+                                            CreateInteractionResponse::Message(
+                                                CreateInteractionResponseMessage::new()
+                                                    .content(format!("Failed to nudge forward: {}", e))
+                                                    .ephemeral(true),
+                                            ),
+                                        )
+                                        .await
+                                    {
+                                        log::error!("Failed to send response: {}", e);
+                                    }
+                                }
+                            }
+                        },
+                        ReminderCustomId::NudgeBackward(uuid) => {
+                            if let Err(e) = mci
+                                .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+                                .await
+                            {
+                                log::error!("Failed to send response: {}", e);
+                            }
+                            match long_term_storage::Reminder::nudge_backward(&uuid).await {
+                                Ok(reminder) => {
+                                    let mut iter = mci.message.content.split("<t:");
+                                    match (iter.next(), iter.next(), iter.next()) {
+                                        (Some(prefix), Some(remaining), None) => {
+                                            let mut iter = remaining.split(":F>");
+                                            match (iter.next(), iter.next(), iter.next()) {
+                                                (Some(_), Some(rest), None) => {
+                                                    if let Err(e) = mci
+                                                        .edit_response(&ctx.http, EditInteractionResponse::new().content(format!("{}<t:{}:F>{}", prefix, reminder.remind_at.timestamp(), rest)))
+                                                        .await
+                                                    {
+                                                        log::error!("Failed to edit message: {}", e);
+                                                    }
+                                                }
+                                                _ => {
+                                                    log::error!("Failed to split content");
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            log::error!("Failed to split content");
+                                        }
+                                    }
+                                },
+                                Err(e) => {
+                                    log::error!("Failed to nudge backward: {}", e);
+                                    if let Err(e) = mci
+                                        .create_response(
+                                            &ctx.http,
+                                            CreateInteractionResponse::Message(
+                                                CreateInteractionResponseMessage::new()
+                                                    .content(format!("Failed to nudge backward: {}", e))
+                                                    .ephemeral(true),
+                                            ),
+                                        )
+                                        .await
+                                    {
+                                        log::error!("Failed to send response: {}", e);
+                                    }
+                                }
+                            }
+                        },
+                        ReminderCustomId::Delete(uuid) => {
+                            if let Err(e) = mci
+                                .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+                                .await
+                            {
+                                log::error!("Failed to send response: {}", e);
+                            }
+                            match long_term_storage::Reminder::from_id(&uuid).await {
+                                Ok(reminder) => {
+                                    if let Err(e) = reminder.delete().await {
+                                        log::error!("Failed to delete reminder: {}", e);
+                                        if let Err(e) = mci
+                                            .edit_response(&ctx.http, EditInteractionResponse::new().content(format!("Failed to delete reminder: {}", e)))
+                                            .await
+                                        {
+                                            log::error!("Failed to edit response: {}", e);
+                                        }
+                                    } else {
+                                        let edit = match commands::remind::list_reminders(mci.user.id, 0).await {
+                                            Ok(Some((menu, button1, button2))) => {
+                                                EditInteractionResponse::new()
+                                                    .content("Reminder deleted.")
+                                                    .select_menu(menu)
+                                                    .button(button1)
+                                                    .button(button2)
+                                            },
+                                            Ok(None) => {
+                                                EditInteractionResponse::new().content("You have no reminders.").components(vec![])
+                                            },
+                                            Err(e) => {
+                                                log::error!("Failed to list reminders: {}", e);
+                                                if let Err(e) = mci
+                                                    .create_response(
+                                                        &ctx.http,
+                                                        CreateInteractionResponse::Message(
+                                                            CreateInteractionResponseMessage::new()
+                                                                .content(format!("Failed to list reminders: {}", e))
+                                                                .ephemeral(true),
+                                                        ),
+                                                    )
+                                                    .await
+                                                {
+                                                    log::error!("Failed to send response: {}", e);
+                                                }
+                                                return;
+                                            }
+                                        };
+                                        if let Err(e) = mci.edit_response(
+                                                &ctx.http,
+                                                edit,
+                                            )
+                                            .await
+                                        {
+                                            log::error!("Failed to edit response: {}", e);
+                                        }
+                                    }
+                                },
+                                Err(e) => {
+                                    log::error!("Failed to delete reminder: {}", e);
+                                    if let Err(e) = mci
+                                        .edit_response(&ctx.http, EditInteractionResponse::new().content(format!("Failed to delete reminder: {}", e)))
+                                        .await
+                                    {
+                                        log::error!("Failed to edit response: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        ReminderCustomId::ToPage(page) => {
+                            if let Err(e) = mci
+                                .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+                                .await
+                            {
+                                log::error!("Failed to send response: {}", e);
+                            }
+                            let (menu, button1, button2) = match commands::remind::list_reminders(mci.user.id, page).await {
+                                Ok(Some((menu, button1, button2))) => (menu, button1, button2),
+                                Ok(None) => {
+                                    log::error!("They bugged it, either intentionally or unintentionally");
+                                    return;
+                                },
+                                Err(e) => {
+                                    log::error!("Failed to list reminders: {}", e);
+                                    if let Err(e) = mci
+                                        .create_response(
+                                            &ctx.http,
+                                            CreateInteractionResponse::Message(
+                                                CreateInteractionResponseMessage::new()
+                                                    .content(format!("Failed to list reminders: {}", e))
+                                                    .ephemeral(true),
+                                            ),
+                                        )
+                                        .await
+                                    {
+                                        log::error!("Failed to send response: {}", e);
+                                    }
+                                    return;
+                                }
+                            };
+                            if let Err(e) = mci.edit_response(
+                                    &ctx.http,
+                                    EditInteractionResponse::new()
+                                        .select_menu(menu)
+                                        .button(button1)
+                                        .button(button2),
+                                )
+                                .await
+                            {
+                                log::error!("Failed to edit response: {}", e);
+                            }
+                        }
+                        ReminderCustomId::Detail(uuid) => {
+                            if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Acknowledge).await {
+                                log::error!("Failed to send response: {}", e);
+                            }
+                            match long_term_storage::Reminder::from_id(&uuid).await {
+                                Ok(reminder) => {
+                                    if let Err(e) = mci
+                                        .edit_response(&ctx.http,
+                                            EditInteractionResponse::new()
+                                                .content(format!("Time: <t:{}:F>\nMessage:\n```\n{}\n```", reminder.remind_at.timestamp(), reminder.message))
+                                                .button(
+                                                    CreateButton::new(ReminderCustomId::Return)
+                                                    .style(ButtonStyle::Success)
+                                                    .label("Return"),
+                                                )
+                                                .button(
+                                                    CreateButton::new(ReminderCustomId::NudgeForward(
+                                                        reminder.id().to_string(),
+                                                    ))
+                                                    .style(ButtonStyle::Primary)
+                                                    .label("Nudge forward"),
+                                                )
+                                                .button(
+                                                    CreateButton::new(ReminderCustomId::NudgeBackward(
+                                                        reminder.id().to_string(),
+                                                    ))
+                                                    .style(ButtonStyle::Primary)
+                                                    .label("Nudge backward"),
+                                                )
+                                                .button(
+                                                    CreateButton::new(ReminderCustomId::Delete(
+                                                        reminder.id().to_string(),
+                                                    ))
+                                                    .style(ButtonStyle::Danger)
+                                                    .label("Delete")
+                                                ),
+                                            ).await
+                                    {
+                                        log::error!("Failed to send response: {}", e);
+                                    }
+                                },
+                                Err(e) => {
+                                    log::error!("Failed to get reminder: {}", e);
+                                    if let Err(e) = mci
+                                        .edit_response(&ctx.http, EditInteractionResponse::new().content(format!("Failed to get reminder: {}", e)))
+                                        .await
+                                    {
+                                        log::error!("Failed to send response: {}", e);
+                                    }
+                                }
+                            }
+                        },
+                    }
+                    return;
+                }
+
                 let guild_id = match mci.guild_id {
                     Some(id) => id,
                     None => {
-                        if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("This can only be used in a server").ephemeral(true))).await {
+                        if let Err(e) = mci
+                            .create_response(
+                                &ctx.http,
+                                CreateInteractionResponse::Message(
+                                    CreateInteractionResponseMessage::new()
+                                        .content("This can only be used in a server")
+                                        .ephemeral(true),
+                                ),
+                            )
+                            .await
+                        {
                             log::error!("Failed to send response: {:?}", e);
                         }
                         return;
                     }
                 };
-                let next_step = match global_data::voice_data::mutual_channel(&guild_id, &mci.user.id).await {
-                    Ok(n) => n,
-                    Err(e) => {
-                        log::error!("Failed to get voice data: {:?}", e);
-                        if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Failed to get voice data").ephemeral(true))).await {
-                            log::error!("Failed to send response: {:?}", e);
+                let next_step =
+                    match global_data::voice_data::mutual_channel(&guild_id, &mci.user.id).await {
+                        Ok(n) => n,
+                        Err(e) => {
+                            log::error!("Failed to get voice data: {:?}", e);
+                            if let Err(e) = mci
+                                .create_response(
+                                    &ctx.http,
+                                    CreateInteractionResponse::Message(
+                                        CreateInteractionResponseMessage::new()
+                                            .content("Failed to get voice data")
+                                            .ephemeral(true),
+                                    ),
+                                )
+                                .await
+                            {
+                                log::error!("Failed to send response: {:?}", e);
+                            }
+                            return;
                         }
-                        return;
-                    }
-                };
+                    };
                 match next_step.action {
                     VoiceAction::SatelliteInVcWithUser(channel, _ctx) => {
                         if channel != mci.channel_id {
-                            if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Wrong control panel, silly!").ephemeral(true))).await {
+                            if let Err(e) = mci.create_response(&ctx.http, 
+                                CreateInteractionResponse::Message(
+                                    CreateInteractionResponseMessage::new().content("Wrong control panel, silly!").ephemeral(true)
+                                )
+                            ).await {
                                 log::error!("Failed to send response: {:?}", e);
                             }
                             return;
@@ -176,7 +668,6 @@ impl EventHandler for PlanetHandler {
                                         return;
                                     }
                                 };
-        
                                 if let Some(member) = mci.member.as_ref() {
                                     let next_step = match global_data::voice_data::mutual_channel(&guild_id, &member.user.id).await {
                                         Ok(n) => n,
@@ -188,7 +679,6 @@ impl EventHandler for PlanetHandler {
                                             return;
                                         }
                                     };
-        
                                     if let VoiceAction::SatelliteInVcWithUser(_channel, _ctx) = next_step.action {
                                         let audio_command_handler = match ctx.data.read().await.get::<AudioCommandHandler>() {
                                             Some(a) => Arc::clone(a),
@@ -200,9 +690,7 @@ impl EventHandler for PlanetHandler {
                                                 return;
                                             }
                                         };
-        
                                         let mut audio_command_handler = audio_command_handler.write().await;
-        
                                         if let Some(tx) = audio_command_handler.get_mut(&channel) {
                                             let (rtx, rrx) = oneshot::channel::<Arc<str>>();
                                             if let Err(e) = tx.send((
@@ -227,12 +715,10 @@ impl EventHandler for PlanetHandler {
                                                 }
                                                 return;
                                             }
-        
                                             if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Acknowledge).await {
                                                 log::error!("Failed to send response: {}", e);
                                             }
                                             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rrx).await;
-        
                                             match timeout {
                                                 Ok(Ok(_msg)) => {
                                                     return;
@@ -244,13 +730,11 @@ impl EventHandler for PlanetHandler {
                                                     log::error!("Failed to issue command for {} ERR: {}", original_command, e);
                                                 }
                                             }
-        
                                             if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(format!("Failed to issue command for {}", original_command)).ephemeral(true))).await {
                                                 log::error!("Failed to send response: {}", e);
                                             }
                                             return;
                                         }
-        
                                         log::trace!("{}", _channel);
                                     } else {
                                         if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Get on in here, enjoy the tunes!").ephemeral(true))).await {
@@ -276,7 +760,6 @@ impl EventHandler for PlanetHandler {
                                         return;
                                     }
                                 };
-        
                                 if let Some(member) = mci.member.as_ref() {
                                     let next_step = match global_data::voice_data::mutual_channel(&guild_id, &member.user.id).await {
                                         Ok(n) => n,
@@ -288,7 +771,6 @@ impl EventHandler for PlanetHandler {
                                             return;
                                         }
                                     };
-        
                                     if let VoiceAction::SatelliteInVcWithUser(_channel, _ctx) = next_step.action {
                                         if let Err(e) = mci
                                             .create_response(
@@ -339,7 +821,6 @@ impl EventHandler for PlanetHandler {
                                         return;
                                     }
                                 };
-        
                                 if let Some(member) = mci.member.as_ref() {
                                     let next_step = match global_data::voice_data::mutual_channel(&guild_id, &member.user.id).await {
                                         Ok(n) => n,
@@ -351,7 +832,6 @@ impl EventHandler for PlanetHandler {
                                             return;
                                         }
                                     };
-        
                                     if let VoiceAction::SatelliteInVcWithUser(_channel, _ctx) = next_step.action {
                                         if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Modal(CreateModal::new("bitrate", "Bitrate").components(vec![CreateActionRow::InputText(CreateInputText::new(InputTextStyle::Short, "bps", "bitrate").placeholder("512 - 512000, left blank for auto").required(false))]))).await {
                                             log::error!("Failed to send response: {}", e);
@@ -380,7 +860,6 @@ impl EventHandler for PlanetHandler {
                                         return;
                                     }
                                 };
-        
                                 if let Some(member) = mci.member.as_ref() {
                                     let next_step = match global_data::voice_data::mutual_channel(&guild_id, &member.user.id).await {
                                         Ok(n) => n,
@@ -392,7 +871,6 @@ impl EventHandler for PlanetHandler {
                                             return;
                                         }
                                     };
-        
                                     if let VoiceAction::SatelliteInVcWithUser(_channel, _ctx) = next_step.action {
                                         let audio_command_handler = match ctx.data.read().await.get::<AudioCommandHandler>() {
                                             Some(a) => Arc::clone(a),
@@ -404,9 +882,7 @@ impl EventHandler for PlanetHandler {
                                                 return;
                                             }
                                         };
-        
                                         let mut audio_command_handler = audio_command_handler.write().await;
-        
                                         if let Some(tx) = audio_command_handler.get_mut(&channel) {
                                             let (rtx, rrx) = oneshot::channel::<Arc<str>>();
                                             let (realrtx, mut realrrx) = mpsc::channel::<Vec<String>>(1);
@@ -416,13 +892,10 @@ impl EventHandler for PlanetHandler {
                                                 }
                                                 return;
                                             }
-        
                                             let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), rrx).await;
-        
                                             match timeout {
                                                 Ok(Ok(_)) => {
                                                     let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), realrrx.recv()).await;
-        
                                                     match timeout {
                                                         Ok(Some(log)) => {
                                                             if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Modal(CreateModal::new("log", "Log (Submitting this does nothing)").components(log.iter().enumerate().map(|(i, log)| CreateActionRow::InputText(CreateInputText::new(InputTextStyle::Paragraph, "Log", format!("log{}", i)).value(log))).collect()))).await {
@@ -445,7 +918,6 @@ impl EventHandler for PlanetHandler {
                                                     log::error!("Failed to issue command for `log` ERR: {}", e);
                                                 }
                                             }
-        
                                             if let Err(e) = mci.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Failed to issue command for `log`").ephemeral(true))).await {
                                                 log::error!("Failed to send response: {}", e);
                                             }
@@ -486,6 +958,89 @@ impl EventHandler for PlanetHandler {
                 }
             }
             Interaction::Modal(p) => {
+                // special case for feedback response
+                if let Ok(feedback_id) = FeedbackCustomId::try_from(p.data.custom_id.as_str()) {
+                    let original_feedback = match p.data.components.iter().find_map(|ar| {
+                        ar.components.iter().find_map(|c| match c {
+                            ActionRowComponent::InputText(feedback)
+                                if feedback.custom_id == "feedback" =>
+                            {
+                                Some(feedback)
+                            }
+                            _ => None,
+                        })
+                    }) {
+                        Some(original_feedback) => original_feedback,
+                        None => {
+                            log::error!("No original feedback in feedback modal");
+                            return;
+                        }
+                    };
+                    let original_feedback = match original_feedback.value {
+                        Some(ref v) => v,
+                        None => {
+                            log::error!("No value in original feedback in feedback modal");
+                            return;
+                        }
+                    };
+                    let response = match p.data.components.iter().find_map(|ar| {
+                        ar.components.iter().find_map(|c| match c {
+                            ActionRowComponent::InputText(feedback)
+                                if feedback.custom_id == "response" =>
+                            {
+                                Some(feedback)
+                            }
+                            _ => None,
+                        })
+                    }) {
+                        Some(response) => response,
+                        None => {
+                            log::error!("No response in feedback modal");
+                            return;
+                        }
+                    };
+                    let response = match response.value {
+                        Some(ref v) => v,
+                        None => {
+                            log::error!("No value in response in feedback modal");
+                            return;
+                        }
+                    };
+
+                    match ctx.http.get_user(feedback_id.user_id).await {
+                        Ok(user) => {
+                            if let Err(e) = user
+                                .dm(
+                                    &ctx.http,
+                                    CreateMessage::default().content(format!("<@156533151198478336> (@monkey_d._issy) responded to your feedback.\n\
+                                    Original Feedback:\n```\n{}\n```\
+                                    Response:\n```\n{}\n```", original_feedback, response)),
+                                )
+                                .await
+                            {
+                                log::error!("Failed to send response to user: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to get user: {}", e);
+                        }
+                    }
+                    if let Err(e) = p
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Response sent!")
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to send response: {}", e);
+                    }
+                    return;
+                }
+
                 let command = self
                     .commands
                     .iter()
@@ -582,6 +1137,13 @@ impl EventHandler for PlanetHandler {
         log::info!("Initializing Voice Data");
         if let Err(e) = global_data::voice_data::initialize_planet(ctx.clone()).await {
             log::error!("Failed to initialize planet: {}", e);
+        }
+        log::info!("spawning reminder thread");
+        {
+            let mut reminder_thread = self.reminder_thread.lock().await;
+            let (tx, rx) = oneshot::channel::<()>();
+            let handle = tokio::spawn(reminders(ctx.clone(), rx));
+            *reminder_thread = Some(ThreadHandle::new(handle, tx));
         }
         log::info!("Refreshing users");
         // let voicedata = match ctx.data.read().await.get::<VoiceData>() {
@@ -693,7 +1255,8 @@ impl EventHandler for PlanetHandler {
         if let Err(e) = global_data::voice_data::add_satellite(ctx, 0).await {
             log::error!("Failed to add satellite: {}", e);
         }
-        self.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.initialized
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         log::info!("Connected as {}", ready.user.name);
     }
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
@@ -714,11 +1277,16 @@ impl EventHandler for PlanetHandler {
                 .data
                 .read()
                 .await
-                .get::<AudioCommandHandler>().map(Arc::clone) {
+                .get::<AudioCommandHandler>()
+                .map(Arc::clone)
+            {
                 let mut audio_command_handler = audio_command_handler.write().await;
                 if let Some(tx) = audio_command_handler.get_mut(&channel_id) {
                     let (rtx, rrx) = oneshot::channel::<Arc<str>>();
-                    if let Err(e) = tx.send((rtx, AudioPromiseCommand::MetaCommand(MetaCommand::UserConnect(new.user_id)))) {
+                    if let Err(e) = tx.send((
+                        rtx,
+                        AudioPromiseCommand::MetaCommand(MetaCommand::UserConnect(new.user_id)),
+                    )) {
                         log::error!("Failed to send UserConnect command: {}", e);
                     }
                     let timeout = tokio::time::timeout(Duration::from_secs(10), rrx).await;
@@ -792,7 +1360,8 @@ impl EventHandler for PlanetHandler {
         //     };
         //     em.write().await.send_tts(&ctx, &new_message).await;
         // }
-        global_data::transcribe::send_message(new_message).await;
+        // global_data::transcribe::send_message(new_message).await;
+        long_term_storage::send_tts_message(new_message).await;
     }
     async fn resume(&self, ctx: Context, _: ResumedEvent) {
         log::info!("Resumed");
@@ -997,7 +1566,8 @@ impl EventHandler for PlanetHandler {
                 .post("http://localhost:16835/api/set/user")
                 .json(&users)
                 .bearer_auth(config::get_config().string_api_token)
-                .send().await
+                .send()
+                .await
             {
                 log::error!("Failed to send users to api {e}. Users might be out of date");
             }
@@ -1011,8 +1581,22 @@ struct Timed<T> {
 }
 #[tokio::main]
 async fn main() {
+    dotenv::dotenv().ok();
     env_logger::init();
     global_data::init().await;
+    if let Some(arg) = std::env::args().nth(1) {
+        match arg.as_str() {
+            "sync" => {
+                if let Err(e) = long_term_storage::migrate_data_from_json().await {
+                    log::error!("Failed to sync database: {}", e);
+                }
+            }
+            _ => {
+                log::error!("Unknown argument: {}", arg);
+            }
+        }
+        return;
+    }
     #[cfg(feature = "debug")]
     console_subscriber::init();
     // let cfg = config::get_config();
@@ -1251,12 +1835,47 @@ impl EventHandler for SatelliteHandler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         log::info!("Connected as {}", ready.user.name);
         ctx.set_activity(Some(ActivityData::playing(&self.playing)));
-        if let Err(e) = Command::set_global_commands(
-            &ctx.http,
-            vec![]
-        ).await {
+        if let Err(e) = Command::set_global_commands(&ctx.http, vec![]).await {
             log::error!("Failed to register commands: {}", e);
         }
         global_data::voice_data::add_satellite_wait(ctx, self.position).await;
+    }
+}
+
+const SECS: u64 = 5;
+
+async fn reminders(ctx: Context, mut rx: oneshot::Receiver<()>) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(SECS));
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let before = chrono::Utc::now() + chrono::Duration::seconds((SECS * 2) as i64);
+                match long_term_storage::Reminder::all_reminders(
+                    before,
+                ).await {
+                    Err(e) => {
+                        log::error!("Failed to get reminders: {}", e);
+                    }
+                    Ok(v) => {
+                        let now = chrono::Utc::now();
+                        for mut reminder in v.into_iter() {
+                            if reminder.remind_at > now {
+                                // the reminder is still in the future
+                                continue;
+                            }
+                            if let Err(e) = reminder.remind(&ctx).await {
+                                log::error!("Failed to send reminder: {}", e);
+                                if let Err(e) = reminder.failed().await {
+                                    log::error!("Failed to mark reminder as failed: {}", e);
+                                }
+                            }
+                        }
+                    }
+                };
+            }
+            _ = &mut rx => {
+                break;
+            }
+        }
     }
 }

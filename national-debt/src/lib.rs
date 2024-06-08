@@ -27,6 +27,7 @@ impl CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
+                .contexts(vec![InteractionContext::Guild, InteractionContext::BotDm])
                 .description("Get the US national debt as of (at most) a few days ago"),
         )
     }
@@ -50,7 +51,7 @@ impl CommandTrait for Command {
             .create_followup(
                 ctx,
                 CreateInteractionResponseFollowup::new().content(format!(
-                    "The US national debt as of <T:{}:R> (most recent data available) is:```\n{}\n```",
+                    "The US national debt as of <t:{}:F> (most recent data available) is:```\n{}\n```",
                     debt.date.and_time(chrono::Utc::now().time()).and_utc().timestamp(),
                     get_fancy_currency(amount)
                 )),

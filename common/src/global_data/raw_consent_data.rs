@@ -82,3 +82,15 @@ pub fn save() {
         log::error!("Failed to write consent file: {}", e);
     }
 }
+
+pub fn extract_all() -> HashMap<UserId, bool> {
+    let init = unsafe { INITIALIZED };
+    if !init {
+        log::trace!("Database uninitialized when calling extract_all");
+        return HashMap::new();
+    }
+    unsafe { CONSENT_INFO.assume_init_ref() }
+        .iter()
+        .map(|(k, v)| (*k, v.load(std::sync::atomic::Ordering::Relaxed)))
+        .collect()
+}

@@ -1,7 +1,8 @@
 use common::anyhow::Result;
 use common::serenity::all::*;
 use common::utils::friendly_duration;
-use common::SubCommandTrait;
+use common::{log, tokio, SubCommandTrait};
+use long_term_storage::Guild;
 pub struct Command;
 #[async_trait]
 impl SubCommandTrait for Command {
@@ -48,7 +49,24 @@ impl SubCommandTrait for Command {
                 ResolvedValue::Integer(i) => Some(i),
                 _ => None,
             });
-        let config = common::global_data::guild_config::GuildConfig::get(guild_id);
+        let mut config = match Guild::load(guild_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load guild: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load guild")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
         match timeout {
             None => {
                 interaction
@@ -57,27 +75,39 @@ impl SubCommandTrait for Command {
                         CreateInteractionResponseFollowup::new()
                             .content(format!(
                                 "The current timeout is {}",
-                                friendly_duration(&config.get_empty_channel_timeout())
+                                friendly_duration(&config.empty_channel_timeout)
                             ))
                             .ephemeral(true),
                     )
                     .await?;
             }
             Some(timeout) => {
-                let timeout = std::time::Duration::from_secs(timeout as u64);
-                let config = config.set_empty_channel_timeout(timeout);
+                config.empty_channel_timeout = tokio::time::Duration::from_secs(timeout as u64);
                 interaction
                     .create_followup(
                         &ctx.http,
                         CreateInteractionResponseFollowup::new()
                             .content(format!(
                                 "The new timeout is {}",
-                                friendly_duration(&config.get_empty_channel_timeout())
+                                friendly_duration(&config.empty_channel_timeout)
                             ))
                             .ephemeral(true),
                     )
                     .await?;
-                config.write();
+                if let Err(e) = config.save().await {
+                    log::error!("Failed to save new value: {:?}", e);
+                    if let Err(e) = interaction
+                        .create_followup(
+                            &ctx.http,
+                            CreateInteractionResponseFollowup::new()
+                                .content("Failed to save new value")
+                                .ephemeral(true),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to send response: {}", e);
+                    }
+                }
             }
         }
         Ok(())

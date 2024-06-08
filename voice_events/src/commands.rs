@@ -1,9 +1,11 @@
-use crate::{
+use common::{
+    anyhow::{self, Result},
     audio::{AudioPromiseCommand, OrToggle, SpecificVolume},
+    get_config, lazy_static, log,
+    serenity::all::*,
+    tokio,
     video::{Author, LazyLoadedVideo, MetaVideo, Video, VideoType},
 };
-use anyhow::Result;
-use serenity::all::*;
 use std::{pin::Pin, sync::Arc};
 fn filter_input(s: &str) -> String {
     s.to_lowercase()
@@ -348,7 +350,7 @@ async fn get_speech(text: &str) -> Option<Video> {
     } else {
         format!("{}.", text)
     };
-    match crate::sam::get_speech(&text) {
+    match common::sam::get_speech(&text) {
         Ok(vid) => Some(vid),
         Err(e) => {
             log::error!("Error getting speech: {:?}", e);
@@ -357,12 +359,12 @@ async fn get_speech(text: &str) -> Option<Video> {
     }
 }
 async fn get_videos(query: String, http: Arc<Http>, u: UserId) -> Result<Vec<MetaVideo>> {
-    let vids = crate::video::Video::get_video(&query, true, true).await;
+    let vids = Video::get_video(&query, true, true).await;
     match vids {
         Ok(vids) => {
             let mut truevideos = Vec::new();
             #[cfg(feature = "tts")]
-            let key = crate::youtube::get_access_token().await;
+            let key = common::youtube::get_access_token().await;
             for v in vids {
                 let title = match &v {
                     VideoType::Disk(v) => v.title(),
@@ -372,11 +374,9 @@ async fn get_videos(query: String, http: Arc<Http>, u: UserId) -> Result<Vec<Met
                 if let Ok(key) = key.as_ref() {
                     truevideos.push(MetaVideo {
                         video: v,
-                        ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(
-                            Arc::clone(&title),
-                            key.clone(),
-                            None,
-                        )))),
+                        ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(
+                            common::youtube::get_tts(Arc::clone(&title), key.clone(), None),
+                        ))),
                         // title,
                         author: http.get_user(u).await.ok().map(|u| Author {
                             name: u.name.clone(),
@@ -420,7 +420,7 @@ fn human_readable_size(size: usize) -> String {
 }
 lazy_static::lazy_static!(
     pub static ref ALERT_PHRASES: Alerts = {
-        let file = crate::config::get_config().alert_phrases_path;
+        let file = get_config().alert_phrases_path;
         let text = match std::fs::read_to_string(file) {
             Ok(text) => text,
             Err(e) => {

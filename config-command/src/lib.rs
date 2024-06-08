@@ -33,6 +33,7 @@ impl CommandTrait for Command {
     fn register_command(&self) -> Option<CreateCommand> {
         Some(
             CreateCommand::new(self.command_name())
+                .contexts(vec![InteractionContext::Guild])
                 .description("Configure this guild's settings")
                 .set_options(
                     self.subcommands

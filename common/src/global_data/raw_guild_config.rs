@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serenity::all::GuildId;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 lazy_static::lazy_static! {
     static ref RWLOCK: RwLock<HashMap<GuildId, InnerGuildConfig>> = {
         let file = match std::fs::File::open(crate::config::get_config().guild_config_path) {
@@ -28,19 +29,11 @@ lazy_static::lazy_static! {
         RwLock::new(res.into_iter().map(|(k, v)| (k, v.with_defaults())).collect())
     };
 }
-pub fn init() {
-    if let Err(e) = RWLOCK.read() {
-        panic!("Failed to read guild config file: {}", e);
-    }
+pub async fn init() {
+    let _ = RWLOCK.read().await;
 }
-pub fn save() {
-    let map = match RWLOCK.read() {
-        Ok(r) => r,
-        Err(e) => {
-            log::error!("Failed to read guild config file: {}", e);
-            e.into_inner()
-        }
-    };
+pub async fn save() {
+    let map = RWLOCK.read().await;
     let file = match std::fs::File::create(crate::config::get_config().guild_config_path) {
         Ok(f) => f,
         Err(e) => panic!("Failed to create guild config file: {}", e),
@@ -99,29 +92,17 @@ pub struct GuildConfig {
     inner: InnerGuildConfig,
 }
 impl GuildConfig {
-    pub fn get(guild: GuildId) -> Self {
-        let mut inner = match RWLOCK.write() {
-            Ok(r) => r,
-            Err(e) => {
-                log::error!("Failed to read guild config file: {}", e);
-                e.into_inner()
-            }
-        };
+    pub async fn get(guild: GuildId) -> Self {
+        let mut inner = RWLOCK.write().await;
         let inner = inner.entry(guild).or_default().clone();
         Self { guild, inner }
     }
-    pub fn write(self) {
+    pub async fn write(self) {
         {
-            let mut map = match RWLOCK.write() {
-                Ok(r) => r,
-                Err(e) => {
-                    log::error!("Failed to write guild config file: {}", e);
-                    e.into_inner()
-                }
-            };
+            let mut map = RWLOCK.write().await;
             map.insert(self.guild, self.inner);
         }
-        save();
+        save().await;
     }
     // Time until the bot leaves the channel if it's empty
     pub fn get_empty_channel_timeout(&self) -> Duration {
@@ -171,4 +152,14 @@ impl GuildConfig {
         self.inner.radio_data_url = url;
         self
     }
+}
+
+pub async fn extract_all() -> HashMap<GuildId, GuildConfig> {
+    RWLOCK
+        .read()
+        .await
+        .clone()
+        .into_iter()
+        .map(|(k, v)| (k, GuildConfig { guild: k, inner: v }))
+        .collect()
 }

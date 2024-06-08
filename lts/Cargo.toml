@@ -1,8 +1,13 @@
 [package]
-name = "long-term-storage"
+name = "long_term_storage"
 version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-sqlx = "0.7.4"
+sqlx = { version = "0.7.4", features = [
+    "postgres",
+    "runtime-tokio",
+    "chrono",
+    "uuid",
+] }
 common = { path = "../common" }

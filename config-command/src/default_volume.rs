@@ -1,12 +1,12 @@
 use common::anyhow::Result;
 use common::audio::{AudioCommandHandler, AudioPromiseCommand, MetaCommand};
-use common::global_data::guild_config::GuildConfig;
 use common::serenity::{
     all::*,
     futures::{stream::FuturesUnordered, StreamExt},
 };
 use common::SubCommandTrait;
 use common::{log, tokio};
+use long_term_storage::Guild;
 use std::sync::Arc;
 pub struct Command {
     subcommands: Vec<Box<dyn SubCommandTrait>>,
@@ -148,7 +148,24 @@ impl SubCommandTrait for Song {
                 ResolvedValue::Integer(i) => Some(i as f64),
                 _ => None,
             });
-        let config = GuildConfig::get(guild_id);
+        let mut config = match Guild::load(guild_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load guild: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load guild")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
         match timeout {
             None => {
                 interaction
@@ -158,7 +175,7 @@ impl SubCommandTrait for Song {
                             .content({
                                 let mut string = format!(
                                     "The current volume is {:.2}",
-                                    config.get_default_song_volume() * 100.0
+                                    config.default_song_volume * 100.0
                                 )
                                 .trim_end_matches('0')
                                 .trim_end_matches('.')
@@ -171,7 +188,7 @@ impl SubCommandTrait for Song {
                     .await?;
             }
             Some(volume) => {
-                let config = config.set_default_song_volume(volume as f32 / 100.0);
+                config.default_song_volume = volume as f32 / 100.0;
                 interaction
                     .create_followup(
                         &ctx.http,
@@ -179,7 +196,7 @@ impl SubCommandTrait for Song {
                             .content({
                                 let mut string = format!(
                                     "The new volume is {:.2}",
-                                    config.get_default_song_volume() * 100.0
+                                    config.default_song_volume * 100.0
                                 )
                                 .trim_end_matches('0')
                                 .trim_end_matches('.')
@@ -190,7 +207,21 @@ impl SubCommandTrait for Song {
                             .ephemeral(true),
                     )
                     .await?;
-                config.write();
+                if let Err(e) = config.save().await {
+                    log::error!("Failed to save guild: {:?}", e);
+                    if let Err(e) = interaction
+                        .create_followup(
+                            &ctx.http,
+                            CreateInteractionResponseFollowup::new()
+                                .content("Failed to save guild")
+                                .ephemeral(true),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to send response: {}", e);
+                    }
+                    return Ok(());
+                }
                 // we need to iterate over EVERY guild that has a connection, and update the song volume
                 let connection_handler = {
                     let data = ctx.data.read().await;
@@ -282,7 +313,24 @@ impl SubCommandTrait for Radio {
                 ResolvedValue::Integer(i) => Some(i as f64),
                 _ => None,
             });
-        let config = GuildConfig::get(guild_id);
+        let mut config = match Guild::load(guild_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load guild: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load guild")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
         match timeout {
             None => {
                 interaction
@@ -292,7 +340,7 @@ impl SubCommandTrait for Radio {
                             .content({
                                 let mut string = format!(
                                     "The current volume is {:.2}",
-                                    config.get_default_radio_volume() * 100.0
+                                    config.default_radio_volume * 100.0
                                 )
                                 .trim_end_matches('0')
                                 .trim_end_matches('.')
@@ -305,7 +353,7 @@ impl SubCommandTrait for Radio {
                     .await?;
             }
             Some(volume) => {
-                let config = config.set_default_radio_volume(volume as f32 / 100.0);
+                config.default_radio_volume = volume as f32 / 100.0;
                 interaction
                     .create_followup(
                         &ctx.http,
@@ -313,7 +361,7 @@ impl SubCommandTrait for Radio {
                             .content({
                                 let mut string = format!(
                                     "The new volume is {:.2}",
-                                    config.get_default_radio_volume() * 100.0
+                                    config.default_radio_volume * 100.0
                                 )
                                 .trim_end_matches('0')
                                 .trim_end_matches('.')
@@ -324,7 +372,21 @@ impl SubCommandTrait for Radio {
                             .ephemeral(true),
                     )
                     .await?;
-                config.write();
+                if let Err(e) = config.save().await {
+                    log::error!("Failed to save guild: {:?}", e);
+                    if let Err(e) = interaction
+                        .create_followup(
+                            &ctx.http,
+                            CreateInteractionResponseFollowup::new()
+                                .content("Failed to save guild")
+                                .ephemeral(true),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to send response: {}", e);
+                    }
+                    return Ok(());
+                }
                 // we need to iterate over EVERY guild that has a connection, and update the radio volume
                 let connection_handler = {
                     let data = ctx.data.read().await;

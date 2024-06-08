@@ -212,7 +212,7 @@ impl TranscriptionThread {
     ) -> Self {
         let (message, messagerx) = mpsc::unbounded_channel();
         let (tx, receiver) = mpsc::unbounded_channel::<(PostSomething, UserId)>();
-        let thread = tokio::task::spawn(common::voice_events::transcription_thread(
+        let thread = tokio::task::spawn(voice_events::transcription_thread(
             call, http, otx, messagerx, tx,
         ));
         Self {
