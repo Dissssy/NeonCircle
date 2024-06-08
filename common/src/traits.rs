@@ -20,6 +20,19 @@ where
     ) -> Result<()>;
     fn command_name(&self) -> &str;
     fn permissions(&self) -> Permissions;
+    #[allow(unused_variables)]
+    async fn autocomplete(
+        &self,
+        ctx: &Context,
+        interaction: &CommandInteraction,
+        options: &[ResolvedOption],
+    ) -> Result<()> {
+        log::error!(
+            "Autocomplete not implemented for {}",
+            std::any::type_name::<Self>()
+        );
+        Ok(())
+    }
 }
 #[async_trait]
 pub trait CommandTrait

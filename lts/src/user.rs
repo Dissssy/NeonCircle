@@ -152,16 +152,23 @@ mod set {
         user: super::User,
         conn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<()> {
+        let super::User {
+            id,
+            mic_consent,
+            timezone,
+        } = user;
+
         // set the cache
         {
             let cache = super::get_cache_mut().await?;
-            cache.set_consent(user.id, user.mic_consent);
+            cache.set_consent(id, mic_consent);
         }
         // set the user in the DB, either insert or update the user
         sqlx::query!(
-            "INSERT INTO users (id, mic_consent) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET mic_consent = $2",
-            user.id.get() as i64,
-            user.mic_consent
+            "INSERT INTO users (id, mic_consent, timezone) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET mic_consent = $2, timezone = $3",
+            id.get() as i64,
+            mic_consent,
+            timezone.name()
         )
         .execute(&mut **conn)
         .await?;

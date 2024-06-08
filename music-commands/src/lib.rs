@@ -145,9 +145,17 @@ impl MessageReference {
                         .create_thread(
                             &self.http,
                             CreateThread::new(
-                                chrono::Local::now()
-                                    .format("CLOSED CAPTIONS FOR %b %-d, %Y at %-I:%M%p")
-                                    .to_string(),
+                                // chrono::Local::now()
+                                //     .format("CLOSED CAPTIONS FOR %b %-d, %Y at %-I:%M%p")
+                                //     .to_string(),
+                                format!(
+                                    "CLOSED CAPTIONS FOR {}",
+                                    common::utils::full_datetime_format(
+                                        &chrono::Utc::now()
+                                            .with_timezone(&common::chrono_tz::Tz::EST5EDT),
+                                        true
+                                    )
+                                ),
                             ),
                         )
                         .await

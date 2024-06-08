@@ -26,6 +26,8 @@ env_logger = "0.11.3"
 image = "0.25.1"
 console-subscriber = { version = "0.2.0", optional = true }
 dotenv = "0.15.0"
+date_time_parser = "0.2.0"
+fuzzy-matcher = "0.3.7"
 
 
 [features]

@@ -251,11 +251,12 @@ impl EventHandler for PlanetHandler {
                                     CreateInteractionResponse::Message(
                                         CreateInteractionResponseMessage::new()
                                             .content(
-                                                "If your timezone is incorrect, set it with `/timezone`\n\
-                                                If it's correct and the time is displaying improperly, \
+                                                "If your timezone is incorrect, set it with `/remind timezone`\n\
+                                                If your timezone is correct and the time is off, \
                                                 contact your local congressman/government official and \
-                                                tell them to get rid of daylight savings time. (Or use \
-                                                the nudge buttons to adjust the time until it's correct)",
+                                                tell them to get rid of daylight savings time. (And use \
+                                                the nudge buttons to adjust the time until it's correct, \
+                                                they shift the time by an hour)",
                                             )
                                             .ephemeral(true),
                                     ),
@@ -276,12 +277,12 @@ impl EventHandler for PlanetHandler {
                                 log::error!("Failed to send response: {}", e);
                             }
                             let edit = match commands::remind::list_reminders(mci.user.id, 0).await {
-                                Ok(Some((menu, button1, button2))) => {
+                                Ok(Some(elements)) => {
                                     EditInteractionResponse::new()
                                         .content(String::new())
-                                        .select_menu(menu)
-                                        .button(button1)
-                                        .button(button2)
+                                        .select_menu(elements.list)
+                                        .button(elements.backward)
+                                        .button(elements.forward)
                                 },
                                 Ok(None) => {
                                     EditInteractionResponse::new().content("You have no reminders.").components(vec![])
@@ -432,12 +433,12 @@ impl EventHandler for PlanetHandler {
                                         }
                                     } else {
                                         let edit = match commands::remind::list_reminders(mci.user.id, 0).await {
-                                            Ok(Some((menu, button1, button2))) => {
+                                            Ok(Some(elements)) => {
                                                 EditInteractionResponse::new()
                                                     .content("Reminder deleted.")
-                                                    .select_menu(menu)
-                                                    .button(button1)
-                                                    .button(button2)
+                                                    .select_menu(elements.list)
+                                                    .button(elements.backward)
+                                                    .button(elements.forward)
                                             },
                                             Ok(None) => {
                                                 EditInteractionResponse::new().content("You have no reminders.").components(vec![])
@@ -488,8 +489,8 @@ impl EventHandler for PlanetHandler {
                             {
                                 log::error!("Failed to send response: {}", e);
                             }
-                            let (menu, button1, button2) = match commands::remind::list_reminders(mci.user.id, page).await {
-                                Ok(Some((menu, button1, button2))) => (menu, button1, button2),
+                            let elements = match commands::remind::list_reminders(mci.user.id, page).await {
+                                Ok(Some(elements)) => elements,
                                 Ok(None) => {
                                     log::error!("They bugged it, either intentionally or unintentionally");
                                     return;
@@ -515,9 +516,9 @@ impl EventHandler for PlanetHandler {
                             if let Err(e) = mci.edit_response(
                                     &ctx.http,
                                     EditInteractionResponse::new()
-                                        .select_menu(menu)
-                                        .button(button1)
-                                        .button(button2),
+                                        .select_menu(elements.list)
+                                        .button(elements.backward)
+                                        .button(elements.forward),
                                 )
                                 .await
                             {
@@ -533,18 +534,18 @@ impl EventHandler for PlanetHandler {
                                     if let Err(e) = mci
                                         .edit_response(&ctx.http,
                                             EditInteractionResponse::new()
-                                                .content(format!("Time: <t:{}:F>\nMessage:\n```\n{}\n```", reminder.remind_at.timestamp(), reminder.message))
+                                                .content(format!(
+                                                    "Time: <t:{}:F> (your local time)\n\
+                                                    With your configured timezone `{}`\n\
+                                                    Message:\n```\n{}\n```",
+                                                    reminder.remind_at.timestamp(), 
+                                                    reminder.remind_at.timezone().name(), 
+                                                    reminder.message
+                                                ))
                                                 .button(
                                                     CreateButton::new(ReminderCustomId::Return)
                                                     .style(ButtonStyle::Success)
                                                     .label("Return"),
-                                                )
-                                                .button(
-                                                    CreateButton::new(ReminderCustomId::NudgeForward(
-                                                        reminder.id().to_string(),
-                                                    ))
-                                                    .style(ButtonStyle::Primary)
-                                                    .label("Nudge forward"),
                                                 )
                                                 .button(
                                                     CreateButton::new(ReminderCustomId::NudgeBackward(
@@ -552,6 +553,13 @@ impl EventHandler for PlanetHandler {
                                                     ))
                                                     .style(ButtonStyle::Primary)
                                                     .label("Nudge backward"),
+                                                )
+                                                .button(
+                                                    CreateButton::new(ReminderCustomId::NudgeForward(
+                                                        reminder.id().to_string(),
+                                                    ))
+                                                    .style(ButtonStyle::Primary)
+                                                    .label("Nudge forward"),
                                                 )
                                                 .button(
                                                     CreateButton::new(ReminderCustomId::Delete(
@@ -1778,17 +1786,7 @@ async fn main() {
             }
         }
     }
-    if let Some(v) = dw.get::<music_commands::AudioHandler>().take() {
-        for (i, x) in v.write().await.values_mut().enumerate() {
-            log::info!("Joining handle {}", i);
-            let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), x);
-            if let Ok(Ok(())) = timeout.await {
-                log::info!("Joined handle");
-            } else {
-                log::error!("Failed to join handle");
-            }
-        }
-    }
+    
     // if let Some(v) = dw
     //     .get::<commands::music::transcribe::TranscribeData>()
     //     .take()
@@ -1818,6 +1816,21 @@ async fn main() {
     //         }
     //     };
     // }
+
+    // wait a sec to allow the threads to handle themselves
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // lastly check if there are any audio handlers that need to be joined
+    if let Some(v) = dw.get::<music_commands::AudioHandler>().take() {
+        for (i, x) in v.write().await.values_mut().enumerate() {
+            log::info!("Joining handle {}", i);
+            let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), x);
+            if let Ok(Ok(())) = timeout.await {
+                log::info!("Joined handle");
+            } else {
+                log::error!("Failed to join handle");
+            }
+        }
+    }
     std::process::exit(exit_code);
 }
 

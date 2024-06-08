@@ -241,8 +241,9 @@ impl Reminder {
                         .timestamp(timestamp);
                 } else {
                     embed = embed.title(format!(
-                        "On <t:{}:F> you asked me to remind you about",
-                        self.remind_at.timestamp(),
+                        // "On <t:{}:F> you asked me to remind you about",
+                        "On {} you asked me to remind you about",
+                        common::utils::full_datetime_format(&self.remind_at, true)
                     ));
                 }
                 embed

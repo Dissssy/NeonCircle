@@ -1299,47 +1299,58 @@ pub async fn the_lüüp(
     //         log.log(&format!("Error getting ttsrx: {}\n", e)).await;
     //     }
     // }
+    log.log("Getting call lock").await;
     let mut calllock = control.call.lock().await;
+    log.log("Closing control command channel").await;
     control.rx.close();
+    log.log("Stopping call").await;
     calllock.stop();
+    log.log("Leaving voice channel").await;
     if let Err(e) = calllock.leave().await {
         log.log(&format!("Error leaving voice channel: {}\n", e))
             .await;
     }
+    log.log("Stopping radio").await;
     if let Err(e) = message_radio_thread.send(RadioCommand::Shutdown).await {
         log.log(&format!("Error stopping radio: {}\n", e)).await;
     }
+    log.log("Joining radio data thread").await;
     if let Err(e) = radio_data_thread.await {
         log.log(&format!("Error joining radio data thread: {}\n", e))
             .await;
     }
     if let Some(t) = current_handle.take() {
+        log.log("Stopping current handle").await;
         if let Err(e) = t.get_handle().stop() {
             log.log(&format!("Error stopping track: {}\n", e)).await;
         }
     }
     if let Some(t) = current_song.take() {
+        log.log("Stopping current song").await;
         t.stop(&log).await;
     }
-    if let Err(e) = calllock.leave().await {
-        log.log(&format!("Error leaving voice channel: {}\n", e))
-            .await;
-    }
+    log.log("Stopping message updater").await;
     if killmsg.send(()).is_err() {
         log.log("Error sending killmsg").await;
-    } else if let Err(e) = msghandler.await {
-        log.log(&format!("Error joining msghandler: {}\n", e)).await;
+    } else {
+        log.log("Joining message updater").await;
+        if let Err(e) = msghandler.await {
+            log.log(&format!("Error joining msghandler: {}\n", e)).await;
+        }
     }
+    log.log("Stopping transcription").await;
     if let Err(e) = transcription.stop().await {
         log.log(&format!("Error killing transcription: {}\n", e))
             .await;
     }
     // attempt to retrieve and drop the joinhandle for this thread through the ctx.data
     {
+        log.log("Getting planet ctx data").await;
         let d = {
             let data = planet_ctx.data.read().await;
             data.get::<AudioHandler>().map(Arc::clone)
         };
+        log.log("Getting self joinhandle").await;
         if let Some(d) = d {
             let mut d = d.write().await;
             let handle = d.remove(&original_channel);

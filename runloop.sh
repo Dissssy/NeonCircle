@@ -5,7 +5,7 @@
 # It is also used to notify the user if the application crashes.
 
 # set log level
-export RUST_LOG="neon_circle=trace"
+export RUST_LOG="neon_circle=trace,common=trace,config_command=trace,lts=trace,national_debt=trace,voice_events=trace,music_commands=trace"
 
 # loop until the application has a return code of != 0
 while true; do

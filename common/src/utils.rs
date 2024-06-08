@@ -150,3 +150,24 @@ pub fn friendly_duration(dur: &std::time::Duration) -> String {
 pub enum TranscriptionMessage {
     Stop,
 }
+
+pub fn full_datetime_format(
+    datetime: &chrono::DateTime<chrono_tz::Tz>,
+    include_timezone: bool,
+) -> String {
+    datetime
+        .format(&format!(
+            "%B %eth, %Y at %l:%M %p{}",
+            if include_timezone {
+                format!(" {}", datetime.timezone().name())
+            } else {
+                "".to_string()
+            }
+        ))
+        .to_string()
+        .replace("1th", "1st")
+        .replace("2th", "2nd")
+        .replace("3th", "3rd")
+        .replace("  ", " ")
+        .replace("  ", " ")
+}
