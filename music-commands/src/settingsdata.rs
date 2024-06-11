@@ -28,7 +28,8 @@ impl SettingsData {
             repeat: false,
             shuffle: false,
             pause: false,
-            bitrate: OrAuto::Auto,
+            // bitrate: OrAuto::Auto,
+            bitrate: OrAuto::Specific(48000),
             log_empty: true,
             read_titles: cfg.read_titles,
         })

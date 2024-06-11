@@ -207,13 +207,13 @@ pub struct TranscriptionThread {
 impl TranscriptionThread {
     pub async fn new(
         call: Arc<Mutex<Call>>,
-        http: Arc<http::Http>,
+        context: Context,
         otx: mpsc::UnboundedSender<(oneshot::Sender<Arc<str>>, AudioPromiseCommand)>,
     ) -> Self {
         let (message, messagerx) = mpsc::unbounded_channel();
         let (tx, receiver) = mpsc::unbounded_channel::<(PostSomething, UserId)>();
         let thread = tokio::task::spawn(voice_events::transcription_thread(
-            call, http, otx, messagerx, tx,
+            call, context, otx, messagerx, tx,
         ));
         Self {
             thread,

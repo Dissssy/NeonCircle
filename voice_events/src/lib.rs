@@ -1,7 +1,9 @@
 #![feature(if_let_guard, duration_millis_float, try_blocks)]
 mod commands;
+mod gemini;
 mod structs;
 mod user;
+use commands::{ParsedCommand, WithFeedback};
 use common::{
     anyhow::{self, Result},
     audio::AudioPromiseCommand,
@@ -26,6 +28,7 @@ use common::{
     video::Video,
     PostSomething, WEB_CLIENT,
 };
+use futures::{stream::FuturesOrdered, StreamExt as _};
 use serde::Deserialize as _;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 const SAMPLES_PER_MILLISECOND: f64 = 96.0;
@@ -36,7 +39,7 @@ static EVENTS: &[Event] = &[
 ];
 pub async fn transcription_thread(
     call: Arc<common::serenity::prelude::Mutex<Call>>,
-    http: Arc<Http>,
+    context: Context,
     otx: mpsc::UnboundedSender<(oneshot::Sender<Arc<str>>, AudioPromiseCommand)>,
     mut commands: mpsc::UnboundedReceiver<TranscriptionMessage>,
     // tx: mpsc::UnboundedSender<(String, UserId)>,
@@ -53,6 +56,8 @@ pub async fn transcription_thread(
     };
     let (responses, mut rx) = mpsc::unbounded_channel();
     let mut threads: Vec<user::TranscriptionThread> = Vec::new();
+    let mut pending_commands = FuturesOrdered::new();
+    let mut pending_feedback = FuturesOrdered::new();
     loop {
         tokio::select! {
             Some(command) = commands.recv() => {
@@ -69,14 +74,14 @@ pub async fn transcription_thread(
                 if let Some(thread) = threads.iter().find(|t| t.user_id == packet.user_id) {
                     thread.send(packet);
                 } else {
-                    let thread = user::TranscriptionThread::new(packet.user_id, responses.clone());
+                    let thread = user::TranscriptionThread::new(packet.user_id, responses.clone(), Arc::clone(&context.http));
                     thread.send(packet);
                     threads.push(thread);
                 }
             }
             Some(response) = rx.recv() => {
-                let ThreadResponse { audio, action, user_id } = response;
-                if let Some(audio) = audio {
+                let ThreadResponse { response: WithFeedback { command, feedback }, user_id } = response;
+                if let Some(audio) = feedback {
                     log::trace!("Playing audio for {}", user_id);
                     let mut call = call.lock().await;
                     if let Err(e) = call.play(audio.to_songbird()).add_event(
@@ -86,23 +91,93 @@ pub async fn transcription_thread(
                         log::error!("Failed to register deleter: {:?}", e);
                     }
                 }
-                match action {
-                    ThreadResponseAction::UploadFile { name, data } => {
-                        if let Err(e) = tx.send((PostSomething::Attachment { name, data }, user_id)) {
-                            log::error!("Failed to send audio to main thread: {:?}", e);
+                pending_commands.push_back(command);
+                // match action {
+                //     ThreadResponseAction::UploadFile { name, data } => {
+                //         if let Err(e) = tx.send((PostSomething::Attachment { name, data }, user_id)) {
+                //             log::error!("Failed to send audio to main thread: {:?}", e);
+                //         }
+                //     }
+                //     ThreadResponseAction::SendMessage { content } => {
+                //         if let Err(e) = tx.send((PostSomething::Text(content), user_id)) {
+                //             log::error!("Failed to send message to main thread: {:?}", e);
+                //         }
+                //     }
+                //     ThreadResponseAction::None => {
+                //         log::trace!("No action");
+                //     }
+                // }
+            }
+            v = then(&mut pending_commands) => {
+                match v {
+                    Ok(ParsedCommand::Command(command)) => {
+                        let (tx, rx) = oneshot::channel();
+                        if let Err(e) = otx.send((tx, command)) {
+                            log::error!("Failed to send command: {:?}", e);
+                        }
+                        pending_feedback.push_back(rx);
+                    }
+                    Ok(ParsedCommand::MetaCommand(command)) => {
+                        log::info!("MetaCommand: {:?}", command);
+                    }
+                    Ok(ParsedCommand::AiTTS(video)) => {
+                        // play the video through the call
+                        let mut call = call.lock().await;
+                        if let Err(e) = call.play(video.to_songbird()).add_event(
+                            songbird::events::Event::Track(songbird::events::TrackEvent::End),
+                            DeleteAfterFinish::new_disk(video),
+                        ) {
+                            log::error!("Failed to play video: {:?}", e);
                         }
                     }
-                    ThreadResponseAction::SendMessage { content } => {
-                        if let Err(e) = tx.send((PostSomething::Text(content), user_id)) {
-                            log::error!("Failed to send message to main thread: {:?}", e);
+                    Ok(ParsedCommand::None) => {
+                        log::trace!("No command");
+                    }
+                    Err(e) => {
+                        log::error!("Failed to get command: {:?}", e);
+                    }
+                }
+            }
+            v = then(&mut pending_feedback) => {
+                match v {
+                    Ok(string) => {
+                        log::trace!("Feedback: {}", string);
+                        if let Err(e) = tx.send((PostSomething::Text(string), context.cache.current_user().id)) {
+                            log::error!("Failed to send feedback to main thread: {:?}", e);
                         }
                     }
-                    ThreadResponseAction::None => {
-                        log::trace!("No action");
+                    Err(e) => {
+                        log::error!("Failed to get feedback: {:?}", e);
                     }
                 }
             }
         }
+    }
+}
+
+async fn then<T>(queue: &mut FuturesOrdered<T>) -> <T as Future>::Output
+where
+    T: Future,
+{
+    match queue.next().await {
+        Some(t) => t,
+        None => Never::default().await,
+    }
+}
+pub struct Never<T> {
+    _phantom: std::marker::PhantomData<T>,
+}
+impl<T> Default for Never<T> {
+    fn default() -> Self {
+        Self {
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+impl<T> Future for Never<T> {
+    type Output = T;
+    fn poll(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<T> {
+        std::task::Poll::Pending
     }
 }
 enum InnerThreadCommand {
@@ -111,8 +186,9 @@ enum InnerThreadCommand {
 }
 #[derive(Debug)]
 struct ThreadResponse {
-    audio: Option<Video>,
-    action: ThreadResponseAction,
+    // audio: Option<Video>,
+    // action: ThreadResponseAction,
+    response: WithFeedback,
     user_id: UserId,
 }
 #[derive(Debug)]
@@ -211,6 +287,7 @@ impl songbird::EventHandler for VoiceEventSender {
                             received: Instant::now(),
                         }) {
                             log::error!("Failed to send packet data: {:?}", e);
+                            break;
                         }
                     }
                 }
@@ -400,3 +477,29 @@ where
     }
     Err(serde::de::Error::custom("Invalid pending status"))
 }
+
+static MALE_NAMES: &[&str] = &[
+    "Tom",
+    "Jerry",
+    "Bob",
+    "John",
+    "Bill",
+    "Joe",
+    "Jim",
+    "Tim",
+    "Sam",
+    "Max",
+    "Ben",
+    "Dan",
+    "Ted",
+    "Don",
+    "Ron",
+    "Ed",
+    "Roy",
+    "Leo",
+    "Lee",
+    "Ray",
+    "Rex",
+    "Jay",
+    "Sir Fartmire the Third",
+];

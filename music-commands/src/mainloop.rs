@@ -72,7 +72,10 @@ pub async fn the_lüüp(
         log.log("Locking call").await;
         let mut cl = control.call.lock().await;
         log.log("Setting bitrate").await;
-        cl.set_bitrate(Bitrate::Auto);
+        cl.set_bitrate(match control.settings.bitrate {
+            OrAuto::Auto => Bitrate::Auto,
+            OrAuto::Specific(b) => Bitrate::BitsPerSecond(b),
+        });
     }
     let (msg_updater, update_msg) = mpsc::channel::<(SettingsData, EmbedData)>(8);
     let (change_channel, mut change_rx) = tokio::sync::broadcast::channel::<ChannelId>(1);
@@ -568,7 +571,7 @@ pub async fn the_lüüp(
                                     cl.set_bitrate(Bitrate::Auto);
                                 }
                                 OrAuto::Specific(bitrate) => {
-                                    cl.set_bitrate(Bitrate::BitsPerSecond(bitrate as i32));
+                                    cl.set_bitrate(Bitrate::BitsPerSecond(bitrate));
                                 }
                             }
                             if let Err(e) = snd.send(format!("Bitrate set to `{}`", bitrate).into()) {

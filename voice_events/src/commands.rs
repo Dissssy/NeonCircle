@@ -2,6 +2,7 @@ use common::{
     anyhow::{self, Result},
     audio::{AudioPromiseCommand, OrToggle, SpecificVolume},
     get_config, lazy_static, log,
+    rand::seq::SliceRandom as _,
     serenity::all::*,
     tokio,
     video::{Author, LazyLoadedVideo, MetaVideo, Video, VideoType},
@@ -17,7 +18,7 @@ fn filter_input(s: &str) -> String {
         .collect::<Vec<&str>>()
         .join(" ")
 }
-async fn parse_commands(s: &str, u: UserId, http: Arc<Http>) -> WithFeedback {
+pub async fn parse_commands(s: &str, u: UserId, http: Arc<Http>) -> WithFeedback {
     if s.is_empty() {
         return WithFeedback::new_without_feedback(Box::pin(
             async move { Ok(ParsedCommand::None) },
@@ -182,23 +183,51 @@ async fn parse_commands(s: &str, u: UserId, http: Arc<Http>) -> WithFeedback {
             .await
         }
         unknown => {
+            let query = std::iter::once(unknown)
+                .chain(args.into_iter())
+                .collect::<Vec<&str>>()
+                .join(" ");
             WithFeedback::new_with_feedback(
-                Box::pin(async move { Ok(ParsedCommand::None) }),
-                &format!("Unknown command. {}", unknown),
+                Box::pin(async move {
+                    // TODO: Use gemini to generate a response or something that would be neat, can i hook into the gemini android app maybe for like search engine shit?
+                    let resp = crate::gemini::Response::get(&query).await?;
+
+                    // println!("{:#?}", resp);
+                    // return Err(anyhow!("unimplimented"));
+
+                    let v = common::youtube::get_tts(
+                        resp.formatted_response(),
+                        Some(common::youtube::TTSVoice::new(
+                            "en-US",
+                            "en-US-Studio-Q",
+                            "MALE",
+                        )),
+                    )
+                    .await?;
+                    Ok(ParsedCommand::AiTTS(v))
+                }),
+                &format!(
+                    "Hang on. let me ask {}.",
+                    crate::MALE_NAMES
+                        .choose(&mut common::rand::thread_rng())
+                        .unwrap_or(&"Ethan")
+                ),
             )
             .await
         }
     }
 }
+
 #[derive(Debug)]
 pub enum ParsedCommand {
     None,
+    AiTTS(Video),
     MetaCommand(Command),
     Command(AudioPromiseCommand),
 }
 pub struct WithFeedback {
-    command: Pin<Box<dyn std::future::Future<Output = Result<ParsedCommand>> + Send>>,
-    feedback: Option<Video>,
+    pub command: Pin<Box<dyn std::future::Future<Output = Result<ParsedCommand>> + Send>>,
+    pub feedback: Option<Video>,
 }
 impl std::fmt::Debug for WithFeedback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -363,40 +392,26 @@ async fn get_videos(query: String, http: Arc<Http>, u: UserId) -> Result<Vec<Met
     match vids {
         Ok(vids) => {
             let mut truevideos = Vec::new();
-            #[cfg(feature = "tts")]
-            let key = common::youtube::get_access_token().await;
             for v in vids {
                 let title = match &v {
                     VideoType::Disk(v) => v.title(),
                     VideoType::Url(v) => v.title(),
                 };
                 #[cfg(feature = "tts")]
-                if let Ok(key) = key.as_ref() {
-                    truevideos.push(MetaVideo {
-                        video: v,
-                        ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(
-                            common::youtube::get_tts(Arc::clone(&title), key.clone(), None),
-                        ))),
-                        // title,
-                        author: http.get_user(u).await.ok().map(|u| Author {
-                            name: u.name.clone(),
-                            pfp_url: u
-                                .avatar_url()
-                                .clone()
-                                .unwrap_or(u.default_avatar_url().clone()),
-                        }),
-                    })
-                } else {
-                    truevideos.push(MetaVideo {
-                        video: v,
-                        ttsmsg: None,
-                        // title,
-                        author: http.get_user(u).await.ok().map(|u| Author {
-                            name: u.name.clone(),
-                            pfp_url: u.avatar_url().unwrap_or(u.default_avatar_url().clone()),
-                        }),
-                    });
-                }
+                truevideos.push(MetaVideo {
+                    video: v,
+                    ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(
+                        common::youtube::get_tts(Arc::clone(&title), None),
+                    ))),
+                    // title,
+                    author: http.get_user(u).await.ok().map(|u| Author {
+                        name: u.name.clone(),
+                        pfp_url: u
+                            .avatar_url()
+                            .clone()
+                            .unwrap_or(u.default_avatar_url().clone()),
+                    }),
+                });
                 #[cfg(not(feature = "tts"))]
                 truevideos.push(MetaVideo { video: v, title });
             }

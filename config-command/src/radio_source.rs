@@ -191,7 +191,7 @@ impl SubCommandTrait for StreamUrl {
                     return Ok(());
                 };
                 let note: Option<String> = try {
-                    let url = config.radio_data_url?;
+                    let url = config.radio_audio_url?;
                     let d = RadioData::get(url.as_ref()).await.ok()?;
                     (d.kind() == RadioDataKind::IceCast).then_some(())?;
                     let search_for = value.split('/').last()?;
@@ -204,7 +204,7 @@ impl SubCommandTrait for StreamUrl {
                         "Otherwise the data will always be unknown"
                     )
                 };
-                config.radio_data_url = Some(Arc::clone(&value));
+                config.radio_audio_url = Some(Arc::clone(&value));
                 interaction
                     .create_followup(
                         &ctx.http,

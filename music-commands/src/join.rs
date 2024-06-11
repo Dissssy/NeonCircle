@@ -176,7 +176,7 @@ impl CommandTrait for Command {
                                 )>();
                                 let transcription = TranscriptionThread::new(
                                     Arc::clone(&call),
-                                    Arc::clone(&ctx.http),
+                                    ctx.clone(),
                                     tx.clone(),
                                 )
                                 .await;

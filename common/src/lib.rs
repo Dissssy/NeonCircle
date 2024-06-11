@@ -8,6 +8,8 @@ mod statics;
 mod traits;
 pub mod video;
 pub mod youtube;
+use std::sync::Arc;
+
 pub use anyhow;
 // pub mod voice_events;
 pub use chrono;
@@ -24,6 +26,6 @@ pub use tokio;
 pub use traits::{CommandTrait, SubCommandTrait};
 pub mod utils;
 pub enum PostSomething {
-    Attachment { name: String, data: Vec<u8> },
-    Text(String),
+    Attachment { name: Arc<str>, data: Vec<u8> },
+    Text(Arc<str>),
 }

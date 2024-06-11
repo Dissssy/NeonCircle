@@ -53,7 +53,7 @@ impl CommandTrait for Command {
             "bitrate" => Some(&o.value),
             _ => None,
         }) {
-            Some(ResolvedValue::Integer(i)) => OrAuto::Specific(*i),
+            Some(ResolvedValue::Integer(i)) => OrAuto::Specific(*i as i32),
             None => OrAuto::Auto,
             _ => {
                 if let Err(e) = interaction
@@ -176,7 +176,7 @@ impl CommandTrait for Command {
                     }
                     return Ok(());
                 }
-                val
+                val as i32
             })
         };
         let guild_id = match interaction.guild_id {

@@ -235,7 +235,7 @@ impl Reminder {
                     .title("You asked me to remind you about")
                     .description(&self.message);
 
-                if let Ok(timestamp) = Timestamp::from_unix_timestamp(self.remind_at.timestamp()) {
+                if let Ok(timestamp) = Timestamp::from_unix_timestamp(self.created_at.timestamp()) {
                     embed = embed
                         .footer(CreateEmbedFooter::new("You requested this reminder on"))
                         .timestamp(timestamp);

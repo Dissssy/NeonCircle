@@ -1,3 +1,4 @@
+use crate::video::MetaVideo;
 use anyhow::Result;
 use serenity::{
     all::{
@@ -8,7 +9,6 @@ use serenity::{
 };
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 use tokio::sync::{mpsc, oneshot, RwLock};
-use crate::video::MetaVideo;
 pub struct AudioCommandHandler;
 impl TypeMapKey for AudioCommandHandler {
     type Value = Arc<RwLock<HashMap<ChannelId, SenderAndGuildId>>>;
@@ -108,7 +108,7 @@ impl OrToggle {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrAuto {
-    Specific(i64),
+    Specific(i32),
     Auto,
 }
 impl Display for OrAuto {

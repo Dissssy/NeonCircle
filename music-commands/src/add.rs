@@ -199,7 +199,7 @@ impl CommandTrait for Command {
                                 #[cfg(feature = "transcribe")]
                                 let transcription = TranscriptionThread::new(
                                     Arc::clone(&call),
-                                    Arc::clone(&ctx.http),
+                                    ctx.clone(),
                                     tx.clone(),
                                 )
                                 .await;
@@ -442,26 +442,18 @@ impl CommandTrait for Command {
                 Ok(rawvids) => {
                     let mut truevideos = Vec::new();
                     #[cfg(feature = "tts")]
-                    let key = common::youtube::get_access_token().await;
                     for v in rawvids {
                         let title = match v.clone() {
                             VideoType::Disk(v) => v.title(),
                             VideoType::Url(v) => v.title(),
                         };
                         #[cfg(feature = "tts")]
-                        if let Ok(key) = key.as_ref() {
+                        {
                             log::trace!("Getting tts for {}", title);
-                            let key = key.clone();
                             truevideos.push(MetaVideo {
                                 video: v,
                                 ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(async move {
-                                    match common::youtube::get_tts(
-                                        Arc::clone(&title),
-                                        key.clone(),
-                                        None,
-                                    )
-                                    .await
-                                    {
+                                    match common::youtube::get_tts(Arc::clone(&title), None).await {
                                         Ok(v) => Ok(v),
                                         Err(original_error) => {
                                             match common::sam::get_speech(&title) {
@@ -479,18 +471,6 @@ impl CommandTrait for Command {
                                 )
                                 .await,
                             })
-                        } else {
-                            truevideos.push(MetaVideo {
-                                video: v,
-                                ttsmsg: None,
-                                // title,
-                                author: Author::from_user(
-                                    ctx,
-                                    &interaction.user,
-                                    interaction.guild_id,
-                                )
-                                .await,
-                            });
                         }
                         #[cfg(not(feature = "tts"))]
                         truevideos.push(MetaVideo { video: v, title });

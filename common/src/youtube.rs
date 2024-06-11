@@ -13,6 +13,7 @@ lazy_static::lazy_static!(
             vec![
                 TTSVoice::new("en-US", "en-US-Journey-D", "MALE"),
                 TTSVoice::new("en-US", "en-US-Journey-F", "FEMALE"),
+                TTSVoice::new("en-US", "en-US-Journey-O", "FEMALE"),
             ]
         } else {
             vec![
@@ -286,10 +287,9 @@ impl TTSVoice {
     }
 }
 #[cfg(feature = "tts")]
-pub async fn get_tts<F, T>(title: F, key: T, specificvoice: Option<TTSVoice>) -> Result<Video>
+pub async fn get_tts<F>(title: F, specificvoice: Option<TTSVoice>) -> Result<Video>
 where
     F: AsRef<str>,
-    T: AsRef<str>,
 {
     let mut title = title.as_ref().to_owned();
     use crate::video::Video;
@@ -324,7 +324,10 @@ where
         .post("https://texttospeech.googleapis.com/v1/text:synthesize")
         .header("Content-Type", "application/json; charset=utf-8")
         .header("X-Goog-User-Project", "97417849124")
-        .header("Authorization", format!("Bearer {}", key.as_ref().trim()))
+        .header(
+            "Authorization",
+            format!("Bearer {}", get_access_token().await?.trim()),
+        )
         .body(body.to_string())
         .send()
         .await?;

@@ -22,9 +22,8 @@ use common::anyhow::{self, Result};
 #[cfg(not(feature = "new-controls"))]
 use common::serenity::all::{ButtonStyle, CreateButton};
 use common::serenity::all::{
-    Cache, Channel, ChannelId, ChannelType, CommandInteraction, Context, CreateActionRow,
-    CreateMessage, EditInteractionResponse, EditMessage, GetMessages, GuildChannel, GuildId, Http,
-    Message, MessageFlags, ModalInteraction, User, UserId,
+    Cache, Channel, ChannelId, ChannelType, Context, CreateActionRow, CreateMessage, EditMessage,
+    GetMessages, GuildChannel, GuildId, Http, Message, MessageFlags, UserId,
 };
 #[cfg(feature = "new-controls")]
 use common::serenity::all::{CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption};
@@ -35,13 +34,10 @@ use common::youtube::TTSVoice;
 use common::{log, songbird, tokio};
 #[cfg(feature = "transcribe")]
 use serde_json::json;
-use songbird::tracks::Track;
 use songbird::typemap::TypeMapKey;
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, RwLock};
-use tokio::task::JoinHandle;
+use tokio::sync::RwLock;
 use tokio::time::Instant;
 pub struct AudioHandler;
 impl TypeMapKey for AudioHandler {
@@ -195,7 +191,7 @@ impl MessageReference {
                                     "parse": []
                                 }
                             });
-                            builder = builder.part("files[0]", reqwest::multipart::Part::bytes(data).file_name(name));
+                            builder = builder.part("files[0]", reqwest::multipart::Part::bytes(data).file_name(name.to_string()));
                             if let Some(attachments) = payload.get_mut("attachments") {
                                 let mut new = json!([
                                     {
@@ -743,8 +739,7 @@ impl RawMessage {
         voice: TTSVoice,
         // call: &Arc<Mutex<Call>>,
     ) -> Result<Video> {
-        let key = common::youtube::get_access_token().await?;
-        common::youtube::get_tts(text, key, Some(voice)).await
+        common::youtube::get_tts(text, Some(voice)).await
         // let res = crate::youtube::get_tts(text, key, Some(voice)).await?;
         // let handle = {
         //     let mut clock = call.lock().await;

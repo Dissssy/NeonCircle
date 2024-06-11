@@ -36,6 +36,7 @@ pub struct Config {
     #[cfg(feature = "transcribe")]
     pub transcription_map_path: PathBuf,
     pub guild_config_path: PathBuf,
+    pub google_gemini_api_key: String,
 }
 impl Config {
     pub fn get() -> Self {
@@ -186,6 +187,13 @@ impl Config {
                 } else {
                     Self::safe_read("\nPlease enter your transcription map path:")
                 },
+                google_gemini_api_key: if let Some(google_gemini_api_key) =
+                    rec.google_gemini_api_key
+                {
+                    google_gemini_api_key
+                } else {
+                    Self::safe_read("\nPlease enter your google gemini api key:")
+                },
             }
         } else {
             log::error!("Welcome to my shitty Rust Music Bot!");
@@ -232,6 +240,7 @@ impl Config {
                 consent_path: Self::safe_read("\nPlease enter your consent path:"),
                 guild_config_path: Self::safe_read("\nPlease enter your guild config path:"),
                 transcription_map_path: Self::safe_read("\nPlease enter your transcription map path:"),
+                google_gemini_api_key: Self::safe_read("\nPlease enter your google gemini api key:"),
             }
         };
         match std::fs::write(
@@ -327,4 +336,5 @@ struct RecoverConfig {
     #[cfg(feature = "transcribe")]
     transcription_map_path: Option<PathBuf>,
     guild_config_path: Option<PathBuf>,
+    google_gemini_api_key: Option<String>,
 }

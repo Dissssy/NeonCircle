@@ -375,31 +375,20 @@ impl VideoInfo {
             .ok_or(anyhow::anyhow!("Could not get video"))?
             .clone();
         #[cfg(feature = "tts")]
-        let key = crate::youtube::get_access_token().await;
         let title = match &v {
             VideoType::Disk(v) => v.title(),
             VideoType::Url(v) => v.title(),
         };
         #[cfg(feature = "tts")]
-        if let Ok(key) = key.as_ref() {
-            Ok(MetaVideo {
-                video: v,
-                ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(
-                    Arc::clone(&title),
-                    key.clone(),
-                    None,
-                )))),
-                // title,
-                author: None,
-            })
-        } else {
-            Ok(MetaVideo {
-                video: v,
-                ttsmsg: None,
-                // title,
-                author: None,
-            })
-        }
+        return Ok(MetaVideo {
+            video: v,
+            ttsmsg: Some(LazyLoadedVideo::new(tokio::spawn(crate::youtube::get_tts(
+                Arc::clone(&title),
+                None,
+            )))),
+            // title,
+            author: None,
+        });
         #[cfg(not(feature = "tts"))]
         return Ok(MetaVideo { video: v, title });
     }
