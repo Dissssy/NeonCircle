@@ -1,7 +1,13 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use common::anyhow::Result;
+use common::audio::{AudioCommandHandler, AudioPromiseCommand, MetaCommand};
 use common::serenity::all::*;
 use common::utils::friendly_duration;
 use common::{log, tokio, SubCommandTrait};
+use futures::stream::FuturesUnordered;
+use futures::StreamExt as _;
 use long_term_storage::Guild;
 pub struct Command;
 #[async_trait]
@@ -108,6 +114,39 @@ impl SubCommandTrait for Command {
                         log::error!("Failed to send response: {}", e);
                     }
                 }
+                // we need to iterate over EVERY guild that has a connection, and update the timeout
+                let connection_handler = {
+                    let data = ctx.data.read().await;
+                    match data.get::<AudioCommandHandler>() {
+                        Some(v) => Arc::clone(v),
+                        None => {
+                            log::error!("Failed to get audio command handler");
+                            return Ok(());
+                        }
+                    }
+                };
+                tokio::task::spawn(async move {
+                    let mut map = connection_handler.write().await;
+                    let mut res = FuturesUnordered::new();
+                    for sender in map.values_mut() {
+                        if sender.guild_id != guild_id {
+                            continue;
+                        }
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        let _ = sender.send((
+                            tx,
+                            AudioPromiseCommand::MetaCommand(MetaCommand::ChangeAloneTimeout(
+                                Duration::from_secs(timeout as u64),
+                            )),
+                        ));
+                        res.push(rx);
+                    }
+                    while let Some(r) = res.next().await {
+                        if let Err(e) = r {
+                            log::error!("Failed to change default song volume: {:?}", e);
+                        }
+                    }
+                });
             }
         }
         Ok(())

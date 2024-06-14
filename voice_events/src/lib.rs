@@ -153,6 +153,9 @@ pub async fn transcription_thread(
             }
         }
     }
+    log::trace!("Transcription thread stopped");
+    let mut call = call.lock().await;
+    call.remove_all_global_events();
 }
 
 async fn then<T>(queue: &mut FuturesOrdered<T>) -> <T as Future>::Output
@@ -287,7 +290,6 @@ impl songbird::EventHandler for VoiceEventSender {
                             received: Instant::now(),
                         }) {
                             log::error!("Failed to send packet data: {:?}", e);
-                            break;
                         }
                     }
                 }

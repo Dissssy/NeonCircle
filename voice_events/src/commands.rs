@@ -196,7 +196,7 @@ pub async fn parse_commands(s: &str, u: UserId, http: Arc<Http>) -> WithFeedback
                     // return Err(anyhow!("unimplimented"));
 
                     let v = common::youtube::get_tts(
-                        resp.formatted_response(),
+                        format!("Sure thing Neon Circle.\n{}", resp.formatted_response()),
                         Some(common::youtube::TTSVoice::new(
                             "en-US",
                             "en-US-Studio-Q",
@@ -207,7 +207,8 @@ pub async fn parse_commands(s: &str, u: UserId, http: Arc<Http>) -> WithFeedback
                     Ok(ParsedCommand::AiTTS(v))
                 }),
                 &format!(
-                    "Hang on. let me ask {}.",
+                    // "Hang on. let me ask {}.",
+                    "Can you help me with this one, {}?",
                     crate::MALE_NAMES
                         .choose(&mut common::rand::thread_rng())
                         .unwrap_or(&"Ethan")

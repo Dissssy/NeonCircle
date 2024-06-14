@@ -336,7 +336,7 @@ pub async fn the_lüüp(
     // the characters after the last / in the radio audio url (either the custom one set OR the default one)
     let mut rerun = OptionalTimeout::new(std::time::Duration::from_millis(10));
     let mut manually_set = ManuallySet::default();
-    let empty_channel_timeout = guild_config.empty_channel_timeout;
+    let mut empty_channel_timeout = guild_config.empty_channel_timeout;
     drop(guild_config);
     drop(global_config);
     rerun.begin_now();
@@ -683,6 +683,13 @@ pub async fn the_lüüp(
                                     }
                                 }
                             }
+                        }
+                        AudioPromiseCommand::MetaCommand(MetaCommand::ChangeAloneTimeout(time)) => {
+                            if let Err(e) = snd.send("Ack".into()) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
+                            }
+                            empty_channel_timeout = time;
+                            pending_disconnect.set_duration(time);
                         }
                     },
                     None => {

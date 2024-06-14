@@ -7,7 +7,7 @@ use serenity::{
     },
     prelude::TypeMapKey,
 };
-use std::{collections::HashMap, fmt::Display, sync::Arc};
+use std::{collections::HashMap, fmt::Display, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, RwLock};
 pub struct AudioCommandHandler;
 impl TypeMapKey for AudioCommandHandler {
@@ -61,6 +61,7 @@ pub enum MetaCommand {
     ChangeRadioAudioUrl(Arc<str>),
     ChangeRadioDataUrl(Arc<str>),
     ResetCustomRadioData,
+    ChangeAloneTimeout(Duration),
 }
 pub enum GenericInteraction<'a> {
     Command(&'a CommandInteraction),
