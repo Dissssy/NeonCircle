@@ -11,20 +11,21 @@ common = { path = "../common" }
 config_command = { path = "../config-command" }
 music_commands = { path = "../music-commands" }
 national_debt = { path = "../national-debt" }
+datalust_logger = { path = "../../datalust_logger" }
 long_term_storage = { path = "../lts" }
-serde = { version = "1.0.203", features = ["rc"] }
-serde_json = { version = "1.0.117", features = ["preserve_order"] }
+serde = { version = "1.0.214", features = ["rc"] }
+serde_json = { version = "1.0.132", features = ["preserve_order"] }
 # poll-promise = { version = "0.3.0", features = ["tokio"] }
-tracing = "0.1.40"
+# tracing = "0.1.40"
 # tracing-subscriber = "0.3.18"
-anyhow = "1.0.86"
+anyhow = "1.0.91"
 # url = "2.3.1"
 # html = "0.1.1"
 # rayon = "1.5.3"
 # async-recursion = "1.1.1"
-env_logger = "0.11.3"
-image = "0.25.1"
-console-subscriber = { version = "0.2.0", optional = true }
+env_logger = "0.11.5"
+image = "0.25.4"
+console-subscriber = { version = "0.4.1", optional = true }
 dotenv = "0.15.0"
 date_time_parser = "0.2.0"
 fuzzy-matcher = "0.3.7"

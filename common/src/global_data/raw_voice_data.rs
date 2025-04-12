@@ -84,11 +84,13 @@ pub async fn mutual_channel(guild: &GuildId, member: &UserId) -> Result<VoiceAct
     }
 }
 pub async fn bot_connected(guild: &GuildId, bot: &UserId) -> Result<bool> {
+    log::trace!("Checking if bot {:?} is connected to {:?}", bot, guild);
     let data = VOICE_DATA.read().await;
     match data.as_ref() {
         Some(data) => Ok(data
             .guilds
             .get(guild)
+            .inspect(|_| log::trace!("guild exists"))
             .map_or(false, |guild| guild.bots_connected.contains(bot))),
         None => Err(anyhow::anyhow!("Voice data uninitialized")),
     }

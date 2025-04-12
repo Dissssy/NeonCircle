@@ -6,15 +6,17 @@ edition = "2021"
 [dependencies]
 common = { path = "../common" }
 long_term_storage = { path = "../lts" }
+dectalk = { path = "../dectalk" }
 voice_events = { path = "../voice_events" }
-serde = { version = "1.0.203", features = ["rc"] }
-serde_json = { version = "1.0.117", features = ["preserve_order"] }
-regex = "1.10.4"
+serde = { version = "1.0.214", features = ["rc"] }
+serde_json = { version = "1.0.132", features = ["preserve_order"] }
+regex = "1.11.1"
 linkify = "0.10.0"
-
+log = "0.4.27"
 
 [features]
 default = ["tts", "youtube-search", "transcribe", "new-controls"]
+send_to_thread = []
 tts = []
 youtube-search = []
 transcribe = []

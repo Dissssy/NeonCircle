@@ -116,25 +116,20 @@ fn get_green_channel(src: &DynamicImage) -> anyhow::Result<DynamicImage> {
 }
 fn john_the_image(image: DynamicImage) -> anyhow::Result<DynamicImage> {
     let green = get_green_channel(&image)?;
-    //green.save("john_2_green.png")?;
     let green_hue = green.huerotate(-75);
-    //green_hue.save("john_3_green_hue.png")?;
     let mut output = DynamicImage::new_rgba8(image.width(), image.height());
     for (x, y, orig_pixel) in image.pixels() {
         let green_pixel = green_hue.get_pixel(x, y);
         let orig_channels = orig_pixel.channels();
         let green_channels = green_pixel.channels();
-        // let r = orig_channels[0].saturating_add(green_channels[0]);
         let r = orig_channels
             .first()
             .and_then(|r| green_channels.first().map(|r2| r.saturating_add(*r2)))
             .unwrap_or_default();
-        // let g = orig_channels[1].saturating_add(green_channels[1]);
         let g = orig_channels
             .get(1)
             .and_then(|g| green_channels.get(1).map(|g2| g.saturating_add(*g2)))
             .unwrap_or_default();
-        // let b = orig_channels[2].saturating_add(green_channels[2]);
         let b = orig_channels
             .get(2)
             .and_then(|b| green_channels.get(2).map(|b2| b.saturating_add(*b2)))

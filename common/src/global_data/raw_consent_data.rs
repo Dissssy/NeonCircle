@@ -35,6 +35,7 @@ pub fn init() {
         INITIALIZED = true;
     }
 }
+#[allow(dead_code)]
 pub fn set_consent(user_id: UserId, consent: bool) {
     let init = unsafe { INITIALIZED };
     if !init {
@@ -53,6 +54,7 @@ pub fn set_consent(user_id: UserId, consent: bool) {
     }
     save();
 }
+#[allow(dead_code)]
 pub fn get_consent(user_id: UserId) -> bool {
     let init = unsafe { INITIALIZED };
     if !init {

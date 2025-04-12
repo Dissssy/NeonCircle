@@ -1,3 +1,41 @@
+#![allow(dead_code)]
+pub struct Engine {
+    history: Vec<Content>,
+}
+
+impl Engine {
+    pub fn new() -> Self {
+        Self {
+            history: Vec::new(),
+        }
+    }
+    pub async fn get(&mut self, query: &str, conversation: bool) -> Result<String> {
+        if !conversation {
+            self.clear();
+        }
+
+        let response = match Request::new(query, conversation, &mut self.history)
+            .get()
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => {
+                self.clear();
+                return Err(e);
+            }
+        };
+
+        if conversation && let Some(thing) = response.candidates.first() {
+            self.history.push(thing.content.clone());
+        }
+
+        Ok(response.formatted_response())
+    }
+    pub fn clear(&mut self) {
+        self.history.clear();
+    }
+}
+
 // google gemini api access, this is the equivalent python code
 
 // """
@@ -224,7 +262,82 @@ pub struct UsageMetadata {
 }
 
 impl Response {
-    pub async fn get(query: &str) -> Result<Self> {
+    pub fn formatted_response(self) -> String {
+        self.candidates
+            .into_iter()
+            .map(|candidate| {
+                candidate
+                    .content
+                    .parts
+                    .into_iter()
+                    .map(|part| part.text)
+                    .collect::<String>()
+            })
+            .collect::<Vec<String>>()
+            .join("\n")
+            .replace(". \n", ". ")
+            .replace(".\n", ". ")
+            .replace('\n', " ")
+            .replace("  ", " ")
+            .replace("  ", " ")
+            .split(". ")
+            .collect::<Vec<&str>>()
+            .join(".\n")
+            .trim()
+            .to_string()
+    }
+}
+
+#[derive(Debug, serde::Serialize, PartialEq, PartialOrd)]
+pub struct Request<'a> {
+    contents: &'a mut Vec<Content>,
+    #[serde(rename = "safetySettings")]
+    safety_settings: Vec<SafetySetting>,
+    #[serde(rename = "generationConfig")]
+    generation_config: GenerationConfig,
+}
+
+impl<'a> Request<'a> {
+    pub fn new(query: &str, conversational: bool, history: &'a mut Vec<Content>) -> Self {
+        history.push(Content {
+            parts: vec![Part {
+                text: if history.is_empty() {
+                    if conversational {
+                        format!("No emojis, code, or non conversational text please. This is a casual conversation.\n\n{}", query)
+                    } else {
+                        format!("One sentence response only please.\n\n{}", query)
+                    }
+                } else {
+                    query.to_string()
+                }
+            }],
+            role: Role::User,
+        });
+        Self {
+            // contents: vec![Content {
+            //     parts: vec![Part {
+            //         text: if conversational {
+            //             query.to_string()
+            //         } else {
+            //             format!("One sentence response only please.\n{}", query)
+            //         },
+            //     }],
+            //     role: Role::User,
+            // }],
+            contents: history,
+            safety_settings: SafetySetting::all(HarmBlockThreshold::None),
+            generation_config: GenerationConfig {
+                // stop_sequences: vec!["\n".to_string()],
+                stop_sequences: vec![], // if people want to break free why not let em have a little fun
+                // candidate_count: 1,
+                max_output_tokens: 8192,
+                // temperature: 1.0,
+                // top_p: 0.95,
+                // top_k: 64,
+            },
+        }
+    }
+    async fn get(self) -> Result<Response> {
         // let json = serde_json::to_string(&Request::new(query))?;
         // println!("{:#?}", json);
         // return Err(anyhow!("test"));
@@ -240,7 +353,7 @@ impl Response {
                 )
                 .as_str(),
             )
-            .json(&Request::new(query))
+            .json(&self)
             .send()
             .await?;
 
@@ -251,53 +364,11 @@ impl Response {
         //         log::error!("Failed to parse json: {} from:\n{}", e, delayed_json);
         //     })?,
         // })
-        Ok(serde_json::from_str(&delayed_json).inspect_err(|e| {
-            log::error!("Failed to parse json: {} from:\n{}", e, delayed_json);
-        })?)
-    }
-    pub fn formatted_response(self) -> String {
-        self.candidates
-            .into_iter()
-            .map(|candidate| {
-                candidate
-                    .content
-                    .parts
-                    .into_iter()
-                    .map(|part| part.text)
-                    .collect::<String>()
-            })
-            .collect::<Vec<String>>()
-            .join("\n")
-    }
-}
-
-#[derive(Debug, serde::Serialize, Clone, PartialEq, PartialOrd)]
-pub struct Request {
-    contents: Vec<Content>,
-    #[serde(rename = "safetySettings")]
-    safety_settings: Vec<SafetySetting>,
-    #[serde(rename = "generationConfig")]
-    generation_config: GenerationConfig,
-}
-
-impl Request {
-    pub fn new(query: &str) -> Self {
-        Self {
-            contents: vec![Content {
-                parts: vec![Part {
-                    text: format!("{}\nOne sentence response only please.", query),
-                }],
-            }],
-            safety_settings: SafetySetting::all(HarmBlockThreshold::None),
-            generation_config: GenerationConfig {
-                stop_sequences: vec!["\n".to_string()],
-                // candidate_count: 1,
-                max_output_tokens: 8192,
-                // temperature: 1.0,
-                // top_p: 0.95,
-                // top_k: 64,
-            },
-        }
+        Ok(
+            serde_json::from_str::<Response>(&delayed_json).inspect_err(|e| {
+                log::error!("Failed to parse json: {} from:\n{}", e, delayed_json);
+            })?,
+        )
     }
 }
 
@@ -306,6 +377,17 @@ impl Request {
 )]
 pub struct Content {
     parts: Vec<Part>,
+    role: Role,
+}
+
+#[derive(
+    Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
+pub enum Role {
+    #[serde(rename = "user")]
+    User,
+    #[serde(rename = "model")]
+    Model,
 }
 
 #[derive(

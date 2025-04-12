@@ -1,3 +1,5 @@
+#![feature(once_cell_get_mut)]
+#![allow(static_mut_refs)]
 use common::anyhow::Result;
 use common::tokio::sync::OnceCell;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -8,6 +10,7 @@ mod guild;
 pub use guild::Guild;
 mod user;
 pub use user::User;
+pub use user::VoicePreference;
 mod reminder;
 pub use reminder::Reminder;
 // This crate is for LTS (Long Term Storage) of data for the Neon Circle Discord bot.
@@ -16,6 +19,8 @@ pub use reminder::Reminder;
 // user stores
 //  the id for querying
 //  a boolean to consent (or not) to process their microphone data.
+//  a voice preference, which is either male or female and tells the bot which gender to use for TTS.
+//  a timezone, which is a string that can be parsed by chrono to get the timezone.
 //
 // guild will store
 //  the id for querying
@@ -42,9 +47,13 @@ async fn get_connection() -> Result<Transaction<'static, Postgres>> {
         .await?)
 }
 
+pub async fn init() {
+    user::init().await;
+}
+
 pub async fn migrate_data_from_json() -> Result<()> {
     let mut conn = get_connection().await?;
-    user::migrate_data_from_json(&mut conn).await?;
+    // user::migrate_data_from_json(&mut conn).await?;
     guild::migrate_data_from_json(&mut conn).await?;
     channel::migrate_data_from_json(&mut conn).await?;
     conn.commit().await?;

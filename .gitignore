@@ -1,5 +1,8 @@
 data
-log.txt
 target
 Cargo.lock
 .env
+# you need to source the dectalk binaries yourself (github dectalk/dectalk it's the ubuntu download, just extract the zip to the files dir)
+dectalk/files
+logs
+pytests

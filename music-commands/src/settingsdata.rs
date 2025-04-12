@@ -14,6 +14,7 @@ pub struct SettingsData {
     pub shuffle: bool,
     pub pause: bool,
     pub read_titles: bool,
+    pub talk_over_eachother: bool,
 }
 impl SettingsData {
     pub async fn new(guild: GuildId) -> Result<Self> {
@@ -32,6 +33,7 @@ impl SettingsData {
             bitrate: OrAuto::Specific(48000),
             log_empty: true,
             read_titles: cfg.read_titles,
+            talk_over_eachother: cfg.talk_over_eachother,
         })
     }
     pub fn song_volume(&self) -> f32 {
@@ -41,7 +43,8 @@ impl SettingsData {
     pub fn display_song_volume(&self) -> f32 {
         self.song_volume
     }
-    pub fn set_song_volume(&mut self, v: f32) {
+    pub fn set_song_volume(&mut self, v: f32, place: &str) {
+        log::trace!("SONG VOL SET AT: {place}");
         self.song_volume = v;
     }
     // pub fn raw_song_volume(&self) -> f32 {
@@ -51,7 +54,8 @@ impl SettingsData {
         // self.something_playing = false;
         self.radio_volume * 0.5
     }
-    pub fn set_radio_volume(&mut self, v: f32) {
+    pub fn set_radio_volume(&mut self, v: f32, place: &str) {
+        log::trace!("RADIO VOL SET AT: {place}");
         self.radio_volume = v;
     }
     pub fn display_radio_volume(&self) -> f32 {

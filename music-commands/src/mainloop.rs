@@ -15,6 +15,7 @@ use common::utils::{friendly_duration, OptionalTimeout};
 use common::video::{Author, MetaVideo, Video, VideoType};
 use common::youtube::{self, TTSVoice};
 use common::{log, rand, songbird, tokio, PostSomething, WEB_CLIENT};
+use long_term_storage::VoicePreference;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use songbird::driver::Bitrate;
@@ -492,10 +493,10 @@ pub async fn the_lüüp(
                         AudioPromiseCommand::Volume(SpecificVolume::Current(v)) => {
                             if let Some(handle) = current_handle.as_ref() {
                                 manually_set.song_volume = true;
-                                if let Err(e) = handle.get_handle().set_volume(v) {
+                                if let Err(e) = handle.get_handle().set_volume(v * 0.5) {
                                     log.log(&format!("Error setting volume: {}\n", e)).await;
                                 }
-                                control.settings.set_song_volume(v);
+                                control.settings.set_song_volume(v, "audio promise command CURRENT: 498");
                                 if let Err(e) = snd.send(format!(
                                     "Song volume set to `{}%`",
                                     control.settings.display_song_volume() * 100.0
@@ -505,13 +506,13 @@ pub async fn the_lüüp(
                             } else {
                                 if !nothing_muted {
                                     if let Some(ref handle) = nothing_handle {
-                                        if let Err(e) = handle.set_volume(v) {
+                                        if let Err(e) = handle.set_volume(v * 0.5) {
                                             log.log(&format!("Error setting volume: {}\n", e)).await;
                                         }
                                     }
                                 }
                                 manually_set.radio_volume = true;
-                                control.settings.set_radio_volume(v);
+                                control.settings.set_radio_volume(v, "audio promise command CURRENT: 514");
                                 if let Err(e) = snd.send(format!(
                                     "Radio volume set to `{}%`",
                                     control.settings.display_radio_volume() * 100.0
@@ -522,7 +523,7 @@ pub async fn the_lüüp(
                         }
                         AudioPromiseCommand::Volume(SpecificVolume::SongVolume(v)) => {
                             manually_set.song_volume = true;
-                            control.settings.set_song_volume(v);
+                            control.settings.set_song_volume(v, "audio promise command SONG: 525");
                             if let Err(e) = snd.send(format!(
                                 "Song volume set to `{}%`",
                                 control.settings.display_song_volume() * 100.0
@@ -530,14 +531,14 @@ pub async fn the_lüüp(
                                 log.log(&format!("Error responding to command{}\n", e)).await;
                             }
                             if let Some(handle) = current_handle.as_ref() {
-                                if let Err(e) = handle.get_handle().set_volume(v) {
+                                if let Err(e) = handle.get_handle().set_volume(v * 0.5) {
                                     log.log(&format!("Error setting volume: {}\n", e)).await;
                                 }
                             }
                         }
                         AudioPromiseCommand::Volume(SpecificVolume::RadioVolume(v)) => {
                             manually_set.radio_volume = true;
-                            control.settings.set_radio_volume(v);
+                            control.settings.set_radio_volume(v, "audio promise command RADIO: 540");
                             if let Err(e) = snd.send(format!(
                                 "Radio volume set to `{}%`",
                                 control.settings.display_radio_volume() * 100.0
@@ -546,7 +547,7 @@ pub async fn the_lüüp(
                             }
                             if !nothing_muted {
                                 if let Some(ref handle) = nothing_handle {
-                                    if let Err(e) = handle.set_volume(control.settings.radio_volume()) {
+                                    if let Err(e) = handle.set_volume(v * 0.5) {
                                         log.log(&format!("Error setting volume: {}\n", e)).await;
                                     }
                                 }
@@ -616,7 +617,7 @@ pub async fn the_lüüp(
                                 log.log(&format!("Error responding to command{}\n", e)).await;
                             }
                             if !manually_set.radio_volume {
-                                control.settings.set_radio_volume(v);
+                                control.settings.set_radio_volume(v, "audio promise command META DEFAULT: 619");
                                 if !nothing_muted {
                                     if let Some(ref handle) = nothing_handle {
                                         if let Err(e) = handle.set_volume(control.settings.radio_volume()) {
@@ -631,13 +632,19 @@ pub async fn the_lüüp(
                                 log.log(&format!("Error responding to command{}\n", e)).await;
                             }
                             if !manually_set.song_volume {
-                                control.settings.set_song_volume(v);
+                                control.settings.set_song_volume(v, "audio promise command META DEFAULT: 634");
                                 if let Some(handle) = current_handle.as_ref() {
                                     if let Err(e) = handle.get_handle().set_volume(v) {
                                         log.log(&format!("Error setting volume: {}\n", e)).await;
                                     }
                                 }
                             }
+                        }
+                        AudioPromiseCommand::MetaCommand(MetaCommand::ChangeTalkOverEachother(v)) => {
+                            if let Err(e) = snd.send("Ack".into()) {
+                                log.log(&format!("Error responding to command{}\n", e)).await;
+                            }
+                            control.settings.talk_over_eachother = v;
                         }
                         AudioPromiseCommand::MetaCommand(MetaCommand::ChangeReadTitles(v)) => {
                             if let Err(e) = snd.send("Ack".into()) {
@@ -980,15 +987,55 @@ pub async fn the_lüüp(
             msg = ttsrx.recv() => {
                 match msg {
                     Ok(msg) => {
-                        let voice = match assigned_voice.get(&msg.author.id) {
-                            Some(v) => Ok(*v),
+                        let mut voice_preference = {
+                            long_term_storage::User::load(msg.author.id).await.map(|u| u.voice_preference).unwrap_or_default()
+                        };
+                        match voice_preference {
+                            VoicePreference::NoPreference => {}
+                            VoicePreference::Male => {
+                                if !voice_cycle.iter().any(|v| v.gender == "MALE") {
+                                    voice_preference = VoicePreference::NoPreference;
+                                }
+                            }
+                            VoicePreference::Female => {
+                                if !voice_cycle.iter().any(|v| v.gender == "FEMALE") {
+                                    voice_preference = VoicePreference::NoPreference;
+                                }
+                            }
+                        }
+                        let mut voice = match assigned_voice.get(&msg.author.id) {
+                            Some(v) => TTSVoiceState::Existing(*v),
                             None => {
                                 let v = voice_cycle.remove(0);
                                 assigned_voice.insert(msg.author.id, v);
                                 voice_cycle.push(v);
-                                Err(v)
+                                TTSVoiceState::New(v)
                             }
                         };
+                        // if the user prefers a differently gendered voice now than the one we have assigned to them, we need to reassign their gender.
+                        if voice_preference != VoicePreference::NoPreference {
+                            let mut voice_gender = match voice.ignore().gender {
+                                "FEMALE" => VoicePreference::Female,
+                                "MALE" => VoicePreference::Male,
+                                _ => VoicePreference::NoPreference,
+                            };
+                            if voice_gender != VoicePreference::NoPreference && voice_gender != voice_preference {
+                                while voice_gender != voice_preference {
+                                    let v = voice_cycle.remove(0);
+                                    assigned_voice.insert(msg.author.id, v);
+                                    voice_cycle.push(v);
+
+                                    voice_gender = match v.gender {
+                                        "FEMALE" => VoicePreference::Female,
+                                        "MALE" => VoicePreference::Male,
+                                        _ => VoicePreference::NoPreference,
+                                    };
+                                    if voice_gender == voice_preference {
+                                        voice = TTSVoiceState::New(v);
+                                    }
+                                }
+                            }
+                        }
                         generating_tts_queue.push_back({
                             let ctx = planet_ctx.clone();
                             tokio::task::spawn(generate_tts(ctx, msg, voice))
@@ -999,7 +1046,7 @@ pub async fn the_lüüp(
                     }
                 }
             }
-            result = if_then(current_tts.is_none(), &mut tts_queue) => {
+            result = if_then(current_tts.is_none() || control.settings.talk_over_eachother, &mut tts_queue) => {
                 match result {
                     Ok(Ok(res)) => {
                         if let Err(e) = res.get_handle().play() {
@@ -1309,16 +1356,18 @@ pub async fn the_lüüp(
     //         log.log(&format!("Error getting ttsrx: {}\n", e)).await;
     //     }
     // }
-    log.log("Getting call lock").await;
-    let mut calllock = control.call.lock().await;
-    log.log("Closing control command channel").await;
-    control.rx.close();
-    log.log("Stopping call").await;
-    calllock.stop();
-    log.log("Leaving voice channel").await;
-    if let Err(e) = calllock.leave().await {
-        log.log(&format!("Error leaving voice channel: {}\n", e))
-            .await;
+    {
+        log.log("Getting call lock").await;
+        let mut calllock = control.call.lock().await;
+        log.log("Closing control command channel").await;
+        control.rx.close();
+        log.log("Stopping call").await;
+        calllock.stop();
+        log.log("Leaving voice channel").await;
+        if let Err(e) = calllock.leave().await {
+            log.log(&format!("Error leaving voice channel: {}\n", e))
+                .await;
+        }
     }
     log.log("Stopping radio").await;
     if let Err(e) = message_radio_thread.send(RadioCommand::Shutdown).await {
@@ -1476,7 +1525,21 @@ impl EmbedData {
 }
 impl Default for EmbedData {
     fn default() -> Self {
-        Self { author: Some("Invite me to your server!".to_owned()), author_url: Some("https://discord.com/oauth2/authorize?client_id=1035364346471133194&permissions=274881349696&scope=bot".to_owned()), author_icon_url: None, color: Some(Color::from_rgb(0, 0, 0)), body: None, fields: Vec25::new(), thumbnail: None, footer: Some(("Type /help for help".to_owned(), None)) }
+        Self {
+            // author: Some("Invite me to your server!".to_owned()),
+            author: Some(
+                "Enjoying the bot? If you can, consider donating to help keep it running!"
+                    .to_owned(),
+            ),
+            // author_url: Some("https://discord.com/oauth2/authorize?client_id=1035364346471133194&permissions=274881349696&scope=bot".to_owned()),
+            author_url: Some("https://ko-fi.com/p51_dissy".to_owned()),
+            author_icon_url: None,
+            color: Some(Color::from_rgb(0, 0, 0)),
+            body: None,
+            fields: Vec25::new(),
+            thumbnail: None,
+            footer: Some(("Type /help for help".to_owned(), None)),
+        }
     }
 }
 #[derive(Debug, PartialEq, Clone)]
@@ -2098,16 +2161,32 @@ struct ManuallySet {
     radio_volume: bool,
     read_titles: bool,
 }
+
+#[derive(Debug, Clone)]
+enum TTSVoiceState {
+    Existing(TTSVoice),
+    New(TTSVoice),
+}
+
+impl TTSVoiceState {
+    fn ignore(&self) -> &TTSVoice {
+        match self {
+            TTSVoiceState::Existing(voice) => voice,
+            TTSVoiceState::New(voice) => voice,
+        }
+    }
+}
+
 async fn generate_tts(
     ctx: common::serenity::all::Context,
     msg: Arc<Message>,
-    voice: Result<TTSVoice, TTSVoice>,
+    voice: TTSVoiceState,
 ) -> Vec<Video> {
     let mut tts = Vec::new();
     let voice = match voice {
         // error means its a new voice and we have to put an announcement message on it first
-        Ok(voice) => voice,
-        Err(voice) => {
+        TTSVoiceState::Existing(voice) => voice,
+        TTSVoiceState::New(voice) => {
             if let Ok(b) = RawMessage::announcement(
                 format!("{} is now using this voice to speak", msg.author.name),
                 &voice,

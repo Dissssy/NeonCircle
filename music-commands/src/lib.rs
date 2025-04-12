@@ -15,6 +15,7 @@ pub mod shuffle;
 pub mod skip;
 pub mod stop;
 pub mod transcribe;
+pub mod voice_preference;
 pub mod volume;
 use self::mainloop::EmbedData;
 use self::settingsdata::SettingsData;

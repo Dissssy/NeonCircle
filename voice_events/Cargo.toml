@@ -6,8 +6,9 @@ edition = "2021"
 [dependencies]
 common = { path = "../common" }
 long_term_storage = { path = "../lts" }
-serde = { version = "1.0.203", features = ["rc"] }
-serde_json = { version = "1.0.117", features = ["preserve_order"] }
+dectalk = { path = "../dectalk" }
+serde = { version = "1.0.214", features = ["rc"] }
+serde_json = { version = "1.0.132", features = ["preserve_order"] }
 
 [features]
 default = ["tts"]

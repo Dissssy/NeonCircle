@@ -58,6 +58,7 @@ pub enum MetaCommand {
     ChangeDefaultRadioVolume(f32),
     ChangeDefaultSongVolume(f32),
     ChangeReadTitles(bool),
+    ChangeTalkOverEachother(bool),
     ChangeRadioAudioUrl(Arc<str>),
     ChangeRadioDataUrl(Arc<str>),
     ResetCustomRadioData,

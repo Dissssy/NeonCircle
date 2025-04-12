@@ -1,4 +1,5 @@
-#![feature(if_let_guard, duration_millis_float, try_blocks)]
+#![feature(if_let_guard, duration_millis_float, try_blocks, let_chains)]
+#![allow(dead_code)]
 mod commands;
 mod gemini;
 mod structs;
@@ -16,24 +17,25 @@ use common::{
             Event,
         },
         model::payload::Speaking,
-        tracks::Track,
         Call, CoreEvent, EventContext,
     },
     tokio::{
         self,
         sync::{mpsc, oneshot, RwLock},
-        time::{Duration, Instant, Sleep},
+        time::{Duration, Instant},
     },
     utils::{DeleteAfterFinish, TranscriptionMessage},
-    video::Video,
     PostSomething, WEB_CLIENT,
 };
-use futures::{stream::FuturesOrdered, StreamExt as _};
+use futures::{
+    stream::{FuturesOrdered, FuturesUnordered},
+    StreamExt as _,
+};
 use serde::Deserialize as _;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 const SAMPLES_PER_MILLISECOND: f64 = 96.0;
 const MIN_SAMPLES_FOR_TRANSCRIPTION: usize = 64 * 1024;
-static EVENTS: &[Event] = &[
+pub static EVENTS: &[Event] = &[
     Event::Core(CoreEvent::SpeakingStateUpdate),
     Event::Core(CoreEvent::VoiceTick),
 ];
@@ -44,16 +46,8 @@ pub async fn transcription_thread(
     mut commands: mpsc::UnboundedReceiver<TranscriptionMessage>,
     // tx: mpsc::UnboundedSender<(String, UserId)>,
     tx: mpsc::UnboundedSender<(PostSomething, UserId)>,
+    mut packets: mpsc::UnboundedReceiver<PacketData>,
 ) {
-    let mut packets = {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let event_sender = VoiceEventSender::new(sender);
-        let mut call = call.lock().await;
-        for event in EVENTS {
-            call.add_global_event(*event, event_sender.clone());
-        }
-        receiver
-    };
     let (responses, mut rx) = mpsc::unbounded_channel();
     let mut threads: Vec<user::TranscriptionThread> = Vec::new();
     let mut pending_commands = FuturesOrdered::new();
@@ -63,8 +57,9 @@ pub async fn transcription_thread(
             Some(command) = commands.recv() => {
                 match command {
                     TranscriptionMessage::Stop => {
-                        for thread in threads.into_iter() {
-                            thread.stop().await;
+                        let mut threads = threads.into_iter().map(|t| t.stop()).collect::<FuturesUnordered<_>>();
+                        while threads.next().await.is_some() {
+                            log::trace!("Stopped a user thread");
                         }
                         break;
                     }
@@ -229,12 +224,12 @@ impl std::ops::DerefMut for PacketDuration {
     }
 }
 #[derive(Debug, Clone)]
-struct VoiceEventSender {
+pub struct VoiceEventSender {
     ssrc_to_user_id: Arc<RwLock<HashMap<u32, UserId>>>,
     sender: mpsc::UnboundedSender<PacketData>,
 }
 impl VoiceEventSender {
-    fn new(sender: mpsc::UnboundedSender<PacketData>) -> Self {
+    pub fn new(sender: mpsc::UnboundedSender<PacketData>) -> Self {
         Self {
             ssrc_to_user_id: Arc::new(RwLock::new(HashMap::new())),
             sender,
@@ -260,7 +255,7 @@ impl songbird::EventHandler for VoiceEventSender {
                             let ssrc_to_user_id = self.ssrc_to_user_id.read().await;
                             *ssrc_to_user_id.get(ssrc)?
                         };
-                        match long_term_storage::User::mic_consent(user_id).await {
+                        match long_term_storage::User::mic_consent(user_id) {
                             Ok(true) => Some(user_id),
                             Ok(false) => None,
                             Err(e) => {
@@ -291,6 +286,8 @@ impl songbird::EventHandler for VoiceEventSender {
                         }) {
                             log::error!("Failed to send packet data: {:?}", e);
                         }
+                    } else {
+                        // log::trace!("user_id: {:?}, audio: {:?}", user_id, decoded_voice.as_ref().map(|a| a.len()));
                     }
                 }
             }

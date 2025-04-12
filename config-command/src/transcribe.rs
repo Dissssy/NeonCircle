@@ -13,6 +13,7 @@ impl Command {
                 Box::new(Add),
                 Box::new(Remove),
                 Box::new(Clear),
+                Box::new(TalkOverEachother),
             ],
         }
     }
@@ -674,5 +675,155 @@ impl SubCommandTrait for Clear {
     }
     fn permissions(&self) -> Permissions {
         Permissions::MANAGE_CHANNELS
+    }
+}
+
+struct TalkOverEachother;
+#[async_trait]
+impl SubCommandTrait for TalkOverEachother {
+    fn register_command(&self) -> CreateCommandOption {
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            self.command_name(),
+            "Toggle talking over each other",
+        )
+        .add_sub_option(
+            CreateCommandOption::new(
+                CommandOptionType::Boolean,
+                "value",
+                "Whether to allow talking over each other",
+            )
+            .required(true),
+        )
+    }
+    async fn run(
+        &self,
+        ctx: &Context,
+        interaction: &CommandInteraction,
+        options: &[ResolvedOption],
+    ) -> Result<()> {
+        let value = *match options.iter().find_map(|o| match o.name {
+            "value" => Some(&o.value),
+            _ => None,
+        }) {
+            Some(ResolvedValue::Boolean(b)) => b,
+            _ => {
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .ephemeral(true)
+                            .content("Invalid value"),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
+        let guild_id = match interaction.guild_id {
+            Some(g) => g,
+            None => {
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("This command can only be used in a server")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
+        let mut config = match long_term_storage::Guild::load(guild_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load guild: {:?}", e);
+                if let Err(e) = interaction
+                    .create_followup(
+                        &ctx.http,
+                        CreateInteractionResponseFollowup::new()
+                            .content("Failed to load guild")
+                            .ephemeral(true),
+                    )
+                    .await
+                {
+                    log::error!("Failed to send response: {}", e);
+                }
+                return Ok(());
+            }
+        };
+        config.talk_over_eachother = value;
+        if let Err(e) = config.save().await {
+            log::error!("Failed to save guild: {:?}", e);
+            if let Err(e) = interaction
+                .create_followup(
+                    &ctx.http,
+                    CreateInteractionResponseFollowup::new()
+                        .content("Failed to save guild")
+                        .ephemeral(true),
+                )
+                .await
+            {
+                log::error!("Failed to send response: {}", e);
+            }
+            return Ok(());
+        }
+        if let Err(e) = interaction
+            .create_followup(
+                &ctx.http,
+                CreateInteractionResponseFollowup::new()
+                    .ephemeral(true)
+                    .content(format!(
+                        "Set talking over each other to {}",
+                        value
+                    )),
+            )
+            .await
+        {
+            log::error!("Failed to send response: {}", e);
+        }
+        // we need to iterate over EVERY guild that has a connection, and update the read_titles value
+        let connection_handler = {
+            let data = ctx.data.read().await;
+            match data.get::<common::audio::AudioCommandHandler>() {
+                Some(v) => std::sync::Arc::clone(v),
+                None => {
+                    log::error!("Failed to get audio command handler");
+                    return Ok(());
+                }
+            }
+        };
+        common::tokio::task::spawn(async move {
+            let mut map = connection_handler.write().await;
+            let mut res = futures::stream::FuturesUnordered::new();
+            for sender in map.values_mut() {
+                if sender.guild_id != guild_id {
+                    continue;
+                }
+                let (tx, rx) = common::tokio::sync::oneshot::channel();
+                let _ = sender.send((
+                    tx,
+                    common::audio::AudioPromiseCommand::MetaCommand(common::audio::MetaCommand::ChangeTalkOverEachother(value)),
+                ));
+                res.push(rx);
+            }
+            while let Some(r) = futures::StreamExt::next(&mut res).await {
+                if let Err(e) = r {
+                    log::error!("Failed to change read titles: {:?}", e);
+                }
+            }
+        });
+        Ok(())
+    }
+    fn command_name(&self) -> &str {
+        "talk_over_eachother"
+    }
+    fn permissions(&self) -> Permissions {
+        Permissions::MANAGE_GUILD
     }
 }

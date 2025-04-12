@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use serenity::{
     all::{ChannelId, Message},
     futures::{stream::FuturesUnordered, StreamExt as _},

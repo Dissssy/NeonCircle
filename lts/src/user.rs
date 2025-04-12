@@ -10,11 +10,10 @@ use common::{
     chrono_tz::Tz,
     log,
     serenity::{all::UserId, futures::StreamExt as _},
-    tokio::sync::OnceCell,
 };
-use std::{collections::HashMap, str::FromStr};
+use std::{cell::OnceCell, collections::HashMap, str::FromStr};
 
-static mut CONSENT_CACHE: OnceCell<ConsentCache> = OnceCell::const_new();
+static mut CONSENT_CACHE: OnceCell<ConsentCache> = OnceCell::new();
 
 struct ConsentCache(HashMap<UserId, bool>);
 
@@ -41,24 +40,35 @@ impl ConsentCache {
     }
 }
 
-async fn get_cache_ref() -> Result<&'static ConsentCache> {
+pub(crate) async fn init() {
+    let _ = get_cache_mut().await;
+}
+
+fn get_cache_ref() -> Result<&'static ConsentCache> {
     unsafe {
         CONSENT_CACHE
-            .get_or_try_init(|| async { ConsentCache::sync().await })
-            .await
+            .get()
+            .ok_or_else(|| anyhow!("cache not initialized, call `get_cache_mut` first"))
     }
 }
 
 async fn get_cache_mut() -> Result<&'static mut ConsentCache> {
-    // check if the cache is already initialized
-    let _ = get_cache_ref().await?;
-    unsafe { Ok(CONSENT_CACHE.get_mut().expect("cache not initialized")) }
+    unsafe {
+        match CONSENT_CACHE.get_mut() {
+            Some(cache) => Ok(cache),
+            None => Ok({
+                let cache = ConsentCache::sync().await?;
+                CONSENT_CACHE.get_mut_or_init(|| cache)
+            }),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct User {
     pub id: UserId,
     pub mic_consent: bool,
+    pub voice_preference: VoicePreference,
     pub timezone: Tz,
 }
 
@@ -89,14 +99,23 @@ impl User {
         conn.commit().await?;
         Ok(())
     }
-    pub async fn mic_consent(user_id: UserId) -> Result<bool> {
-        get::mic_consent(user_id).await
+    pub fn mic_consent(user_id: UserId) -> Result<bool> {
+        get::mic_consent(user_id)
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+pub enum VoicePreference {
+    #[default]
+    NoPreference,
+    Male,
+    Female,
 }
 
 struct RawUser {
     id: i64,
     mic_consent: bool,
+    voice_preference: Option<bool>, // none = no preference, true = female, false = male
     timezone: String,
 }
 
@@ -109,6 +128,11 @@ impl From<RawUser> for User {
                 log::warn!("Failed to parse timezone: {}", val.timezone);
                 Tz::EST
             }),
+            voice_preference: match val.voice_preference {
+                Some(true) => VoicePreference::Female,
+                Some(false) => VoicePreference::Male,
+                None => VoicePreference::NoPreference,
+            },
         }
     }
 }
@@ -138,9 +162,9 @@ mod get {
         Ok(o)
     }
 
-    pub async fn mic_consent(user_id: UserId) -> Result<bool> {
+    pub fn mic_consent(user_id: UserId) -> Result<bool> {
         // get specifically only from cache
-        let cache = get_cache_ref().await?;
+        let cache = get_cache_ref()?;
         Ok(cache.get_consent(user_id))
     }
 }
@@ -155,6 +179,7 @@ mod set {
         let super::User {
             id,
             mic_consent,
+            voice_preference,
             timezone,
         } = user;
 
@@ -165,9 +190,14 @@ mod set {
         }
         // set the user in the DB, either insert or update the user
         sqlx::query!(
-            "INSERT INTO users (id, mic_consent, timezone) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET mic_consent = $2, timezone = $3",
+            "INSERT INTO users (id, mic_consent, voice_preference, timezone) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO UPDATE SET mic_consent = $2, voice_preference = $3, timezone = $4",
             id.get() as i64,
             mic_consent,
+            match voice_preference {
+                super::VoicePreference::NoPreference => None,
+                super::VoicePreference::Male => Some(false),
+                super::VoicePreference::Female => Some(true),
+            },
             timezone.name()
         )
         .execute(&mut **conn)
@@ -190,19 +220,19 @@ mod set {
     }
 }
 
-pub(crate) async fn migrate_data_from_json(
-    conn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
-    let data = common::global_data::extract::consent_data();
+// pub(crate) async fn migrate_data_from_json(
+//     conn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+// ) -> Result<()> {
+//     let data = common::global_data::extract::consent_data();
 
-    for (user_id, consent) in data {
-        sqlx::query!(
-            "INSERT INTO users (id, mic_consent) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET mic_consent = $2",
-            user_id.get() as i64,
-            consent
-        )
-        .execute(&mut **conn)
-        .await?;
-    }
-    Ok(())
-}
+//     for (user_id, consent) in data {
+//         sqlx::query!(
+//             "INSERT INTO users (id, mic_consent) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET mic_consent = $2",
+//             user_id.get() as i64,
+//             consent
+//         )
+//         .execute(&mut **conn)
+//         .await?;
+//     }
+//     Ok(())
+// }

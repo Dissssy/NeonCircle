@@ -170,6 +170,15 @@ impl CommandTrait for Command {
                         };
                         match manager.join(guild_id, channel).await {
                             Ok(call) => {
+                                let packets = {
+                                    let mut call = call.lock().await;
+                                    let (sender, receiver) = mpsc::unbounded_channel();
+                                    let event_sender = voice_events::VoiceEventSender::new(sender);
+                                    for event in voice_events::EVENTS {
+                                        call.add_global_event(*event, event_sender.clone());
+                                    }
+                                    receiver
+                                };
                                 let (tx, rx) = mpsc::unbounded_channel::<(
                                     oneshot::Sender<Arc<str>>,
                                     AudioPromiseCommand,
@@ -178,6 +187,7 @@ impl CommandTrait for Command {
                                     Arc::clone(&call),
                                     ctx.clone(),
                                     tx.clone(),
+                                    packets,
                                 )
                                 .await;
                                 let msg = match channel

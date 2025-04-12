@@ -42,6 +42,9 @@ where
     fn register_command(&self) -> Option<CreateCommand> {
         None
     }
+    fn aliases(&self) -> Vec<(&'static str, CreateCommand)> {
+        vec![]
+    }
     fn command_name(&self) -> &str {
         ""
     }

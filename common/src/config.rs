@@ -22,6 +22,10 @@ pub struct Config {
     pub autocomplete_limit: u64,
     #[cfg(feature = "spotify")]
     pub spotify_api_key: String,
+    #[cfg(feature = "spotify")]
+    pub spotify_client_id: String,
+    #[cfg(feature = "spotify")]
+    pub spotify_client_secret: String,
     pub bumper_url: String,
     #[cfg(feature = "transcribe")]
     pub transcribe_url: String,
@@ -37,6 +41,12 @@ pub struct Config {
     pub transcription_map_path: PathBuf,
     pub guild_config_path: PathBuf,
     pub google_gemini_api_key: String,
+    #[cfg(feature = "seq")]
+    pub seq_url: String,
+    #[cfg(feature = "seq")]
+    pub seq_api_key: String,
+    #[cfg(feature = "seq")]
+    pub seq_log_level: String,
 }
 impl Config {
     pub fn get() -> Self {
@@ -109,6 +119,18 @@ impl Config {
                     spotify_api_key
                 } else {
                     Self::safe_read("\nPlease enter your spotify api key:")
+                },
+                #[cfg(feature = "spotify")]
+                spotify_client_id: if let Some(spotify_client_id) = rec.spotify_client_id {
+                    spotify_client_id
+                } else {
+                    Self::safe_read("\nPlease enter your spotify client id:")
+                },
+                #[cfg(feature = "spotify")]
+                spotify_client_secret: if let Some(spotify_client_secret) = rec.spotify_client_secret {
+                    spotify_client_secret
+                } else {
+                    Self::safe_read("\nPlease enter your spotify client secret:")
                 },
                 idle_url: if let Some(idle_audio) = rec.idle_url {
                     idle_audio
@@ -194,6 +216,24 @@ impl Config {
                 } else {
                     Self::safe_read("\nPlease enter your google gemini api key:")
                 },
+                #[cfg(feature = "seq")]
+                seq_url: if let Some(seq_url) = rec.seq_url {
+                    seq_url
+                } else {
+                    Self::safe_read("\nPlease enter your seq url:")
+                },
+                #[cfg(feature = "seq")]
+                seq_api_key: if let Some(seq_api_key) = rec.seq_api_key {
+                    seq_api_key
+                } else {
+                    Self::safe_read("\nPlease enter your seq api key:")
+                },
+                #[cfg(feature = "seq")]
+                seq_log_level: if let Some(seq_log_level) = rec.seq_log_level {
+                    seq_log_level
+                } else {
+                    Self::safe_read("\nPlease enter your seq log level:")
+                },
             }
         } else {
             log::error!("Welcome to my shitty Rust Music Bot!");
@@ -222,6 +262,10 @@ impl Config {
                 autocomplete_limit: Self::safe_read("\nPlease enter your youtube autocomplete limit:"),
                 #[cfg(feature = "spotify")]
                 spotify_api_key: Self::safe_read("\nPlease enter your spotify api key:"),
+                #[cfg(feature = "spotify")]
+                spotify_client_id: Self::safe_read("\nPlease enter your spotify client id:"),
+                #[cfg(feature = "spotify")]
+                spotify_client_secret: Self::safe_read("\nPlease enter your spotify client secret:"),
                 idle_url: Self::safe_read("\nPlease enter your idle audio URL (NOT A FILE PATH):"),
                 api_url: Self::safe_read("\nPlease enter your api url:"),
                 bumper_url: Self::safe_read("\nPlease enter your bumper audio URL (NOT A FILE PATH) (for silence put \"https://www.youtube.com/watch?v=Vbks4abvLEw\"):"),
@@ -241,6 +285,12 @@ impl Config {
                 guild_config_path: Self::safe_read("\nPlease enter your guild config path:"),
                 transcription_map_path: Self::safe_read("\nPlease enter your transcription map path:"),
                 google_gemini_api_key: Self::safe_read("\nPlease enter your google gemini api key:"),
+                #[cfg(feature = "seq")]
+                seq_url: Self::safe_read("\nPlease enter your seq url:"),
+                #[cfg(feature = "seq")]
+                seq_api_key: Self::safe_read("\nPlease enter your seq api key:"),
+                #[cfg(feature = "seq")]
+                seq_log_level: Self::safe_read("\nPlease enter your seq log level:"),
             }
         };
         match std::fs::write(
@@ -301,7 +351,62 @@ impl Config {
             Self::get_from_path(path)
         }
     }
+    #[cfg(feature = "spotify")]
+    pub async fn spotify_key(&self) -> anyhow::Result<String> {
+        // cache file is located in the data_path directory
+        let mut cache_path = self.data_path.clone();
+        cache_path.push("spotify_cache.json");
+        if cache_path.exists() {
+            let cache = std::fs::read_to_string(&cache_path)?;
+            let cache: SpotifyCache = serde_json::from_str(&cache)?;
+            if cache.expires_at > chrono::Utc::now().timestamp_millis() as u64 {
+                return Ok(cache.access_token);
+            }
+        }
+        // if the cache is expired or doesn't exist, we need to get a new token
+        let client = reqwest::Client::new();
+        let params = [
+            ("grant_type", "client_credentials"),
+            ("client_id", &self.spotify_client_id),
+            ("client_secret", &self.spotify_client_secret),
+        ];
+        let res = client
+            .post("https://accounts.spotify.com/api/token")
+            .form(&params)
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to get Spotify token: {}", res.status()));
+        }
+        let token_response: serde_json::Value = res.json().await?;
+        let access_token = token_response["access_token"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get access token"))?
+            .to_string();
+        let expires_in = token_response["expires_in"]
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get expires_in"))?
+            * 1000 // convert to milliseconds
+            + chrono::Utc::now().timestamp_millis() as u64 // add current time
+            - 600_000; // subtract 10 minutes for safety
+        // save the new token to the cache
+        let new_cache = SpotifyCache {
+            access_token: access_token.clone(),
+            expires_at: expires_in,
+        };
+        let cache_str = serde_json::to_string(&new_cache)?;
+        std::fs::write(&cache_path, cache_str)?;
+        Ok(access_token)
+    }
 }
+
+#[cfg(feature = "spotify")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SpotifyCache {
+    access_token: String,
+    expires_at: u64, // unix timestamp of expiry
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RecoverConfig {
     bots_config_path: Option<PathBuf>,
@@ -317,6 +422,10 @@ struct RecoverConfig {
     autocomplete_limit: Option<u64>,
     #[cfg(feature = "spotify")]
     spotify_api_key: Option<String>,
+    #[cfg(feature = "spotify")]
+    spotify_client_id: Option<String>,
+    #[cfg(feature = "spotify")]
+    spotify_client_secret: Option<String>,
     idle_url: Option<String>,
     api_url: Option<String>,
     shitgpt_path: Option<PathBuf>,
@@ -337,4 +446,10 @@ struct RecoverConfig {
     transcription_map_path: Option<PathBuf>,
     guild_config_path: Option<PathBuf>,
     google_gemini_api_key: Option<String>,
+    #[cfg(feature = "seq")]
+    seq_url: Option<String>,
+    #[cfg(feature = "seq")]
+    seq_api_key: Option<String>,
+    #[cfg(feature = "seq")]
+    seq_log_level: Option<String>,
 }

@@ -23,6 +23,7 @@ use common::{
     tokio::time::Duration,
 };
 
+#[derive(Debug)]
 pub struct Guild {
     pub id: GuildId,
     pub default_song_volume: f32,
@@ -31,6 +32,7 @@ pub struct Guild {
     pub radio_audio_url: Option<Arc<str>>,
     pub radio_data_url: Option<Arc<str>>,
     pub empty_channel_timeout: Duration,
+    pub talk_over_eachother: bool,
 }
 
 impl Guild {
@@ -71,6 +73,7 @@ struct RawGuild {
     radio_url: Option<String>,
     radio_data_url: Option<String>,
     empty_channel_timeout: i32,
+    talk_over_eachother: bool,
 }
 
 impl From<RawGuild> for Guild {
@@ -83,6 +86,7 @@ impl From<RawGuild> for Guild {
             radio_audio_url: raw.radio_url.map(Into::into),
             radio_data_url: raw.radio_data_url.map(Into::into),
             empty_channel_timeout: Duration::from_millis(raw.empty_channel_timeout as u64),
+            talk_over_eachother: raw.talk_over_eachother,
         }
     }
 }
@@ -120,16 +124,18 @@ mod set {
             radio_audio_url,
             radio_data_url,
             empty_channel_timeout,
+            talk_over_eachother,
         } = guild;
         sqlx::query!(
-            "INSERT INTO guilds (id, default_volume, radio_volume, read_titles, radio_url, radio_data_url, empty_channel_timeout) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO UPDATE SET default_volume = $2, radio_volume = $3, read_titles = $4, radio_url = $5, radio_data_url = $6, empty_channel_timeout = $7",
+            "INSERT INTO guilds (id, default_volume, radio_volume, read_titles, radio_url, radio_data_url, empty_channel_timeout, talk_over_eachother) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (id) DO UPDATE SET default_volume = $2, radio_volume = $3, read_titles = $4, radio_url = $5, radio_data_url = $6, empty_channel_timeout = $7, talk_over_eachother = $8",
             id.get() as i64,
             default_song_volume,
             default_radio_volume,
             read_titles,
             radio_audio_url.map(|s| s.to_string()),
             radio_data_url.map(|s| s.to_string()),
-            empty_channel_timeout.as_millis() as i32
+            empty_channel_timeout.as_millis() as i32,
+            talk_over_eachother
         )
         .execute(&mut **conn)
         .await?;

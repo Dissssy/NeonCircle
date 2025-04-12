@@ -9,6 +9,7 @@ use common::{anyhow::Result, songbird};
 use common::{serenity::all::*, tokio};
 #[cfg(feature = "transcribe")]
 use songbird::Call;
+use voice_events::PacketData;
 use std::sync::Arc;
 #[cfg(feature = "transcribe")]
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -209,11 +210,12 @@ impl TranscriptionThread {
         call: Arc<Mutex<Call>>,
         context: Context,
         otx: mpsc::UnboundedSender<(oneshot::Sender<Arc<str>>, AudioPromiseCommand)>,
+        packets: mpsc::UnboundedReceiver<PacketData>,
     ) -> Self {
         let (message, messagerx) = mpsc::unbounded_channel();
         let (tx, receiver) = mpsc::unbounded_channel::<(PostSomething, UserId)>();
         let thread = tokio::task::spawn(voice_events::transcription_thread(
-            call, context, otx, messagerx, tx,
+            call, context, otx, messagerx, tx, packets,
         ));
         Self {
             thread,

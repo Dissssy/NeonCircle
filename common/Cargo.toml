@@ -14,15 +14,15 @@ serenity = { version = "0.12.2", default-features = false, features = [
     "collector",
     "unstable_discord_api",
 ] }
-anyhow = "1.0.86"
-log = "0.4.21"
-serde = { version = "1.0.203", features = ["rc"] }
-serde_json = { version = "1.0.117", features = ["preserve_order"] }
+anyhow = "1.0.91"
+log = "0.4.22"
+serde = { version = "1.0.214", features = ["rc"] }
+serde_json = { version = "1.0.132", features = ["preserve_order"] }
 dirs = "5.0.1"
-tokio = { version = "1.37.0", features = ["full"] }
+tokio = { version = "1.41.0", features = ["full"] }
 reqwest = { version = "0.11.27", features = ["json"] }
-lazy_static = "1.4.0"
-songbird = { version = "0.4.1" }
+lazy_static = "1.5.0"
+songbird = { version = "0.4.3" }
 symphonia = { version = "0.5.4", features = ["all"] }
 ytd-rs = { version = "0.1.7", features = ["yt-dlp"] }
 nanoid = "0.4.0"
@@ -32,11 +32,15 @@ base64 = "0.22.1"
 audiotags = "0.5.0"
 rand = "0.8.5"
 chrono = "0.4.38"
-chrono-tz = "0.9.0"
+chrono-tz = "0.10.0"
 
 [features]
-default = ["transcribe", "youtube-search", "tts", "spotify"]
+default = ["transcribe", "youtube-search", "tts", "spotify", "google-journey-tts", "seq"]
+misandry = []
+misogyny = []
+google-journey-tts = []
 transcribe = ["songbird/receive"]
 youtube-search = []
 tts = []
 spotify = []
+seq = []

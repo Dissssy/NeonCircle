@@ -1,17 +1,25 @@
-use crate::{commands::WithFeedback, transcribe};
+use crate::{
+    commands::CommandState,
+    transcribe,
+};
 
 use super::{
     human_readable_bytes, InnerThreadCommand, PacketData, PacketDuration, ThreadResponse,
-    ThreadResponseAction, MIN_SAMPLES_FOR_TRANSCRIPTION,
+     MIN_SAMPLES_FOR_TRANSCRIPTION,
 };
 use common::{
-    anyhow::{anyhow, Result},
+    anyhow::Result,
     log,
     serenity::{
         all::{Http, UserId},
         futures::{stream::FuturesUnordered, StreamExt as _},
     },
-    tokio::{self, sync::mpsc, task::JoinHandle, time::Instant},
+    tokio::{
+        self,
+        sync::{mpsc, Mutex},
+        task::JoinHandle,
+        time::Instant,
+    },
     utils::OptionalTimeout,
 };
 use std::{sync::Arc, time::Duration};
@@ -27,7 +35,13 @@ impl TranscriptionThread {
         http: Arc<Http>,
     ) -> Self {
         let (command, rx) = mpsc::unbounded_channel();
-        let handle = tokio::task::spawn(Self::user_thread(user_id, rx, responses, http));
+        let handle = tokio::task::spawn(Self::user_thread(
+            user_id,
+            rx,
+            responses,
+            http,
+            Arc::new(Mutex::new(CommandState::default())),
+        ));
         Self {
             handle,
             command,
@@ -52,6 +66,7 @@ impl TranscriptionThread {
         mut rx: mpsc::UnboundedReceiver<InnerThreadCommand>,
         responses: mpsc::UnboundedSender<ThreadResponse>,
         http: Arc<Http>,
+        state: Arc<Mutex<CommandState>>,
     ) {
         let mut buffer = Vec::new();
         let mut last_received: Option<Instant> = None;
@@ -60,20 +75,6 @@ impl TranscriptionThread {
             FuturesUnordered::new();
         loop {
             tokio::select! {
-                _ = &mut timeout => {
-                    log::trace!("{} is done talking with {} of data", user_id, human_readable_bytes(buffer.len() * std::mem::size_of::<u8>()));
-                    let mut buf = Vec::new();
-                    std::mem::swap(&mut buffer, &mut buf);
-                    if buf.len() > MIN_SAMPLES_FOR_TRANSCRIPTION {
-                        let http = Arc::clone(&http);
-                        pending.push(tokio::spawn(async move {
-                            Self::transcribe(&buf, user_id, http).await
-                        }));
-                    } else {
-                        log::trace!("{} did not talk long enough", user_id);
-                    }
-                    last_received = None;
-                }
                 Some(command) = rx.recv() => {
                     match command {
                         InnerThreadCommand::Stop => {
@@ -104,6 +105,21 @@ impl TranscriptionThread {
                         }
                     }
                 }
+                _ = &mut timeout => {
+                    log::trace!("{} is done talking with {} of data", user_id, human_readable_bytes(buffer.len() * std::mem::size_of::<u8>()));
+                    let mut buf = Vec::new();
+                    std::mem::swap(&mut buffer, &mut buf);
+                    if buf.len() > MIN_SAMPLES_FOR_TRANSCRIPTION {
+                        let http = Arc::clone(&http);
+                        let state = Arc::clone(&state);
+                        pending.push(tokio::spawn(async move {
+                            Self::transcribe(&buf, user_id, http, state).await
+                        }));
+                    } else {
+                        log::trace!("{} did not talk long enough", user_id);
+                    }
+                    last_received = None;
+                }
                 Some(audio) = pending.next() => {
                     match audio {
                         Ok(Ok(resp)) => {
@@ -123,12 +139,18 @@ impl TranscriptionThread {
         }
     }
 
-    async fn transcribe(audio: &[i16], user_id: UserId, http: Arc<Http>) -> Result<ThreadResponse> {
+    async fn transcribe(
+        audio: &[i16],
+        user_id: UserId,
+        http: Arc<Http>,
+        state: Arc<Mutex<CommandState>>,
+    ) -> Result<ThreadResponse> {
         // pcm_s16le_to_mp3(&buf).await
         let resp = transcribe(audio).await?;
         let content = resp.to_string();
+        let mut state = state.lock().await;
 
-        let response = super::commands::parse_commands(&content, user_id, http).await;
+        let response = state.parse_commands(&content, user_id, http).await;
 
         Ok(ThreadResponse { response, user_id })
     }

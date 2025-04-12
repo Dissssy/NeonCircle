@@ -186,9 +186,8 @@ pub async fn get_url_video_info(url: &str) -> Result<RawVidInfo> {
     )?;
     let info = dl.download()?;
     let output = info.output();
-    Ok(serde_json::from_str(output).map_err(|e| {
+    Ok(serde_json::from_str(output).inspect_err(|_| {
         log::error!("{}", output);
-        e
     })?)
 }
 #[derive(Debug, Clone, Deserialize)]
@@ -196,75 +195,6 @@ pub struct RawVidInfo {
     pub title: String,
     #[serde(default)]
     pub duration: Option<f64>,
-}
-#[cfg(feature = "spotify")]
-pub async fn get_spotify_song_title(id: String) -> Result<Vec<String>> {
-    let token = crate::config::get_config().spotify_api_key;
-    let url = format!("https://api.spotify.com/v1/tracks/{}", id);
-    let res = crate::WEB_CLIENT
-        .get(url.as_str())
-        .header("Authorization", format!("Bearer {}", token.clone()))
-        .send()
-        .await?;
-    let spoofydata = res.json::<RawSpotifyTrack>().await;
-    if let Ok(spoofy) = spoofydata {
-        Ok(vec![format!(
-            "{} - {}",
-            spoofy.name,
-            spoofy
-                .artists
-                .iter()
-                .map(|a| a.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )])
-    } else {
-        let url = format!("https://api.spotify.com/v1/albums/{}", id);
-        let res = crate::WEB_CLIENT
-            .get(url.as_str())
-            .header("Authorization", format!("Bearer {}", token.clone()))
-            .send()
-            .await?;
-        let spoofydata = res.json::<RawSpotifyAlbum>().await;
-        if let Ok(spoofy) = spoofydata {
-            Ok(spoofy
-                .tracks
-                .items
-                .iter()
-                .map(|t| {
-                    format!(
-                        "{} - {}",
-                        t.name,
-                        t.artists
-                            .iter()
-                            .map(|a| a.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                })
-                .collect())
-        } else {
-            log::info!("spoofydata: {:?}", spoofydata);
-            Err(anyhow::anyhow!("Could not get spotify song title"))
-        }
-    }
-}
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RawSpotifyAlbum {
-    tracks: RawSpotifyTracks,
-}
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RawSpotifyTracks {
-    items: Vec<RawSpotifyTrack>,
-}
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RawSpotifyTrack {
-    name: String,
-    artists: Vec<RawSpotifyArtist>,
-}
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RawSpotifyArtist {
-    name: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 pub struct TTSVoice {
@@ -344,8 +274,9 @@ where
         json.audio_content,
     )?;
     let id = nanoid::nanoid!(10);
-    let mut path = crate::config::get_config().data_path;
-    path.push("tmp");
+    // let mut path = crate::config::get_config().data_path;
+    // path.push("tmp");
+    let mut path = crate::TEMP_PATH.clone();
     path.push(format!("GTTS{}_NA.ogg", id));
     let mut file = tokio::fs::File::create(path.clone()).await?;
     file.write_all(data.as_ref()).await?;
@@ -402,7 +333,7 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>> {
         "https://www.youtube.com/results?search_query={}",
         urlencoding::encode(url)
     );
-    let lim = lim.to_string();
+    // let lim = lim.to_string();
     let mut bot_path = crate::config::get_config().data_path.clone();
     bot_path.push("cookies.txt");
     let output = if bot_path.exists() {
@@ -416,7 +347,7 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>> {
             ])
             .args(["-O", "%(.{webpage_url,title,duration,uploader})j"])
             .arg("--flat-playlist")
-            .args(["--playlist-end", lim.as_str()])
+            .args(["--playlist-end", "50"])
             .arg("--force-ipv4")
             .arg(url)
             .output()
@@ -425,7 +356,7 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>> {
         tokio::process::Command::new("yt-dlp")
             .args(["-O", "%(.{webpage_url,title,duration,uploader})j"])
             .arg("--flat-playlist")
-            .args(["--playlist-end", lim.as_str()])
+            .args(["--playlist-end", "50"])
             .arg("--force-ipv4")
             .arg(url)
             .output()
@@ -434,16 +365,23 @@ pub async fn youtube_search(url: &str, lim: u64) -> Result<Vec<YoutubeMedia>> {
     let output = String::from_utf8(output.stdout)?;
     Ok(output
         .split('\n')
-        .flat_map(|line| match serde_json::from_str::<YoutubeMedia>(line) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                if !line.trim().is_empty() {
-                    log::error!("Error: {}", e);
-                }
+        .enumerate()
+        .flat_map(|(n, line)| 
+            if n >= lim as usize {
                 None
-            }
-        })
-        .collect::<Vec<YoutubeMedia>>())
+            } else {
+                match serde_json::from_str::<YoutubeMedia>(line) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        if !line.trim().is_empty() {
+                            log::error!("Error: {}", e);
+                        }
+                        None
+                    }
+                }
+            })
+        .collect::<Vec<YoutubeMedia>>()
+    )
 }
 #[derive(Deserialize, Debug)]
 pub struct YoutubeMedia {

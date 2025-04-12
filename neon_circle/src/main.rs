@@ -6,8 +6,8 @@
     clippy::implicit_clone,
     clippy::clone_on_ref_ptr
 )]
+#![allow(clippy::needless_return)]
 mod commands;
-mod video;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::{collections::HashMap, time::Duration};
@@ -130,7 +130,7 @@ impl EventHandler for PlanetHandler {
                 let command = self
                     .commands
                     .iter()
-                    .find(|c| c.command_name() == command_name);
+                    .find(|c| c.command_name() == command_name || c.aliases().iter().any(|(a, _)| *a == command_name));
                 if let Some(command) = command {
                     if let Err(e) = command.run(&ctx, rawcommand).await {
                         log::error!("Failed to run command: {}", e);
@@ -141,7 +141,7 @@ impl EventHandler for PlanetHandler {
             }
             Interaction::Autocomplete(autocomplete) => {
                 let commandn = autocomplete.data.name.clone();
-                let command = self.commands.iter().find(|c| c.command_name() == commandn);
+                let command = self.commands.iter().find(|c| c.command_name() == commandn || c.aliases().iter().any(|(a, _)| *a == commandn));
                 if let Some(command) = command {
                     if let Err(e) = command.autocomplete(&ctx, autocomplete).await {
                         log::error!("Failed to run autocomplete for {} ERR: {}", commandn, e);
@@ -230,7 +230,7 @@ impl EventHandler for PlanetHandler {
                                 ComponentInteractionDataKind::StringSelect { ref values } => {
                                     match values.first() {
                                         Some(v) => {
-                                            return ReminderCustomId::try_from(v.as_str());
+                                            ReminderCustomId::try_from(v.as_str())
                                         }
                                         None => Err(anyhow::anyhow!("No values in string select")),
                                     }
@@ -1252,7 +1252,7 @@ impl EventHandler for PlanetHandler {
             &ctx.http,
             self.commands
                 .iter()
-                .flat_map(|command| command.register_command())
+                .flat_map(|command| command.register_command().into_iter().chain(command.aliases().into_iter().map(|(_, a)| a)))
                 .collect(),
         )
         .await
@@ -1587,16 +1587,60 @@ struct Timed<T> {
     thing: T,
     time: u64,
 }
+
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().ok();
-    env_logger::init();
+    // env_logger::init();
+    // match str_to_level(&cfg.seq_log_level) {
+    //     Ok(level) => {
+    //         if let Err(e) = datalust_logger::init_remote(
+    //             "Neon Circle",
+    //             &cfg.seq_url,
+    //             &cfg.seq_api_key,
+    //             level,
+    //         ).await {
+    //             env_logger::init();
+    //             log::error!("Failed to initialize datalust logger: {}", e);
+    //         }
+    //     }
+    //     Err(e) => {
+    //         env_logger::init();
+    //         log::error!("Failed to parse log level: {}", e);
+    //     }
+    // }
+    if let Err(e) = datalust_logger::init("Neon Circle") {
+        env_logger::init();
+        log::error!("Failed to initialize datalust logger: {}", e);
+    }
+    log::info!("Starting Neon Circle");
     global_data::init().await;
+    long_term_storage::init().await;
     if let Some(arg) = std::env::args().nth(1) {
         match arg.as_str() {
             "sync" => {
                 if let Err(e) = long_term_storage::migrate_data_from_json().await {
                     log::error!("Failed to sync database: {}", e);
+                }
+            }
+            "get" => {
+                match std::env::args().nth(2).as_deref() {
+                    Some("url") => {
+                        let url = match std::env::args().nth(3) {
+                            Some(u) => u,
+                            None => {
+                                log::error!("No URL provided");
+                                return;
+                            }
+                        };
+                        println!("{:#?}", common::video::Video::get_video(&url, true, true).await);
+                    }
+                    Some(arg) => {
+                        log::error!("Unknown argument: {}", arg);
+                    }
+                    None => {
+                        log::error!("No argument provided");
+                    }
                 }
             }
             _ => {
@@ -1607,7 +1651,7 @@ async fn main() {
     }
     #[cfg(feature = "debug")]
     console_subscriber::init();
-    // let cfg = config::get_config();
+    
     // let mut tmp = cfg.data_path.clone();
     // tmp.push("tmp");
     // if let Err(e) = std::fs::remove_dir_all(&tmp) {
@@ -1625,8 +1669,10 @@ async fn main() {
             // Box::new(commands::music::transcribe::Command),
             Box::new(music_commands::repeat::Command),
             Box::new(music_commands::loop_queue::Command),
+            Box::new(music_commands::voice_preference::Command),
             Box::new(music_commands::pause::Command),
             Box::new(music_commands::add::Command),
+            Box::new(music_commands::add::AddRaw),
             Box::new(music_commands::join::Command),
             Box::new(music_commands::setbitrate::Command),
             Box::new(music_commands::remove::Command),
@@ -1650,7 +1696,7 @@ async fn main() {
     let config = songbird::Config::default()
         .preallocated_tracks(4)
         .decode_mode(songbird::driver::DecodeMode::Decode)
-        .crypto_mode(songbird::driver::CryptoMode::Normal);
+        .crypto_mode(songbird::driver::CryptoMode::Aes256Gcm);
     let mut client = match Client::builder(&BOTS.planet.token, GatewayIntents::all())
         .register_songbird_from_config(config.clone())
         .event_handler(handler)
@@ -1831,7 +1877,8 @@ async fn main() {
             }
         }
     }
-    std::process::exit(exit_code);
+    
+    std::process::exit(exit_code)
 }
 
 struct SatelliteHandler {

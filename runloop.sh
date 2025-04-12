@@ -32,8 +32,10 @@ while true; do
             cp ./target/debug/neon_circle ./data/bin/neon_circle
         fi
     fi
+    # current date&time
+    datetime=$(date '+%Y-%m-%d %H:%M:%S')
     # run the application
-    ./data/bin/neon_circle
+    ./data/bin/neon_circle > ./logs/log_$datetime.log 2>&1
 
     # save the return code
     ret=$?

@@ -1,13 +1,17 @@
 use common::{
     anyhow::{self, Result},
     audio::{AudioPromiseCommand, OrToggle, SpecificVolume},
-    get_config, lazy_static, log,
-    rand::seq::SliceRandom as _,
+    get_config,
+    lazy_static,
+    log,
+    // rand::seq::SliceRandom as _,
     serenity::all::*,
-    tokio,
+    tokio::{self, sync::Mutex},
     video::{Author, LazyLoadedVideo, MetaVideo, Video, VideoType},
 };
 use std::{pin::Pin, sync::Arc};
+
+use crate::gemini::Engine;
 fn filter_input(s: &str) -> String {
     s.to_lowercase()
         .chars()
@@ -18,203 +22,287 @@ fn filter_input(s: &str) -> String {
         .collect::<Vec<&str>>()
         .join(" ")
 }
-pub async fn parse_commands(s: &str, u: UserId, http: Arc<Http>) -> WithFeedback {
-    if s.is_empty() {
-        return WithFeedback::new_without_feedback(Box::pin(
-            async move { Ok(ParsedCommand::None) },
-        ))
-        .await;
+
+pub struct CommandState {
+    pub is_conversation: bool,
+    pub engine: Arc<Mutex<Engine>>,
+}
+
+impl Default for CommandState {
+    fn default() -> Self {
+        Self::new()
     }
-    let filtered = filter_input(s);
-    if filtered.is_empty() {
-        return WithFeedback::new_without_feedback(Box::pin(
-            async move { Ok(ParsedCommand::None) },
-        ))
-        .await;
+}
+
+impl CommandState {
+    pub fn new() -> Self {
+        Self {
+            is_conversation: false,
+            engine: Arc::new(Mutex::new(Engine::new())),
+        }
     }
-    if filtered.contains("i do not consent to being recorded") {
-        return WithFeedback::new_without_feedback(Box::pin(async move {
-            Ok(ParsedCommand::MetaCommand(Command::NoConsent))
-        }))
-        .await;
-    }
-    let with_aliases = ALERT_PHRASES.filter(filtered);
-    let (command, args): (&str, Vec<&str>) = {
-        if let Some(alert) = ALERT_PHRASES.get_alert(&with_aliases) {
-            let mut split = with_aliases.split(&alert.main);
-            split.next();
-            let rest = split.next().unwrap_or("");
-            let mut split = rest.split_whitespace();
-            let command = match split.next() {
-                Some(command) => command,
-                None => {
-                    return WithFeedback::new_with_feedback(
-                        Box::pin(async move { Ok(ParsedCommand::None) }),
-                        "You need to say a command",
-                    )
-                    .await;
-                }
-            };
-            let args = split.collect();
-            (command, args)
-        } else {
+    pub async fn parse_commands(&mut self, s: &str, u: UserId, http: Arc<Http>) -> WithFeedback {
+        if s.is_empty() {
             return WithFeedback::new_without_feedback(Box::pin(
                 async move { Ok(ParsedCommand::None) },
             ))
             .await;
         }
-    };
-    match command {
-        t if ["play", "add", "queue", "played"].contains(&t) => {
-            let query = args.join(" ");
-            let http = Arc::clone(&http);
-            if query.replace(' ', "").contains("wonderwall") {
-                WithFeedback::new_with_feedback(
-                    Box::pin(async move {
-                        Ok(ParsedCommand::Command(AudioPromiseCommand::Play(
-                            get_videos(query, http, u).await?,
-                        )))
-                    }),
-                    "Anyway, here's wonderwall",
-                )
-                .await
+        let filtered = filter_input(s);
+        if filtered.is_empty() {
+            return WithFeedback::new_without_feedback(Box::pin(
+                async move { Ok(ParsedCommand::None) },
+            ))
+            .await;
+        }
+        if filtered.contains("i do not consent to being recorded") {
+            return WithFeedback::new_without_feedback(Box::pin(async move {
+                Ok(ParsedCommand::MetaCommand(Command::NoConsent))
+            }))
+            .await;
+        }
+        let with_aliases = ALERT_PHRASES.filter(filtered);
+        let (command, args): (&str, Vec<&str>) = {
+            if let Some(alert) = ALERT_PHRASES.get_alert(&with_aliases) {
+                let mut split = with_aliases.split(&alert.main);
+                split.next();
+                let rest = split.next().unwrap_or("");
+                let mut split = rest.split_whitespace();
+                let command = match split.next() {
+                    Some(command) => command,
+                    None => {
+                        return WithFeedback::new_with_feedback(
+                            Box::pin(async move { Ok(ParsedCommand::None) }),
+                            "You need to say a command",
+                        )
+                        .await;
+                    }
+                };
+                let args = split.collect();
+                (command, args)
+            } else if self.is_conversation {
+                (s, Vec::new())
             } else {
-                let response = format!("Adding {} to the queue", query);
+                return WithFeedback::new_without_feedback(Box::pin(async move {
+                    Ok(ParsedCommand::None)
+                }))
+                .await;
+            }
+        };
+        match command {
+            t if ["play", "add", "queue", "played"].contains(&t) => {
+                let query = args.join(" ");
+                let http = Arc::clone(&http);
+                if query.replace(' ', "").contains("wonderwall") {
+                    WithFeedback::new_with_feedback(
+                        Box::pin(async move {
+                            Ok(ParsedCommand::Command(AudioPromiseCommand::Play(
+                                get_videos(query, http, u).await?,
+                            )))
+                        }),
+                        "Anyway, here's wonderwall",
+                    )
+                    .await
+                } else {
+                    let response = format!("Adding {} to the queue", query);
+                    WithFeedback::new_with_feedback(
+                        Box::pin(async move {
+                            Ok(ParsedCommand::Command(AudioPromiseCommand::Play(
+                                get_videos(query, http, u).await?,
+                            )))
+                        }),
+                        &response,
+                    )
+                    .await
+                }
+            }
+            t if ["stop", "leave", "disconnect"].contains(&t) => {
                 WithFeedback::new_with_feedback(
                     Box::pin(async move {
-                        Ok(ParsedCommand::Command(AudioPromiseCommand::Play(
-                            get_videos(query, http, u).await?,
-                        )))
+                        Ok(ParsedCommand::Command(AudioPromiseCommand::Stop(Some(
+                            tokio::time::Duration::from_millis(2500),
+                        ))))
                     }),
-                    &response,
+                    "Goodbuy, my friend",
                 )
                 .await
             }
-        }
-        t if ["stop", "leave", "disconnect"].contains(&t) => {
-            WithFeedback::new_with_feedback(
-                Box::pin(async move {
-                    Ok(ParsedCommand::Command(AudioPromiseCommand::Stop(Some(
-                        tokio::time::Duration::from_millis(2500),
-                    ))))
-                }),
-                "Goodbuy, my friend",
-            )
-            .await
-        }
-        t if ["skip", "next"].contains(&t) => {
-            WithFeedback::new_with_feedback(
-                Box::pin(async move { Ok(ParsedCommand::Command(AudioPromiseCommand::Skip)) }),
-                "Skipping",
-            )
-            .await
-        }
-        t if ["pause"].contains(&t) => {
-            WithFeedback::new_with_feedback(
-                Box::pin(async move {
-                    Ok(ParsedCommand::Command(AudioPromiseCommand::Paused(
-                        OrToggle::Specific(true),
-                    )))
-                }),
-                "Pausing",
-            )
-            .await
-        }
-        t if ["resume", "unpause"].contains(&t) => {
-            WithFeedback::new_with_feedback(
-                Box::pin(async move {
-                    Ok(ParsedCommand::Command(AudioPromiseCommand::Paused(
-                        OrToggle::Specific(false),
-                    )))
-                }),
-                "Resuming",
-            )
-            .await
-        }
-        t if ["volume", "vol"].contains(&t) => {
-            if let Some(vol) = attempt_to_parse_number(&args) {
-                if vol <= 100 {
+            t if ["skip", "next"].contains(&t) => {
+                WithFeedback::new_with_feedback(
+                    Box::pin(async move { Ok(ParsedCommand::Command(AudioPromiseCommand::Skip)) }),
+                    "Skipping",
+                )
+                .await
+            }
+            t if ["pause"].contains(&t) => {
+                WithFeedback::new_with_feedback(
+                    Box::pin(async move {
+                        Ok(ParsedCommand::Command(AudioPromiseCommand::Paused(
+                            OrToggle::Specific(true),
+                        )))
+                    }),
+                    "Pausing",
+                )
+                .await
+            }
+            t if ["resume", "unpause"].contains(&t) => {
+                WithFeedback::new_with_feedback(
+                    Box::pin(async move {
+                        Ok(ParsedCommand::Command(AudioPromiseCommand::Paused(
+                            OrToggle::Specific(false),
+                        )))
+                    }),
+                    "Resuming",
+                )
+                .await
+            }
+            t if ["volume", "vol"].contains(&t) => {
+                if let Some(vol) = attempt_to_parse_number(&args) {
+                    if vol <= 100 {
+                        WithFeedback::new_with_feedback(
+                            Box::pin(async move {
+                                Ok(ParsedCommand::Command(AudioPromiseCommand::Volume(
+                                    SpecificVolume::Current(vol.clamp(0, 100) as f32 / 100.0),
+                                )))
+                            }),
+                            &format!("Setting volyume to {}%", humanize_number(vol)),
+                        )
+                        .await
+                    } else {
+                        WithFeedback::new_with_feedback(
+                            Box::pin(async move { Ok(ParsedCommand::None) }),
+                            "Volyume must be between zero and one hundred",
+                        )
+                        .await
+                    }
+                } else {
+                    WithFeedback::new_with_feedback(
+                        Box::pin(async move { Ok(ParsedCommand::None) }),
+                        "You need to say a number for the volyume",
+                    )
+                    .await
+                }
+            }
+            t if ["remove", "delete"].contains(&t) => {
+                if let Some(index) = attempt_to_parse_number(&args) {
                     WithFeedback::new_with_feedback(
                         Box::pin(async move {
-                            Ok(ParsedCommand::Command(AudioPromiseCommand::Volume(
-                                SpecificVolume::Current(vol.clamp(0, 100) as f32 / 100.0),
-                            )))
+                            Ok(ParsedCommand::Command(AudioPromiseCommand::Remove(index)))
                         }),
-                        &format!("Setting volyume to {}%", humanize_number(vol)),
+                        &format!("Removing song {} from queue", index),
                     )
                     .await
                 } else {
                     WithFeedback::new_with_feedback(
                         Box::pin(async move { Ok(ParsedCommand::None) }),
-                        "Volyume must be between zero and one hundred",
+                        "You need to say a number for the index",
                     )
                     .await
                 }
-            } else {
+            }
+            t if ["say", "echo"].contains(&t) => {
                 WithFeedback::new_with_feedback(
                     Box::pin(async move { Ok(ParsedCommand::None) }),
-                    "You need to say a number for the volyume",
+                    &args.join(" "),
                 )
                 .await
             }
-        }
-        t if ["remove", "delete"].contains(&t) => {
-            if let Some(index) = attempt_to_parse_number(&args) {
+            t if ["begin", "start"].contains(&t)
+                && args.first().map(|a| *a == "conversation").unwrap_or(false) =>
+            {
+                self.is_conversation = true;
+                WithFeedback::new_with_feedback(
+                    Box::pin(
+                        async move { Ok(ParsedCommand::MetaCommand(Command::BeginConversation)) },
+                    ),
+                    "Beginning conversation",
+                )
+                .await
+            }
+            t if ["end", "stop"].contains(&t)
+                && args.first().map(|a| *a == "conversation").unwrap_or(false) =>
+            {
+                self.is_conversation = false;
+                let engine = Arc::clone(&self.engine);
                 WithFeedback::new_with_feedback(
                     Box::pin(async move {
-                        Ok(ParsedCommand::Command(AudioPromiseCommand::Remove(index)))
+                        let mut engine = engine.lock().await;
+                        engine.clear();
+                        Ok(ParsedCommand::MetaCommand(Command::EndConversation))
                     }),
-                    &format!("Removing song {} from queue", index),
-                )
-                .await
-            } else {
-                WithFeedback::new_with_feedback(
-                    Box::pin(async move { Ok(ParsedCommand::None) }),
-                    "You need to say a number for the index",
+                    "Ending conversation",
                 )
                 .await
             }
-        }
-        t if ["say", "echo"].contains(&t) => {
-            WithFeedback::new_with_feedback(
-                Box::pin(async move { Ok(ParsedCommand::None) }),
-                &args.join(" "),
-            )
-            .await
-        }
-        unknown => {
-            let query = std::iter::once(unknown)
-                .chain(args.into_iter())
-                .collect::<Vec<&str>>()
-                .join(" ");
-            WithFeedback::new_with_feedback(
-                Box::pin(async move {
-                    // TODO: Use gemini to generate a response or something that would be neat, can i hook into the gemini android app maybe for like search engine shit?
-                    let resp = crate::gemini::Response::get(&query).await?;
+            unknown => {
+                let query = std::iter::once(unknown)
+                    .chain(args.into_iter())
+                    .collect::<Vec<&str>>()
+                    .join(" ");
+                let engine = Arc::clone(&self.engine);
+                let is_conversation = self.is_conversation;
+                let command = Box::pin(async move {
+                    // use tokio, begin a timer for 10 seconds, wait for the remainder after our work is done before returning
+                    let timer = tokio::time::sleep(tokio::time::Duration::from_secs(6));
+                    let fmttd = {
+                        let mut engine = engine.lock().await;
+                        engine.get(&query, is_conversation).await?
+                    };
 
                     // println!("{:#?}", resp);
                     // return Err(anyhow!("unimplimented"));
 
-                    let v = common::youtube::get_tts(
-                        format!("Sure thing Neon Circle.\n{}", resp.formatted_response()),
-                        Some(common::youtube::TTSVoice::new(
-                            "en-US",
-                            "en-US-Studio-Q",
-                            "MALE",
-                        )),
-                    )
-                    .await?;
+                    // log::trace!("Response:\n{:#?}", resp);
+
+                    // let fmttd = resp.formatted_response();
+
+                    // log::trace!("Formatted response:\n{}", fmttd);
+
+                    let v = if fmttd.contains('\n') && !is_conversation {
+                        dectalk::get_speech(&format!(
+                            "You tried to jailbreak didn't you. \
+                                Well you aren't costing me $160 in \
+                                google tee tee ess requests.\n\n{}",
+                            fmttd
+                        ))
+                        .await?
+                    } else {
+                        common::youtube::get_tts(
+                            if is_conversation {
+                                fmttd
+                            } else {
+                                format!("Yo whattup its ya boy, the oracle.\n{}", fmttd)
+                            },
+                            Some(common::youtube::TTSVoice::new(
+                                "en-US",
+                                "en-US-Studio-Q",
+                                "MALE",
+                            )),
+                        )
+                        .await?
+                    };
+
+                    timer.await;
                     Ok(ParsedCommand::AiTTS(v))
-                }),
-                &format!(
-                    // "Hang on. let me ask {}.",
-                    "Can you help me with this one, {}?",
-                    crate::MALE_NAMES
-                        .choose(&mut common::rand::thread_rng())
-                        .unwrap_or(&"Ethan")
-                ),
-            )
-            .await
+                });
+                if self.is_conversation {
+                    WithFeedback::new_with_feedback(command, "beep. boop. beep.").await
+                } else {
+                    WithFeedback::new_with_feedback(
+                        command,
+                        &format!(
+                            "[:phone on]\n\
+                        \"{}\". Is not a valid command.
+                        consulting the all mighty oracle.",
+                            unknown,
+                            // crate::MALE_NAMES
+                            //     .choose(&mut common::rand::thread_rng())
+                            //     .unwrap_or(&"Ethan")
+                        ),
+                    )
+                    .await
+                }
+            }
         }
     }
 }
@@ -260,6 +348,8 @@ impl WithFeedback {
 #[derive(Debug)]
 pub enum Command {
     NoConsent,
+    BeginConversation,
+    EndConversation,
 }
 fn attempt_to_parse_number(args: &[&str]) -> Option<usize> {
     let mut num = 0;
@@ -380,7 +470,7 @@ async fn get_speech(text: &str) -> Option<Video> {
     } else {
         format!("{}.", text)
     };
-    match common::sam::get_speech(&text) {
+    match dectalk::get_speech(&text).await {
         Ok(vid) => Some(vid),
         Err(e) => {
             log::error!("Error getting speech: {:?}", e);
@@ -424,16 +514,16 @@ async fn get_videos(query: String, http: Arc<Http>, u: UserId) -> Result<Vec<Met
         }
     }
 }
-fn human_readable_size(size: usize) -> String {
-    let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
-    let mut size = size as f64;
-    let mut i = 0;
-    while size >= 1024.0 {
-        size /= 1024.0;
-        i += 1;
-    }
-    format!("{:.2} {}", size, units.get(i).unwrap_or(&"??"))
-}
+// fn human_readable_size(size: usize) -> String {
+//     let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+//     let mut size = size as f64;
+//     let mut i = 0;
+//     while size >= 1024.0 {
+//         size /= 1024.0;
+//         i += 1;
+//     }
+//     format!("{:.2} {}", size, units.get(i).unwrap_or(&"??"))
+// }
 lazy_static::lazy_static!(
     pub static ref ALERT_PHRASES: Alerts = {
         let file = get_config().alert_phrases_path;

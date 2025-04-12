@@ -1,6 +1,7 @@
 #![feature(try_blocks)]
 
-const URL: &str = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/debt_to_penny?fields=tot_pub_debt_out_amt,record_calendar_year,record_calendar_month,record_calendar_day&filter=record_date:lte:2024-06-04&sort=-record_calendar_year,-record_calendar_month,-record_calendar_day";
+const URL: &str = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/debt_to_penny?fields=tot_pub_debt_out_amt,record_calendar_year,record_calendar_month,record_calendar_day&filter=record_date:lte:<DATEFORMATTEDLIKEBELOW>&sort=-record_calendar_year,-record_calendar_month,-record_calendar_day";
+// 2024-06-04
 
 use anyhow::Result;
 use common::{
@@ -13,7 +14,7 @@ use common::{
 use serde::Deserialize;
 
 async fn get_debt() -> Result<NationalDebt> {
-    reqwest::get(URL)
+    reqwest::get(URL.replace("<DATEFORMATTEDLIKEBELOW>", &chrono::Utc::now().format("%Y-%m-%d").to_string()))
         .await?
         .json::<RawNationalDebt>()
         .await?
